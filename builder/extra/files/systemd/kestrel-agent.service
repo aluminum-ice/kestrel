@@ -1,0 +1,40 @@
+[Unit]
+Description=kestrel learning capture agent (Phase 4; opt-in)
+# The agent only ever steers the capture dongle, so it starts after capture and
+# wants it; it still re-checks [capture] enabled itself and exits 0 if capture
+# is off, so a stale enable never drives a radio.
+After=kestrel-capture.service NetworkManager.service
+Wants=kestrel-capture.service
+
+[Service]
+# Runs as pi: torch + stable-baselines3 live in the pi venv, the agent writes
+# its runtime dir (model, episode logs, status.json) as pi, and it reads the
+# pi-owned capture store. It never needs root - it writes its scan plan to the
+# override file the capture launcher reads, and never touches config.toml.
+User=pi
+Group=pi
+NoNewPrivileges=yes
+# Exits 0 when [agent] enabled or [capture] enabled is false, so a clean exit is
+# not restarted; a real crash is. Ships DISABLED - only `kestrel agent
+# enable` (after capture is on) turns it on.
+ExecStart=/home/pi/.venv/bin/kestrel-agent --config /etc/kestrel/config.toml
+Restart=on-failure
+RestartSec=10
+
+# Resource guardrails for the optional on-device fine-tune. Inference is cheap;
+# a training run is what can starve or crash the device, and it runs in a
+# separate niced child (kestrel-agent-train) so inference keeps its priority.
+# CPUWeight here gives the always-on daemon the cores under contention (the
+# agent barely uses CPU except while training), so the web UI stays responsive.
+# The memory caps bound this service and its training child together and are
+# sized for a 4 GB Pi 5 (the smallest board that trains): MemoryHigh throttles
+# the run under reclaim pressure; MemoryMax caps it so a runaway run is killed -
+# and, with training isolated in the child, the kernel OOM-kills that child, not
+# this agent or the daemon - leaving ~1.6 GB for the OS, daemon and capture
+# instead of letting training drive the whole system into swap or OOM.
+CPUWeight=20
+MemoryHigh=1900M
+MemoryMax=2400M
+
+[Install]
+WantedBy=multi-user.target

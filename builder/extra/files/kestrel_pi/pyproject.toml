@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kestrel-pi"
+# Dev fallback only: the Release workflow overwrites this with the release
+# version before building the image and publishing to PyPI, so the published
+# package tracks the image/release version.
+version = "0.3.2"
+description = "On-device plugin host, web dashboard, and learning-agent runtime for the Kestrel Wi-Fi capture device"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-or-later" }
+# Runtime deps are installed into the image venv by the Ansible playbook
+# (pip.local.install), not resolved from here, so the image build stays offline
+# and pinned. flask is the only new addition for this phase; requests is already
+# in the venv for the uploaders.
+dependencies = []
+
+[project.scripts]
+kestrel-daemon = "kestrel_pi.daemon:main"
+# Phase 4: the learning agent runs in its own process (keeps torch/SB3 out of the
+# daemon) and offline training has its own entry point.
+kestrel-agent = "kestrel_pi.agent.controller:main"
+kestrel-agent-train = "kestrel_pi.agent.train:main"
+
+[tool.setuptools.packages.find]
+include = ["kestrel_pi*"]
+exclude = ["tests*"]

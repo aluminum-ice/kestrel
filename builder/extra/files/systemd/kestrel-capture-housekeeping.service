@@ -1,0 +1,8 @@
+[Unit]
+Description=kestrel capture store housekeeping (apply retention policy)
+
+[Service]
+# Applies the [capture.housekeeping] policy from config.toml. Inert when
+# action = "off" (the default), so enabling the timer is safe.
+Type=oneshot
+ExecStart=/usr/local/bin/kestrel capture rotate

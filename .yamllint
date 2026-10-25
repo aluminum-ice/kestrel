@@ -1,0 +1,10 @@
+---
+# yamllint configuration used by `make lint`.
+# Formatting nits (long lines, trailing spaces, missing final newline) are
+# ignored; structural problems such as duplicate keys are still errors.
+extends: relaxed
+
+rules:
+  line-length: disable
+  trailing-spaces: disable
+  new-line-at-end-of-file: disable

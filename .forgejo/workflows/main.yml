@@ -1,0 +1,245 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+        release_version:
+          description: 'Release version'
+          required: true
+          type: string
+        update_kind:
+          description: 'In-place update kind for the updates plugin'
+          required: false
+          default: auto
+          type: choice
+          options:
+            - auto
+            - app-layer
+            - reflash
+
+jobs:
+  build:
+    # A self-hosted Forgejo runner registered in host mode with the
+    # image-builder label. The image build needs root (passwordless sudo for the
+    # runner user), loop devices, binfmt for qemu-user-static and ~15 GB of
+    # disk, none of which a container job provides. See
+    # docs/developer/releasing.md for the host requirements.
+    runs-on: image-builder
+
+    env:
+      MY_VERSION: ${{ inputs.release_version }}
+      # Kept outside the workspace so the ~400 MB base image survives between
+      # runs (this replaces actions/cache).
+      PACKER_CACHE_DIR: /var/cache/kestrel/packer
+      GO_VERSION: '1.24.13'
+
+    steps:
+    # Plain git instead of actions/checkout, so the job needs no Node or actions
+    # mirror. A host-mode workspace can persist between runs, so reuse it and
+    # reset it to the commit being released. The full history and all tags are
+    # fetched: the update manifest and the release-note generator diff against
+    # earlier release tags. The previous build's output is root-owned, so it is
+    # removed with sudo before git clean.
+    - name: Checkout repository
+      run: |
+        set -eu
+        [ -d .git ] || git init -q .
+        git remote remove origin 2>/dev/null || true
+        git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+        git -c http.extraheader="Authorization: token $TOKEN" \
+          fetch -q --force --tags origin "$GITHUB_SHA"
+        sudo rm -rf builder/output-my_rpi_image
+        git checkout -qf --detach "$GITHUB_SHA"
+        git clean -qffdx
+        git log -1 --oneline
+      env:
+        TOKEN: ${{ github.token }}
+
+    - name: Show Version
+      run: |
+        echo "Using VERSION: $MY_VERSION"
+
+    - name: Set _version.py correctly using the env variable
+      run: |
+        sed -i "s#.*__version__.*#__version__='$MY_VERSION'#" _version.py
+
+    # Keep the kestrel-pi package version in step with the image/release
+    # version, so the package installed into the image and the one published to
+    # PyPI below both carry this release's version. The committed value in
+    # pyproject.toml is only a dev fallback.
+    - name: Sync the kestrel-pi package version to the release version
+      run: |
+        sed -i "s#^version = .*#version = \"$MY_VERSION\"#" \
+          builder/extra/files/kestrel_pi/pyproject.toml
+        grep -n '^version' builder/extra/files/kestrel_pi/pyproject.toml
+
+    - name: Install qemu for cross compilation
+      run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+
+    # Go straight from go.dev, pinned and SHA-256 verified (replaces
+    # actions/setup-go). Unpacked once per version under the runner's home and
+    # reused by later runs. When bumping GO_VERSION, update both checksums.
+    - name: Install Go for the Packer plugin build
+      run: |
+        set -eu
+        case "$(uname -m)" in
+          x86_64)  arch=amd64 sum=1fc94b57134d51669c72173ad5d49fd62afb0f1db9bf3f798fd98ee423f8d730 ;;
+          aarch64) arch=arm64 sum=74d97be1cc3a474129590c67ebf748a96e72d9f3a2b6fef3ed3275de591d49b3 ;;
+          *) echo "no pinned Go build for $(uname -m)" >&2; exit 1 ;;
+        esac
+        root="$HOME/.cache/kestrel-go/$GO_VERSION-$arch"
+        if [ ! -x "$root/go/bin/go" ]; then
+          tgz=$(mktemp)
+          curl -fsSL "https://go.dev/dl/go$GO_VERSION.linux-$arch.tar.gz" -o "$tgz"
+          echo "$sum  $tgz" | sha256sum -c -
+          rm -rf "$root"; mkdir -p "$root"
+          tar -C "$root" -xzf "$tgz"
+          rm -f "$tgz"
+        fi
+        echo "$root/go/bin" >> "$GITHUB_PATH"
+        "$root/go/bin/go" version
+
+    # Build the arm-image plugin as the runner user; sudo's secure_path would
+    # hide the Go installed above.
+    - name: Build Packer arm-image plugin
+      run: make plugin
+
+    - name: Prepare the base-image cache
+      run: sudo mkdir -p "$PACKER_CACHE_DIR"
+
+    # sudo resets the environment, so the job's PACKER_CACHE_DIR is passed as a
+    # make variable; otherwise the Makefile falls back to builder/packer_cache
+    # in the workspace, root-owned files the runner can't clean up.
+    - name: Image
+      run: sudo make image PACKER_CACHE_DIR="$PACKER_CACHE_DIR"
+
+    # The updates plugin reads this asset to decide whether a release can be
+    # applied in place ("app-layer") or needs a reflash. In "auto" mode a
+    # release is reflash-only when the diff since the previous release touched a
+    # build-layer input (the base image, the Makefile, the playbook or the CI
+    # workflows); otherwise it is an app-layer update. Override with the
+    # update_kind input when you know better (e.g. a config.yml change that only
+    # added a copy task for a file the in-place engine already ships).
+    # See docs/developer/updates-setup.md.
+    - name: Build the update manifest
+      run: |
+        set -eu
+        api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY"
+        prev=$(curl -fsS -H "Authorization: token $TOKEN" \
+          "$api/releases?limit=1&draft=false" 2>/dev/null \
+          | python3 -c 'import json, sys; r = json.load(sys.stdin); print(r[0]["tag_name"] if r else "")' \
+          2>/dev/null || echo "")
+        kind="$UPDATE_KIND"
+        reason=""
+        if [ "$kind" = auto ]; then
+          if [ -z "$prev" ]; then
+            kind=reflash
+            reason="first release; flash the image"
+          else
+            changed=$(git diff --name-only "$prev" "$GITHUB_SHA" 2>/dev/null || echo "__nodiff__")
+            if printf '%s\n' "$changed" | grep -Eq '^(builder/config\.(json|yml)|Makefile|\.(forgejo|github)/workflows/)'; then
+              kind=reflash
+              reason="the base image or build changed since $prev; flash the image"
+            else
+              kind=app-layer
+            fi
+          fi
+        elif [ "$kind" = reflash ]; then
+          reason="release marked reflash-only by the maintainer"
+        fi
+        python3 - "$MY_VERSION" "$kind" "$GITHUB_SHA" "$reason" > update-manifest.json <<'PY'
+        import json, sys
+        version, kind, commit, reason = sys.argv[1:5]
+        manifest = {
+            "schema": 1,
+            "version": version,
+            "kind": kind,
+            "commit": commit,
+            "requires_reflash_reason": reason if kind == "reflash" else "",
+        }
+        print(json.dumps(manifest, indent=2))
+        PY
+        echo "update-manifest.json:"; cat update-manifest.json
+      env:
+        TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+        UPDATE_KIND: ${{ inputs.update_kind }}
+
+    # Build grouped release notes (New / Improvements / Fixes) from the commits
+    # unique to this release, with an install-type line from the manifest.
+    # Falls back to a provenance-only note if generation fails, so a notes
+    # problem never blocks the release.
+    - name: Generate release notes
+      run: |
+        if python3 .forgejo/gen-release-notes.py update-manifest.json > release-notes.md; then
+          echo "release-notes.md:"; cat release-notes.md
+        else
+          echo "note generation failed; using a provenance-only note" >&2
+          printf '_Built from %s._\n' "$GITHUB_SHA" > release-notes.md
+        fi
+
+    # Create the release through the Forgejo API, tagging the commit that was
+    # built (not the default branch head), then attach the artifacts. Needs a
+    # token that can write releases: the RELEASE_TOKEN secret if set, else the
+    # job's own token. Forgejo's attachment size limit must allow the .7z.
+    - name: Publish Forgejo Release
+      run: |
+        set -eu
+        api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY"
+        python3 - <<'PY' > release.json
+        import json, os
+        print(json.dumps({
+            "tag_name": os.environ["MY_VERSION"],
+            "target_commitish": os.environ["GITHUB_SHA"],
+            "name": "Release " + os.environ["MY_VERSION"],
+            "body": open("release-notes.md").read(),
+        }))
+        PY
+        id=$(curl -fsS -X POST -H "Authorization: token $TOKEN" \
+          -H "Content-Type: application/json" --data-binary @release.json \
+          "$api/releases" | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')
+        echo "created release $id"
+        for f in "kestrel-$MY_VERSION.7z" "kestrel-$MY_VERSION.7z.sha256" update-manifest.json; do
+          echo "uploading $f"
+          curl -fsS -X POST -H "Authorization: token $TOKEN" \
+            -F "attachment=@$f" "$api/releases/$id/assets?name=$f" > /dev/null
+        done
+      env:
+        TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+    # Publish the kestrel-pi package to PyPI, once the release is cut. The
+    # package is pure Python, so it builds directly from its in-repo source (no
+    # image needed) at the release version synced above, in a throwaway venv
+    # (the host's system pip is PEP 668-managed). Auth is a project-scoped PyPI
+    # API token in the PYPI_API_TOKEN secret; if the secret is not set the step
+    # is a no-op, so the release never fails for want of it. --skip-existing
+    # makes a re-cut of the same version safe (the already-published files are
+    # left untouched rather than erroring).
+    - name: Publish kestrel-pi to PyPI
+      run: |
+        set -eu
+        if [ -z "${TWINE_PASSWORD:-}" ]; then
+          echo "PYPI_API_TOKEN not set; skipping PyPI publish." >&2
+          exit 0
+        fi
+        venv=$(mktemp -d)
+        trap 'rm -rf "$venv"' EXIT
+        python3 -m venv "$venv"
+        "$venv/bin/pip" install --upgrade build twine
+        cd builder/extra/files/kestrel_pi
+        rm -rf dist
+        "$venv/bin/python" -m build
+        "$venv/bin/python" -m twine upload --non-interactive --skip-existing dist/*
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+    # The image, its archive and Packer's output are several GB; don't leave
+    # them on the build host's workspace between runs. The base-image cache in
+    # PACKER_CACHE_DIR is kept. Anything root-owned left in the workspace (the
+    # Packer output, or a cache that fell back to builder/packer_cache) would
+    # also stop the runner from deleting the workspace, so remove it with sudo.
+    - name: Remove build artifacts
+      if: always()
+      run: |
+        sudo rm -rf builder/output-my_rpi_image builder/packer_cache
+        rm -f kestrel-*.img kestrel-*.sha256 kestrel-*.7z kestrel-*.7z.sha256 release.json

@@ -1,0 +1,1024 @@
+---
+- hosts:
+    - 127.0.0.1
+  gather_facts: yes
+  # Only the minimal fact subset: it still has the distribution and platform
+  # facts used below, and skips hardware/network probing, slow under QEMU.
+  gather_subset:
+    - "!all"
+  become: yes
+  vars:
+    my_image:
+      hostname: "{{ lookup('env', 'MY_HOSTNAME') | default('kestrel', true) }}"
+      version:  "{{ lookup('env', 'MY_VERSION') | default('master', true) }}"
+    # Supported boards, for reference only: nothing in the build reads this.
+    # Both run this one arm64 image. Capture uses an external USB adapter, so
+    # the built-in chip is never patched and no firmware/nexmon fields exist.
+    boards:
+      RPiZ2W:
+        cpu: cortex-a53
+      RPi5:
+        cpu: cortex-a76
+    system:
+      # Bookworm boot (FAT) partition. config.json's image_mounts mounts it here
+      # in the build chroot too, matching the booted device. /boot/config.txt in
+      # the rootfs is only a "this file has moved" stub; never edit it.
+      boot_dir: /boot/firmware
+      boot_options:
+        - "dtparam=spi=on"
+        - "dtparam=i2c_arm=on"
+        - "dtparam=act_led_trigger=heartbeat"
+        - "gpu_mem=16"
+        - "dtparam=nvme"
+        - "dtparam=pciex1_gen=3"
+      modules:
+        - "i2c-dev"
+      swap_size:        "2048"
+      country:          "US"
+      locale:           "en_US.UTF-8"
+      timezone:         "America/Los_Angeles"
+      enable_ssh:       "0"
+      pip_version:      "23.3"
+      account:
+        # Documented DEFAULT login for this PUBLIC base image: pi / raspberry.
+        # CHANGE THIS before any real use. Override at build time with the
+        # MY_PI_PASSWORD_HASH env var, or regenerate a hash with: openssl passwd -6
+        pi: "{{ lookup('env', 'MY_PI_PASSWORD_HASH') | default('$6$rpiospublic$IdjDhs9BWgsMS9GaagrukxeyvrJyqKSRV7/tXs8iSGrRgJCK2HMgSWUSsEqiF5hIpkgC2ESP4gL7G8a1AjOqr/', true) }}"
+      network: {}  # No Wi-Fi is baked into this public image.
+        # Add your own networks as "SSID": "passphrase" entries (highest priority
+        # last) by replacing {} above with a mapping, e.g.
+        #   network:
+        #     "My Home Wi-Fi": "my-passphrase"
+    services:
+      enable:
+        - dphys-swapfile.service
+        - fstrim.timer
+    packages:
+      general:
+        install:
+          - bc
+          - bluez            # Bluetooth stack for PAN onboarding (Phase 1)
+          - dphys-swapfile
+          - ethtool          # capture-adapter driver inspection (ethtool -i wlanX)
+          - fonts-dejavu-core  # glyph coverage for the e-ink emoticon faces (Phase 5)
+          - fonts-firacode
+          - gawk
+          - git
+          - iw               # wireless PHY/monitor-mode inspection (iw phy)
+          - hcxtools          # hc22000->cap conversion for wpa-sec uploads (Phase 3)
+          - lnav
+          - lsof
+          - ncdu
+          - p7zip-full
+          - python3-dbus     # Bluetooth pairing agent (Phase 1)
+          - python3-gi       # Bluetooth pairing agent (GLib main loop)
+          - python3-gpiozero # Waveshare e-Paper GPIO backend (Phase 5 e-ink)
+          - python3-pil
+          - python3-smbus
+          - python3-spidev   # Waveshare e-Paper SPI transport (Phase 5 e-ink)
+          - python3-setuptools  # pkg_resources, required by Ansible 2.14's pip module
+          - python3-venv
+          - rfkill           # unblock Wi-Fi/Bluetooth radios (Phase 1)
+          - rsync
+          - screen
+          - unzip
+          - ca-certificates
+          - curl
+          - raspi-config
+          - openvpn
+          - cifs-utils
+          - apt-transport-https
+          - sqlite3
+        hold:
+          - raspi-firmware
+        # Stock Raspberry Pi OS packages the image must keep. The build fails if
+        # installing packages.general.install removes any of them: the legacy
+        # libraspberrypi-bin/libraspberrypi0 once did, by conflicting with
+        # raspi-utils, which took raspi-config and raspberrypi-sys-mods (the
+        # first-boot resize) with it. vcgencmd comes from raspi-utils.
+        protected:
+          - raspberrypi-sys-mods
+          - raspi-config
+          - raspi-utils
+          - userconf-pi
+          - pi-bluetooth
+          - rpi-eeprom
+          - raspberrypi-net-mods
+      # Pi Zero 2 W, 4 and 5 all run this arm64 image, so they share the
+      # statically linked aarch64 musl build (no glibc version dependency).
+      angryoxide:
+        version:  "v0.9.3"
+        archive:  "angryoxide-linux-aarch64-musl.tar.gz"
+        checksum: "sha256:63b6eac74d175d03ba6e20976c8b7fd85ede28151b96702c936a270ba77ead88"
+        url:      "https://git.3ntropy.io/aluminum-ice/AngryOxide/releases/download"
+    pip:
+      bootstrap:
+        install:
+          - "pip>={{ system.pip_version }}"
+          - setuptools
+          - wheel
+      local:
+        install:
+          - vcgencmd
+          - pyyaml
+          - tqdm
+          - requests
+          - urllib3
+          - typing-extensions
+          - python-dateutil
+          - cryptography
+          - flask             # Phase 3 embedded web subsystem (plugin host)
+          - rpi-hardware-pwm
+          - stable-baselines3       # Phase 4 learning agent: PPO/DQN
+          - sb3-contrib             # Phase 4: RecurrentPPO (default) + QR-DQN
+          - gymnasium               # Phase 4: the capture env's RL interface
+          # Pin to a release with a Python 3.11/arm64 wheel.
+          - "torch==2.10.0"
+          - numpy
+          - pytest
+
+  tasks:
+  - name: System details
+    debug:
+      msg="{{ item }}"
+    with_items:
+      - "{{ ansible_distribution }}"
+      - "{{ ansible_distribution_version }}"
+      - "{{ ansible_distribution_major_version }}"
+      - "{{ ansible_distribution_release }}"
+      - "{{ ansible_architecture }}"
+      - "{{ ansible_machine }}"
+
+  # Fail early if the boot partition is not mounted at system.boot_dir: the
+  # firmware files only exist on the FAT partition, so an empty mountpoint or a
+  # partition mounted elsewhere (e.g. /boot) is caught here instead of edits
+  # silently landing in the rootfs.
+  - name: check boot partition files
+    stat:
+      path: "{{ system.boot_dir }}/{{ item }}"
+    loop:
+      - config.txt
+      - cmdline.txt
+    register: boot_files
+
+  - name: assert boot partition is mounted at {{ system.boot_dir }}
+    assert:
+      that: boot_files.results | rejectattr('stat.exists') | list | length == 0
+      fail_msg: >-
+        {{ system.boot_dir }} does not hold config.txt/cmdline.txt; check
+        image_mounts in builder/config.json.
+
+  # The Makefile runs PiShrink with -s, relying on Raspberry Pi OS's own
+  # first-boot hook (init=.../firstboot in cmdline.txt) to grow the root
+  # filesystem to fill the card. Fail if a base image ever drops that hook.
+  - name: read boot cmdline
+    slurp:
+      src: "{{ system.boot_dir }}/cmdline.txt"
+    register: boot_cmdline
+
+  - name: assert the stock first-boot resize hook is present
+    assert:
+      that: (boot_cmdline.content | b64decode) is search('init=\S*/firstboot')
+      fail_msg: >-
+        cmdline.txt has no init=.../firstboot hook, so the root filesystem
+        would not expand on first boot. Drop -s from PiShrink in the Makefile.
+        cmdline.txt: {{ boot_cmdline.content | b64decode }}
+
+  - name: Copy using inline content
+    copy:
+      content: "{{my_image.hostname}}"
+      dest: /etc/hostname
+      mode: '0644'
+    register: hostname
+
+  - name: add hostname to /etc/hosts
+    lineinfile:
+      dest: /etc/hosts
+      regexp: '^127\.0\.1\.1[ \t]+raspberrypi'
+      line: "127.0.1.1\t{{my_image.hostname}}"
+      state: present
+    when: hostname.changed
+
+  - name: Set timezone
+    timezone:
+      name: "{{ system.timezone }}"
+
+  - name: Set wifi country
+    shell: "raspi-config nonint do_wifi_country {{ system.country }}"
+
+  - name: Set locale
+    shell: "raspi-config nonint do_change_locale {{ system.locale }}"
+
+  - name: Enable SSH
+    shell: "raspi-config nonint do_ssh {{ system.enable_ssh }}"
+
+  # The apt cache is already fresh: the Packer shell provisioner runs
+  # apt-get update right before this playbook.
+
+  # Doing a dist-upgrade causes a failure so removing this task for now
+  # https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1055901
+  # https://forums.raspberrypi.com/viewtopic.php?t=359533
+  # https://github.com/MichaIng/DietPi/issues/6747
+
+  # - name: hold problematic packages
+  #   dpkg_selections:
+  #     name: "{{ item }}"
+  #     selection: hold
+  #   with_items: "{{ packages.general.hold }}"
+
+  # - name: upgrade apt distro
+  #   apt:
+  #     upgrade: yes
+  #     only_upgrade: true
+  #   become: yes
+
+  - name: install packages
+    apt:
+      name: "{{ packages.general.install }}"
+      state: present
+
+  - name: check stock Raspberry Pi packages are still installed
+    command:
+      argv: "{{ ['dpkg-query', '--show', '--showformat=${Package}\t${db:Status-Status}\n'] + packages.general.protected }}"
+    register: protected_packages
+    changed_when: false
+    failed_when: >-
+      protected_packages.rc != 0 or
+      protected_packages.stdout_lines | reject('search', '\tinstalled$') | list | length > 0
+
+  - name: configure dphys-swapfile
+    lineinfile:
+      path: /etc/dphys-swapfile
+      regexp: "^CONF_SWAPSIZE=.*$"
+      line: "CONF_SWAPSIZE={{ system.swap_size }}"
+
+  ## START pi user ##
+  - name: Add pi user
+    user:
+      name: pi
+      password: "{{ system.account.pi }}"
+      uid: 1000
+      shell: /bin/bash
+      create_home: true
+      home: "/home/pi"
+      group: pi
+      groups: adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,render,netdev,gpio,i2c,spi
+      append: yes
+    register: createduser
+
+  # The venv tasks run as pi so every file is pi-owned from the start; a
+  # recursive chown of the whole venv afterwards is slow under QEMU.
+  - name: create the pi virtualenv, inheriting globally installed modules
+    become_user: pi
+    command: /usr/bin/python3 -m venv --system-site-packages /home/pi/.venv
+    args:
+      creates: /home/pi/.venv/bin/pip
+    register: venv_dir
+
+  # PIP_CONFIG_FILE=/dev/null makes pip load no config files, so it skips the
+  # piwheels extra index Raspberry Pi OS sets in /etc/pip.conf. piwheels builds
+  # 32-bit ARM wheels, which this arm64 image can't use; every package comes
+  # from PyPI's aarch64 wheels, and a piwheels outage (TLS resets) used to fail
+  # the build. Only the build's pip runs are affected; the device's
+  # /etc/pip.conf is left as shipped.
+  - name: upgrade pip build tooling in the pi virtualenv
+    become_user: pi
+    pip:
+      name: "{{ pip.bootstrap.install }}"
+      executable: /home/pi/.venv/bin/pip
+      extra_args: --no-cache-dir
+    environment:
+      PIP_CONFIG_FILE: /dev/null
+
+  # --ignore-installed: give the venv its own copy of every package and
+  # dependency instead of reusing apt's (e.g. python3-yaml), which would vanish
+  # if the apt package were removed. System site-packages still supply the
+  # apt-only modules (python3-pil, python3-smbus).
+  # Runs in the background (poll: 0) while the tasks below, which don't touch
+  # the venv, install everything else; "wait for the pip packages" collects it
+  # before the kestrel_pi package goes into the same venv.
+  - name: install pip packages into the pi virtualenv (background)
+    become_user: pi
+    pip:
+      name: "{{ pip.local.install }}"
+      executable: /home/pi/.venv/bin/pip
+      extra_args: --prefer-binary --no-cache-dir --ignore-installed
+    environment:
+      PIP_CONFIG_FILE: /dev/null
+    async: 3600
+    poll: 0
+    register: pip_local_job
+  ## END pi user ##
+
+  ### ANGRYOXIDE ###
+
+  - name: Create angryoxide source directory
+    file:
+      path: /usr/local/src/angryoxide
+      state: directory
+      mode: '0755'
+
+  - name: Download angryoxide release
+    get_url:
+      url: "{{ packages.angryoxide.url }}/{{ packages.angryoxide.version }}/{{ packages.angryoxide.archive }}"
+      dest: "/tmp/{{ packages.angryoxide.archive }}"
+      checksum: "{{ packages.angryoxide.checksum }}"
+
+  - name: Extract angryoxide release
+    unarchive:
+      src: "/tmp/{{ packages.angryoxide.archive }}"
+      dest: /usr/local/src/angryoxide
+      remote_src: yes
+
+  - name: Install angryoxide binary
+    copy:
+      src: /usr/local/src/angryoxide/angryoxide
+      dest: /usr/bin/angryoxide
+      remote_src: yes
+      owner: root
+      group: root
+      mode: '0755'
+
+  - name: Install angryoxide bash completion
+    copy:
+      src: /usr/local/src/angryoxide/completions/bash_angryoxide_completions
+      dest: /etc/bash_completion.d/angryoxide
+      remote_src: yes
+      owner: root
+      group: root
+      mode: '0644'
+
+  - name: Delete angryoxide download and source directory
+    file:
+      state: absent
+      path: "{{ item }}"
+    with_items:
+      - "/tmp/{{ packages.angryoxide.archive }}"
+      - /usr/local/src/angryoxide
+
+  ### ANGRYOXIDE ###
+
+  ## START pi home ##
+  # Stock images enable userconfig.service, the first-boot "create a user"
+  # wizard, which holds the console until a user is created. pi already has a
+  # password, so cancel it with Raspberry Pi's own tool; that also re-enables
+  # the tty1 login prompt. Its "start getty" call is a no-op in the chroot.
+  - name: cancel the first-boot user wizard
+    command: /usr/bin/cancel-rename pi
+    args:
+      removes: /etc/systemd/system/multi-user.target.wants/userconfig.service
+
+  - name: check the login units
+    stat:
+      path: "{{ item }}"
+    loop:
+      - /etc/systemd/system/multi-user.target.wants/userconfig.service
+      - /etc/systemd/system/getty.target.wants/getty@tty1.service
+    register: login_units
+
+  - name: assert the user wizard is off and tty1 has a login prompt
+    assert:
+      that:
+        - not login_units.results[0].stat.exists
+        - login_units.results[1].stat.exists
+      fail_msg: >-
+        After cancel-rename, userconfig.service must be disabled and
+        getty@tty1.service enabled.
+
+  # Install screenrc configuration
+  # DISABLED: the aluminum-ice/screenrc repo is no longer on GitHub (the clone
+  # 404s and fails the build). Kept commented out, not removed, so it can be
+  # re-enabled once the repo is available again (e.g. on the Forgejo instance):
+  # point `repo` at the new location and uncomment the three tasks below.
+  # - name: clone screenrc repository
+  #   git:
+  #     repo: https://github.com/aluminum-ice/screenrc.git
+  #     dest: /usr/local/src/screenrc
+  #   register: screenrcgit
+  #
+  # - name: create /home/pi/.screenrc
+  #   copy:
+  #     src: /usr/local/src/screenrc/.screenrc
+  #     dest: /home/pi/.screenrc
+  #     owner: pi
+  #     group: pi
+  #     mode: '0644'
+  #   when: screenrcgit.changed
+  #
+  # - name: delete screenrc content & directory
+  #   file:
+  #     state: absent
+  #     path: /usr/local/src/screenrc/
+  #   when: screenrcgit.changed
+
+  - name: create the .ssh directory if it does not exist
+    file:
+      path: /home/pi/.ssh
+      state: directory
+      owner: pi
+      group: pi
+      mode: '0700'
+
+  # Generate the pi SSH key pair on each device's first boot rather than at
+  # build time, so devices flashed from the same image don't share a key.
+  - name: install first-boot SSH key generation service
+    copy:
+      dest: /etc/systemd/system/pi-ssh-keygen.service
+      mode: '0644'
+      content: |
+        [Unit]
+        Description=Generate the pi user's SSH key pair on first boot
+        ConditionPathExists=!/home/pi/.ssh/id_rsa
+        After=local-fs.target
+
+        [Service]
+        Type=oneshot
+        User=pi
+        Group=pi
+        ExecStart=/usr/bin/ssh-keygen -q -t rsa -b 4096 -N "" -f /home/pi/.ssh/id_rsa
+
+        [Install]
+        WantedBy=multi-user.target
+
+  # Enable only; starting it here would generate the key inside the image.
+  - name: enable first-boot SSH key generation service
+    systemd:
+      name: pi-ssh-keygen.service
+      enabled: yes
+
+  # Host keys are removed at the end of the build (see "remove SSH host keys")
+  # and recreated by this unit before sshd starts. ssh-keygen -A only creates
+  # missing key types, so later boots are a no-op.
+  - name: install SSH host key generation service
+    copy:
+      dest: /etc/systemd/system/ssh-host-keygen.service
+      mode: '0644'
+      content: |
+        [Unit]
+        Description=Generate missing SSH host keys
+        Before=ssh.service ssh.socket
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/bin/ssh-keygen -A
+
+        [Install]
+        WantedBy=multi-user.target
+
+  - name: enable SSH host key generation service
+    systemd:
+      name: ssh-host-keygen.service
+      enabled: yes
+
+  - name: create the github directory if it does not exist
+    file:
+      path: /home/pi/github
+      state: directory
+      owner: pi
+      group: pi
+      mode: '0755'
+
+  - name: create the Documents directory if it does not exist
+    file:
+      path: /home/pi/Documents
+      state: directory
+      owner: pi
+      group: pi
+      mode: '0755'
+
+  - name: create the Downloads directory if it does not exist
+    file:
+      path: /home/pi/Downloads
+      state: directory
+      owner: pi
+      group: pi
+      mode: '0755'
+
+  - name: create the deployments directory if it does not exist
+    file:
+      path: /home/pi/deployments
+      state: directory
+      owner: pi
+      group: pi
+      mode: '0755'
+    register: deployment_dir
+
+  - name: copy content of directory 'deployments'
+    copy:
+      src: "{{ playbook_dir }}/deployments/"   # note the '/' <-- !!!
+      dest: /home/pi/deployments/
+      owner: pi
+      group: pi
+      mode: '0755'
+    when: deployment_dir.changed
+
+  - name: Update .bashrc to load the .venv env at log in
+    blockinfile:
+      dest: /home/pi/.bashrc
+      state: present
+      block: |
+        source ~/.venv/bin/activate
+      insertafter: EOF
+    when: venv_dir.changed
+
+  ## END pi home ##
+
+  ## START kestrel network (Phase 1) ##
+  # Scripts and the config tool. See docs/developer/architecture.md. Sources live
+  # in builder/extra/files/ (playbook_dir is builder/extra/); they are renamed
+  # to drop the .sh/.py suffix on install.
+  - name: create the kestrel lib and state directories
+    file:
+      path: "{{ item }}"
+      state: directory
+      mode: '0755'
+    loop:
+      - /usr/local/lib/kestrel
+      - /var/lib/kestrel
+      - /usr/local/share/kestrel/scripts
+
+  # Multi-file installs use one `install` command per group, not a copy loop:
+  # every Ansible module run starts Python under QEMU (~1.5 s), and copy costs
+  # two runs per file. Files land root-owned with the listed modes, as before.
+  - name: install kestrel library scripts
+    shell: |
+      set -e
+      {% for item in files %}
+      install -m {{ item.mode }} {{ (playbook_dir ~ '/files/' ~ item.src) | quote }} /usr/local/lib/kestrel/{{ item.dest }}
+      {% endfor %}
+    vars:
+      files:
+        - { src: common.sh, dest: common, mode: '0644' }       # sourced, not executed
+        - { src: bt-agent.py, dest: bt-agent, mode: '0755' }
+        - { src: bt-onboard.sh, dest: bt-onboard, mode: '0755' }
+        - { src: bt-pan.sh, dest: bt-pan, mode: '0755' }
+        - { src: wifi-provision.sh, dest: wifi-provision, mode: '0755' }
+
+  - name: install kestrel operator scripts
+    # Workstation-side helper scripts, shipped read-only so a unit carries a
+    # version-matched copy (builder/extra/files/scripts/README.md). They run on
+    # the operator's machine, not the device, and keep their suffix on install.
+    shell: |
+      set -e
+      {% for item in files %}
+      install -m {{ item.mode }} {{ (playbook_dir ~ '/files/scripts/' ~ item.src) | quote }} /usr/local/share/kestrel/scripts/{{ item.src }}
+      {% endfor %}
+    vars:
+      files:
+        - { src: pull-agent-diagnostics.sh, mode: '0755' }
+        - { src: README.md, mode: '0644' }
+
+  - name: install the kestrel config tool
+    copy:
+      src: "{{ playbook_dir }}/files/kestrel.sh"
+      dest: /usr/local/bin/kestrel
+      mode: '0755'
+
+  - name: link pwn-config to kestrel
+    file:
+      src: /usr/local/bin/kestrel
+      dest: /usr/local/bin/pwn-config
+      state: link
+
+  - name: install the kestrel defaults file
+    copy:
+      src: "{{ playbook_dir }}/files/default.conf"
+      dest: /etc/default/kestrel
+      mode: '0644'
+
+  # Every file in files/systemd/. Only top-level files are installed, so any
+  # subdirectory (other than a local __pycache__) fails the build.
+  - name: install the kestrel systemd units
+    shell: |
+      set -e
+      src={{ (playbook_dir ~ '/files/systemd') | quote }}
+      if find "$src" -mindepth 1 -type d ! -name __pycache__ | grep -q .; then
+        echo "$src has a subdirectory; install it explicitly" >&2; exit 1
+      fi
+      find "$src" -maxdepth 1 -type f -exec install -m 0644 -t /etc/systemd/system/ {} +
+
+  - name: enable the kestrel network services
+    systemd:
+      name: "{{ item }}"
+      enabled: yes
+    loop:
+      - kestrel-bt-onboard.service
+      - kestrel-bt-pan.service
+      - kestrel-wifi-provision.service
+  ## END kestrel network ##
+
+  ## START kestrel capture (Phase 2) ##
+  # Opt-in AngryOxide capture service, its launcher/collector, the TOML config
+  # and the housekeeping timer. See docs/user-guide/capture-setup.md and
+  # docs/developer/capture-interface.md. The capture service itself is NOT enabled here:
+  # it is off by default and only `kestrel capture enable` turns it on.
+  - name: create the kestrel config directory
+    file:
+      path: /etc/kestrel
+      state: directory
+      mode: '0755'
+
+  # Stamp the built image version on-device so a running unit knows which
+  # release it is (the repo-root _version.py is a build-host artifact and is
+  # NOT copied into the image). The `updates` plugin reads this to compare
+  # against the latest GitHub release; "master" (an unversioned local build)
+  # reads as a dev build and is never offered an update. See docs/developer/updates-setup.md.
+  - name: stamp the kestrel image version
+    copy:
+      dest: /etc/kestrel/version
+      content: "{{ my_image.version }}\n"
+      mode: '0644'
+
+  - name: create the kestrel capture store directories
+    file:
+      path: "{{ item }}"
+      state: directory
+      owner: pi
+      group: pi
+      mode: '0755'
+    loop:
+      - /var/lib/kestrel/capture
+      - /var/lib/kestrel/capture/.run
+      - /var/lib/kestrel/capture/archive
+
+  - name: install kestrel capture library scripts
+    shell: |
+      set -e
+      {% for item in files %}
+      install -m 0755 {{ (playbook_dir ~ '/files/' ~ item.src) | quote }} /usr/local/lib/kestrel/{{ item.dest }}
+      {% endfor %}
+    vars:
+      files:
+        - { src: config-get.py, dest: config-get }
+        - { src: config-set.py, dest: config-set }
+        - { src: capture-launch.sh, dest: capture-launch }
+        - { src: capture-collect.py, dest: capture-collect }
+        - { src: capture-whitelist-provision.sh, dest: capture-whitelist-provision }
+
+  # Owned root:pi, mode 0640: plugin options can hold operator secrets
+  # (wpa-sec/wigle tokens), so the file is not world-readable. The daemon runs
+  # as pi and reads it via the pi group; root (the config tool) writes it.
+  - name: install the kestrel capture config
+    copy:
+      src: "{{ playbook_dir }}/files/config.toml"
+      dest: /etc/kestrel/config.toml
+      owner: root
+      group: pi
+      mode: '0640'
+
+  # Enable only the housekeeping timer (inert while action = off). The capture
+  # service stays disabled until the user opts in.
+  - name: enable the kestrel capture housekeeping timer
+    systemd:
+      name: kestrel-capture-housekeeping.timer
+      enabled: yes
+
+  # Enable the whitelist pre-load service. Inert unless a staged whitelist file
+  # is present on the boot partition (ConditionPathExists); it seeds the
+  # whitelist and removes the file. This does not turn capture on.
+  - name: enable the kestrel capture whitelist pre-load service
+    systemd:
+      name: kestrel-capture-whitelist-provision.service
+      enabled: yes
+  ## END kestrel capture ##
+
+  ## START kestrel persistent journal ##
+  # Keep the systemd journal across reboots and bound its size, so an overnight
+  # failure (e.g. the capture service or AngryOxide exiting) is still
+  # inspectable the next day instead of being lost with the volatile /run
+  # journal on the next boot. See docs/developer/capture-interface.md.
+  - name: ensure the persistent journal directory exists
+    file:
+      path: /var/log/journal
+      state: directory
+      mode: '0755'
+
+  - name: ensure the journald drop-in directory exists
+    file:
+      path: /etc/systemd/journald.conf.d
+      state: directory
+      mode: '0755'
+
+  - name: install the kestrel journald config
+    copy:
+      src: "{{ playbook_dir }}/files/journald-kestrel.conf"
+      dest: /etc/systemd/journald.conf.d/kestrel.conf
+      mode: '0644'
+  ## END kestrel persistent journal ##
+
+  ## START kestrel plugins (Phase 3) ##
+  # The plugin host daemon (a kestrel_pi package in the pi venv), the six
+  # reference plugins (shipped read-only, all disabled in config.toml), and the
+  # operator plugin directory. See docs/developer/plugin-development.md. The daemon unit is
+  # installed by the "install the kestrel systemd units" task above (it
+  # copies all of files/systemd/); here it is enabled. It is benign with no
+  # plugins enabled, so it ships enabled.
+  - name: create the kestrel plugin directories
+    file:
+      path: "{{ item.path }}"
+      state: directory
+      owner: "{{ item.owner }}"
+      group: "{{ item.owner }}"
+      mode: '0755'
+    loop:
+      - { path: /usr/local/lib/kestrel/plugins, owner: root }
+      - { path: /etc/kestrel/plugins, owner: root }
+
+  # Pi-owned so the daemon (pi) can write the `updates` plugin's shared state
+  # file, which the web dashboard reads to decide whether to offer the upgrade
+  # button. The root `kestrel update` helper also reads/updates it.
+  - name: create the kestrel update state directory
+    file:
+      path: /var/lib/kestrel/update
+      state: directory
+      owner: pi
+      group: pi
+      mode: '0755'
+
+  - name: install the kestrel plugins-ctl helper
+    copy:
+      src: "{{ playbook_dir }}/files/plugins-ctl.py"
+      dest: /usr/local/lib/kestrel/plugins-ctl
+      mode: '0755'
+
+  # The root in-place update engine (run from a fresh clone by `update apply`;
+  # see docs/developer/updates-setup.md). Installed so it is byte-compiled and shipped,
+  # though an apply always runs the clone's own copy, not this one.
+  - name: install the kestrel update-apply helper
+    copy:
+      src: "{{ playbook_dir }}/files/update-apply.py"
+      dest: /usr/local/lib/kestrel/update-apply
+      mode: '0755'
+
+  # Every file in files/plugins/. Only top-level files are installed, so any
+  # subdirectory (other than a local __pycache__) fails the build.
+  - name: install the kestrel reference plugins
+    shell: |
+      set -e
+      src={{ (playbook_dir ~ '/files/plugins') | quote }}
+      if find "$src" -mindepth 1 -type d ! -name __pycache__ | grep -q .; then
+        echo "$src has a subdirectory; install it explicitly" >&2; exit 1
+      fi
+      find "$src" -maxdepth 1 -type f -exec install -m 0644 -t /usr/local/lib/kestrel/plugins/ {} +
+
+  # Install the kestrel_pi package into the pi venv from its in-image source.
+  # --no-build-isolation reuses the venv's setuptools/wheel (installed by the
+  # pip bootstrap) instead of fetching a fresh build env. The package declares
+  # no runtime deps here (flask/requests come from pip.local.install), so this
+  # step does not reach the network for dependencies.
+  # Stage pi-owned: pip builds a local-directory install in-tree, and the
+  # install below runs as pi, so setuptools must be able to create build/ and
+  # the .egg-info here. A root-owned source tree fails the build with
+  # "could not create 'build': Permission denied". The tree is removed right
+  # after the install, so nothing pi-owned lingers in the image. One cp, not a
+  # per-file copy; mode 0755 throughout matches what the copy task set, so the
+  # installed package files keep the same modes.
+  - name: stage the kestrel_pi package source
+    shell: >-
+      rm -rf /usr/local/src/kestrel_pi &&
+      cp -r {{ (playbook_dir ~ '/files/kestrel_pi') | quote }}/. /usr/local/src/kestrel_pi &&
+      chown -R pi:pi /usr/local/src/kestrel_pi &&
+      chmod -R 0755 /usr/local/src/kestrel_pi
+
+  # Collect the background pip install started after the venv bootstrap before
+  # anything else writes to the venv; a failed install fails the build here.
+  - name: wait for the pip packages in the pi virtualenv
+    become_user: pi
+    async_status:
+      jid: "{{ pip_local_job.ansible_job_id }}"
+    register: pip_local_result
+    until: pip_local_result.finished
+    retries: 360
+    delay: 10
+
+  - name: install the kestrel_pi package into the pi virtualenv
+    become_user: pi
+    pip:
+      name: /usr/local/src/kestrel_pi
+      executable: /home/pi/.venv/bin/pip
+      extra_args: --no-cache-dir --no-build-isolation
+    environment:
+      PIP_CONFIG_FILE: /dev/null
+
+  - name: remove the staged package source
+    file:
+      path: /usr/local/src/kestrel_pi
+      state: absent
+
+  - name: enable the kestrel plugin host daemon
+    systemd:
+      name: kestrel-daemon.service
+      enabled: yes
+
+  # The root side of the web page's plugin controls: the daemon (pi) connects
+  # to this socket, and each connection runs kestrel-plugins-apply@ as
+  # root to validate and write one plugin change, so config.toml stays
+  # root-owned. Inert until web auth is turned on.
+  - name: enable the kestrel plugin settings socket
+    systemd:
+      name: kestrel-plugins-apply.socket
+      enabled: yes
+
+  # The root side of the web page's login check (auth = system): the daemon
+  # (pi) can't read /etc/shadow, so it asks kestrel-web-auth@ (root) to
+  # verify a submitted device-account login. Inert unless auth = system.
+  - name: enable the kestrel web login verification socket
+    systemd:
+      name: kestrel-web-auth.socket
+      enabled: yes
+  ## END kestrel plugins ##
+
+  ## START kestrel agent (Phase 4) ##
+  # The reinforcement-learning capture agent. It runs in its own process (keeps
+  # torch/SB3 out of the daemon) as the pi user, reads the capture interface and
+  # writes a per-window scan override the capture launcher consumes; it never
+  # starts AngryOxide or edits config.toml itself. The agent subpackage installs
+  # with the kestrel_pi package above; its units are installed by the systemd
+  # units task. See docs/developer/agent-interface.md and docs/user-guide/agent-setup.md.
+  #
+  # The agent service ships DISABLED (the agent is opt-in and off in config.toml;
+  # `kestrel agent enable` turns it on). Only the boot-partition model
+  # provisioner is enabled here, and it is inert unless a staged model file is
+  # present on the boot partition.
+  - name: create the kestrel agent directories
+    file:
+      path: "{{ item }}"
+      state: directory
+      owner: pi
+      group: pi
+      mode: '0755'
+    loop:
+      - /var/lib/kestrel/agent
+      - /var/lib/kestrel/agent/episodes
+
+  - name: install the kestrel agent boot-partition model provisioner
+    copy:
+      src: "{{ playbook_dir }}/files/agent-provision.sh"
+      dest: /usr/local/lib/kestrel/agent-provision
+      mode: '0755'
+
+  # Inert unless a model is staged on the boot partition
+  # (ConditionPathExists); it imports the model into the agent dir, points
+  # [agent] at it and removes the boot files. It does not turn the agent on.
+  - name: enable the kestrel agent model provisioner
+    systemd:
+      name: kestrel-agent-provision.service
+      enabled: yes
+  ## END kestrel agent ##
+
+  - name: Delete unnecessary large folder to save space (/root/.cache)
+    file:
+      state: absent
+      path: /root/.cache
+
+  # - name: enable ssh on boot
+  #   file:
+  #     path: "{{ system.boot_dir }}/ssh"
+  #     state: touch
+
+  # Open with [all] so the options apply to every board even if the stock
+  # file ends inside a board-specific section such as [cm5].
+  - name: adjust {{ system.boot_dir }}/config.txt
+    blockinfile:
+      path: "{{ system.boot_dir }}/config.txt"
+      marker: "# {mark} kestrel boot options"
+      insertafter: EOF
+      block: |
+        [all]
+        {% for option in system.boot_options %}
+        {{ option }}
+        {% endfor %}
+
+  - name: adjust /etc/modules
+    lineinfile:
+      dest: /etc/modules
+      insertafter: EOF
+      line: '{{ item }}'
+    with_items: "{{system.modules}}"
+
+  # - name: change root partition
+  #   replace:
+  #     dest: "{{ system.boot_dir }}/cmdline.txt"
+  #     backup: no
+  #     regexp: "root=PARTUUID=[a-zA-Z0-9\\-]+"
+  #     replace: "root=/dev/mmcblk0p2"
+
+  # - name: configure {{ system.boot_dir }}/cmdline.txt
+  #   lineinfile:
+  #     path: "{{ system.boot_dir }}/cmdline.txt"
+  #     backrefs: True
+  #     state: present
+  #     backup: no
+  #     regexp: '(.*)$'
+  #     line: '\1 modules-load=dwc2,g_ether'
+
+  - name: create wifi nmconnection files
+    copy:
+      dest: "/etc/NetworkManager/system-connections/{{ item.key }}.nmconnection"
+      content: |
+        [connection]
+        id={{ item.key }}
+        uuid={{ item.key | to_uuid }}
+        type=wifi
+        interface-name=wlan0
+        autoconnect-priority={{ (priority + 1)|int|abs }}
+
+        [wifi]
+        mode=infrastructure
+        ssid={{ item.key }}
+
+        [wifi-security]
+        auth-alg=open
+        key-mgmt=wpa-psk
+        psk={{ item.value }}
+
+        [ipv4]
+        method=auto
+
+        [ipv6]
+        addr-gen-mode=default
+        method=auto
+
+        [proxy]
+    loop: "{{ lookup('dict', system.network) }}"
+    loop_control:
+      index_var: priority 
+
+  - name: set executable bit on wifi nmconnection files
+    file: 
+      path: "/etc/NetworkManager/system-connections/{{ item.key }}.nmconnection"
+      mode: '0600'
+    loop: "{{ lookup('dict', system.network) }}"
+    loop_control:
+      index_var: priority
+
+  - name: configure motd
+    copy:
+      dest: /etc/motd
+      content: |
+
+        ヾ(⌐■_■)ノ♪ 
+
+        Hi! I'm a 64-bit RPi image descendant from {{ ansible_distribution_release }}. My default hostname is {{ my_image.hostname }}.
+
+        I've been preconfigured with python (venv), git, lnav, 7z,
+        rsync, gnu screen and more.
+
+        First time here? Run 'kestrel setup' to connect me over
+        Bluetooth PAN or Wi-Fi.
+
+    when: hostname.changed
+
+  # Ansible v2.13 added the "clean" option
+  - name: clean apt cache
+    apt:
+      clean: yes
+    become: yes
+
+  - name: remove dependencies that are no longer required
+    apt:
+      autoremove: yes
+
+  # The early check only proves cmdline.txt names a first-boot hook. Prove the
+  # script it names survived every apt change above (0.0.2 shipped without it).
+  - name: find the first-boot init= script
+    set_fact:
+      firstboot_init_path: "{{ (boot_cmdline.content | b64decode).split() | select('match', 'init=') | first | replace('init=', '', 1) }}"
+
+  - name: check the first-boot init= script
+    stat:
+      path: "{{ firstboot_init_path }}"
+    register: firstboot_init
+
+  - name: assert the first-boot init= script is installed
+    assert:
+      that: firstboot_init.stat.exists and firstboot_init.stat.executable
+      fail_msg: >-
+        {{ firstboot_init_path }} is missing, so first boot would not resize
+        the root filesystem. Check what removed it in the install packages
+        output.
+
+  # Enable only: nothing runs in the build chroot, so there is nothing to start.
+  - name: enable services
+    systemd:
+      name: "{{ item }}"
+      enabled: yes
+    with_items: "{{ services.enable }}"
+
+  # Keep this last so no later task recreates them inside the image.
+  - name: find SSH host keys
+    find:
+      paths: /etc/ssh
+      patterns: "ssh_host_*"
+    register: ssh_host_keys
+
+  - name: remove SSH host keys so each device generates its own on first boot
+    file:
+      path: "{{ item.path }}"
+      state: absent
+    loop: "{{ ssh_host_keys.files }}"
+
+  handlers:
+  - name: reload systemd services
+    systemd:
+      daemon_reload: yes

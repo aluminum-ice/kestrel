@@ -1,0 +1,112 @@
+# Working with your captures
+
+Once capture is running, the device writes what it catches to an on-device
+store. This guide is about those files: what they are, where they live, how to
+get them off the device, and how to turn them into recovered passwords.
+
+See [Setting up capture](capture-setup.md) for turning capture on in the first
+place.
+
+## What you capture
+
+The device captures **WPA handshakes and PMKIDs** and writes them as **hashcat
+22000** lines — the modern `hc22000` format, one hashline per line, ready for
+`hashcat -m 22000` or for upload to a cracking service. The device never stores
+or recovers the password itself; it stores the material a cracker needs.
+
+## Where it all lives
+
+Everything is under the capture store, **`/var/lib/kestrel/capture/`**:
+
+| Path | What it is |
+| --- | --- |
+| `*.hc22000` | Your handshakes. In the default **per-SSID** layout, one file per network (`<name>.hc22000`); in **single** layout, one combined file (`all.hc22000`). |
+| `bssid-<MAC>.hc22000` | Handshakes whose network name isn't known yet (PMKID-only or hidden). |
+| `unknown.hc22000` | Handshakes that couldn't be attributed to a network. |
+| `*.gps.json` | A GPS location sidecar for a capture, when the `gps` plugin is providing fixes. |
+| `cracked/wpa-sec.potfile` | Passwords recovered for your key, downloaded by the `wpa-sec` plugin. |
+| `geo/wigle-cache.json` | WiGLE geolocation lookups (display-only; never uploaded). |
+| `archive/` | Snapshots made by housekeeping (archive/rotate). |
+| `.run/` | Transient raw packet capture — **not** your handshakes, and cleared automatically. Ignore it. |
+
+The store files are **append-only**: a reboot or a capture restart adds new
+unique lines, never truncates. Nothing is deleted except by the housekeeping you
+configure (below).
+
+Whether you get one file per network or one combined file is the
+`[capture.output] mode` setting (`per-ssid` or `single`) — see [the config
+reference](config-reference.md).
+
+## Seeing what you've got
+
+- **The dashboard, no terminal needed.** The **Captured networks** page lists the
+  unique access points you've captured, with BSSID and handshake counts,
+  searchable and paginated. The `session-stats` plugin card shows live counts for
+  the current session.
+- **From the terminal:** `kestrel capture status` reports the store size
+  and how many capture files it holds.
+
+## Getting the captures off the device
+
+Three ways, depending on whether you want it automatic or one-off:
+
+1. **The backup plugin (recommended, automatic).** The `backup` plugin mirrors
+   the whole capture store — and the trained learning-agent model — to a remote
+   host over SSH, incrementally and on a schedule. This is the durable option: a
+   lost or reflashed card doesn't take your captures with it, and you can restore
+   onto a fresh image. See [Remote backup](backup-setup.md).
+
+2. **Copy them yourself with `scp`/`rsync` (one-off).** The store is readable by
+   the device account, so from another machine:
+
+   ```bash
+   # pull the whole store (adjust the device's address):
+   rsync -az pi@kestrel.local:/var/lib/kestrel/capture/ ./captures/
+   # or a single network's file:
+   scp pi@kestrel.local:/var/lib/kestrel/capture/MyNetwork.hc22000 .
+   ```
+
+3. **Upload for cracking (handshakes only).** The `wpa-sec` plugin uploads
+   handshakes to a cracking service as they come in and downloads any recovered
+   passwords. See [wpa-sec](wpa-sec-setup.md).
+
+## Cracking them
+
+An `hc22000` file is ready for either path:
+
+- **Hand it to wpa-sec.** Enable the `wpa-sec` plugin and it uploads for you and
+  pulls back the cracked passwords into `cracked/wpa-sec.potfile`. See
+  [wpa-sec](wpa-sec-setup.md).
+- **Crack it yourself with hashcat** on your own machine — the format is
+  hashcat's WPA mode:
+
+  ```bash
+  hashcat -m 22000 MyNetwork.hc22000 wordlist.txt
+  ```
+
+  If a tool needs the older `.cap`/`.pcap` form, the image ships `hcxtools`
+  (`hcxhash2cap`) to convert a hashline file back to a capture file.
+
+Only crack and upload handshakes you are authorized to capture.
+
+## Location tagging and wardriving
+
+When the `gps` plugin is providing fixes, each capture gets a `*.gps.json`
+sidecar recording where it was taken, and the `wigle` plugin can submit observed
+networks with their coordinates to WiGLE. See [GPS](gps-setup.md) and
+[WiGLE](wigle-setup.md).
+
+## Keeping the store from filling the card
+
+The store only grows unless you let housekeeping manage it — and housekeeping
+**never silently deletes** your handshakes. You can configure a daily
+archive/rotate policy, or run it on demand:
+
+```bash
+sudo kestrel capture archive     # snapshot the store into archive/ and start fresh
+sudo kestrel capture rotate      # apply the configured housekeeping policy now
+```
+
+The policy and its size/age limits are covered under housekeeping in [Setting up
+capture](capture-setup.md). `capture clear --yes` wipes the live store (add
+`--purge` to drop archives too) — only when you really mean it.

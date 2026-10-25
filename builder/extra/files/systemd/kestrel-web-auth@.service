@@ -1,0 +1,16 @@
+[Unit]
+Description=kestrel web login verification (one web page login)
+
+[Service]
+# One {username,password} JSON in on the socket, one {"ok": bool} out. Runs as
+# root because it must read /etc/shadow to verify the device account; it writes
+# nothing and never logs the password. System Python in isolated mode.
+ExecStart=/usr/bin/python3 -I /usr/local/lib/kestrel/plugins-ctl checkauth
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=15
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=true

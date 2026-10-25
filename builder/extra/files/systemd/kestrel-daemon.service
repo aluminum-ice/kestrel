@@ -1,0 +1,43 @@
+[Unit]
+Description=kestrel plugin host daemon (Phase 3)
+# Starts after connectivity so on_internet_available and the web bind see the
+# management interfaces; it does not require them (it runs fine offline).
+After=NetworkManager.service kestrel-bt-pan.service
+Wants=NetworkManager.service
+
+[Service]
+# Runs as pi: plugins live in the pi venv and write into the pi-owned capture
+# store. The daemon is benign with no plugins enabled (just the event loop and
+# a read-only status page), so it ships enabled.
+User=pi
+Group=pi
+# The daemon runs plugin code, so it can't gain privileges: no sudo or setuid
+# from anything it starts, even though pi is in the sudo group. config.toml is
+# root-owned; plugin changes from the web page go through the root apply
+# socket (kestrel-plugins-apply.socket), which validates them.
+NoNewPrivileges=yes
+# tmpfs runtime dir (/run/kestrel), pi-owned and cleaned up on stop. The
+# gps plugin writes the latest-fix seam (position.json) here for the agent to
+# read across the process boundary (Phase 4.8).
+RuntimeDirectory=kestrel
+# Run from the tmpfs runtime dir so the process has a pi-writable working
+# directory. Without it systemd leaves the CWD at "/", which pi can't write to,
+# and the eink plugin's GPIO backend (gpiozero -> lgpio, the only pin factory
+# that works on a Pi 5) then can't create its ".lgd-nfy" notification file and
+# the panel never initialises ("Unable to load any default pin factory!"). The
+# gpio chardev lives in /dev and config.toml is an absolute path, so the CWD is
+# otherwise unused. LG_WD points lgpio at the same dir regardless of CWD.
+WorkingDirectory=%t/kestrel
+Environment=LG_WD=%t/kestrel
+ExecStart=/home/pi/.venv/bin/kestrel-daemon --config /etc/kestrel/config.toml
+Restart=on-failure
+RestartSec=10
+
+# Favour the daemon for CPU when the optional agent training run is competing:
+# its CPUWeight (150) well above the agent's (20) keeps the web UI and the
+# plugin event loop responsive under contention. Default is 100; set it
+# explicitly so the ratio doesn't depend on that default.
+CPUWeight=150
+
+[Install]
+WantedBy=multi-user.target

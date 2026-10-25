@@ -1,0 +1,6 @@
+# Tools used by `make lint` (CI and Claude Code cloud sessions).
+# The full `ansible` package is needed for the community.general and
+# community.crypto modules referenced by builder/config.yml.
+ansible==14.5.0
+yamllint==1.38.0
+shellcheck-py==0.11.0.1

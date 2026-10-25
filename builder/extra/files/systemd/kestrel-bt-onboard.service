@@ -1,0 +1,33 @@
+[Unit]
+Description=kestrel Bluetooth onboarding window
+# hciuart attaches the Pi's UART controller; dbus/bluetoothd must be up for the
+# pairing agent. Ordering only (harmless if hciuart is absent), so the window
+# does not open before the stack can be made discoverable at boot.
+After=bluetooth.service NetworkManager.service hciuart.service dbus.service
+Wants=bluetooth.service
+# Run every boot until a phone is recorded; 'kestrel network bt-pair'
+# removes the file to reopen the window.
+ConditionPathExists=!/var/lib/kestrel/bt-phone
+# A slow boot can leave the UART BT controller not yet attached when the script
+# first looks. The script waits and retries internally, but if the controller
+# never comes up within that wait it exits non-zero; retry the whole run a few
+# times so a transient early failure reopens the window, instead of leaving the
+# device invisible until the next reboot. Capped so a genuinely absent
+# controller does not restart forever.
+StartLimitIntervalSec=900
+StartLimitBurst=5
+
+[Service]
+# Not Type=oneshot: oneshot ignores Restart=, and nothing orders After= this
+# unit (bt-pan is started from inside the script with 'systemctl --no-block'),
+# so simple is safe and lets Restart= reopen the window after a failed attempt.
+Type=simple
+ExecStart=/usr/local/lib/kestrel/bt-onboard
+# Only a failed run restarts (controller not up yet, or the pairing agent kept
+# dying). A clean window close — phone paired or timed out — exits 0 and does
+# not restart, so the window is never reopened in a loop.
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

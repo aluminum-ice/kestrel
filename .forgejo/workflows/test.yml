@@ -1,0 +1,35 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    # Any Docker-capable Forgejo runner. The job image matches the image's
+    # runtime Python (ansible-core 2.14-era bookworm).
+    runs-on: docker
+    container:
+      image: python:3.11-bookworm
+
+    steps:
+    # Plain git instead of actions/checkout (see lint.yml).
+    - name: Checkout repository
+      run: |
+        git init -q .
+        git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+        git -c http.extraheader="Authorization: token $TOKEN" \
+          fetch -q --depth 1 origin "$GITHUB_SHA"
+        git checkout -q FETCH_HEAD
+      env:
+        TOKEN: ${{ github.token }}
+
+    - name: Install test dependencies
+      # The kestrel_pi suite needs flask/requests (web + plugins), numpy (the
+      # agent spec imports it at module load) and pillow (the e-ink renderer).
+      # torch/SB3 are lazy-imported and stubbed in the tests, so the heavy agent
+      # stack is deliberately not installed here.
+      run: python -m pip install pytest flask requests numpy pillow
+
+    - name: Test
+      run: make test

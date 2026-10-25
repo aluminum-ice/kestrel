@@ -1,0 +1,17 @@
+[Unit]
+Description=kestrel plugin settings change (one web page request)
+
+[Service]
+# One JSON change in on the socket, one JSON reply out; then the daemon is
+# restarted a moment later to load the new settings. The system Python in
+# isolated mode, never the pi-owned venv, and plugin files are parsed (ast),
+# never imported, so nothing the pi user can write runs as root here.
+ExecStart=/usr/bin/python3 -I /usr/local/lib/kestrel/plugins-ctl apply
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=true

@@ -1,0 +1,21 @@
+[Unit]
+Description=kestrel web login verification socket
+# When [web] auth = "system", the web page authenticates against the device
+# login account. The daemon runs as pi and can't read /etc/shadow, so it sends
+# the submitted {username,password} here; each connection starts
+# kestrel-web-auth@.service as root, which verifies it against the
+# account and replies {"ok": bool}. Only the pi group can connect.
+
+[Socket]
+ListenStream=/run/kestrel-web-auth.sock
+SocketUser=root
+SocketGroup=pi
+SocketMode=0660
+Accept=yes
+# Headroom for a burst of logins (e.g. several tabs/devices refreshing at once
+# right after a daemon restart); the daemon also single-flights identical
+# verifications, so this ceiling is rarely approached.
+MaxConnections=16
+
+[Install]
+WantedBy=sockets.target

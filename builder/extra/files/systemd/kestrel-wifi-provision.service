@@ -1,0 +1,13 @@
+[Unit]
+Description=kestrel first-boot Wi-Fi station provisioning
+After=NetworkManager.service
+Wants=NetworkManager.service
+# Runs only when staged credentials are present; the script deletes the file.
+ConditionPathExists=/boot/firmware/kestrel-wifi.txt
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/kestrel/wifi-provision
+
+[Install]
+WantedBy=multi-user.target

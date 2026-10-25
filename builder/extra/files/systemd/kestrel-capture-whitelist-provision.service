@@ -1,0 +1,14 @@
+[Unit]
+Description=kestrel capture whitelist pre-load from the boot partition
+# Seed the whitelist into config.toml before capture starts, so an enabled
+# service picks it up on the same boot.
+Before=kestrel-capture.service
+# Runs only when a staged whitelist file is present; the script removes it.
+ConditionPathExists=/boot/firmware/kestrel-whitelist.txt
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/kestrel/capture-whitelist-provision
+
+[Install]
+WantedBy=multi-user.target

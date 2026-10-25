@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kestrel Logo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: a vertical brand sheet — hero, idea, variant grids, palette. Rufous + slate on warm bone / deep ink. */
+  :root{
+    --bone:#F3F0EA; --panel:#FFFFFF; --ink:#1B2128; --ink-soft:#55606e; --line:#E2DCD1;
+    --rufous:#E2623C; --rufous-deep:#C24A24; --slate:#5F7488; --slate-deep:#48596b;
+    --bg:var(--bone); --fg:var(--ink); --fg-soft:var(--ink-soft); --surface:var(--panel); --border:var(--line);
+    --accent:var(--rufous); --accent-ink:var(--rufous-deep);
+    --swatch-ring:rgba(27,33,40,.14);
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --bg:#13161b; --fg:#ECE7DF; --fg-soft:#9aa3b0; --surface:#1b2027; --border:#2b323c;
+    --accent:#E2623C; --accent-ink:#F0865F; --swatch-ring:rgba(255,255,255,.16); color-scheme:dark;
+  }}
+  :root[data-theme="dark"]{
+    --bg:#13161b; --fg:#ECE7DF; --fg-soft:#9aa3b0; --surface:#1b2027; --border:#2b323c;
+    --accent:#E2623C; --accent-ink:#F0865F; --swatch-ring:rgba(255,255,255,.16); color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--fg);
+    font-family:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:860px;margin:0 auto;
+    padding-left:max(20px,env(safe-area-inset-left,0px));
+    padding-right:max(20px,env(safe-area-inset-right,0px));
+    padding-block:0}
+  .eyebrow{font-family:"Saira Condensed",sans-serif;text-transform:uppercase;letter-spacing:.26em;
+    font-weight:600;font-size:.74rem;color:var(--accent-ink)}
+  h2{font-family:"Saira Condensed",sans-serif;font-weight:700;letter-spacing:.02em;
+    font-size:1.5rem;margin:0 0 .2em;text-wrap:balance}
+  p{margin:.5em 0;color:var(--fg-soft);max-width:64ch}
+  p strong{color:var(--fg);font-weight:600}
+
+  /* hero */
+  .hero{text-align:center;padding-block:56px 40px}
+  .hero svg{width:168px;height:168px;display:block;margin:0 auto}
+  .wordmark{font-family:"Saira Condensed",sans-serif;font-weight:700;letter-spacing:.22em;
+    font-size:clamp(2.6rem,11vw,4.6rem);line-height:.9;margin:.34em 0 0;color:var(--fg)}
+  .tagline{font-family:"Saira Condensed",sans-serif;text-transform:uppercase;letter-spacing:.34em;
+    font-weight:500;font-size:.82rem;color:var(--fg-soft);margin-top:.9em}
+
+  section{padding-block:30px;border-top:1px solid var(--border)}
+
+  /* variant tiles */
+  .grid{display:grid;gap:14px;margin-top:18px}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  @media(max-width:560px){.g4{grid-template-columns:repeat(2,1fr)}.g3{grid-template-columns:1fr 1fr}}
+  .tile{border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--surface)}
+  .tile .art{aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;padding:22%}
+  .tile .art svg{width:100%;height:100%}
+  .tile .cap{font-size:.72rem;color:var(--fg-soft);text-align:center;padding:8px 6px 11px;
+    border-top:1px solid var(--border);font-weight:500}
+  .bg-rufous{background:var(--rufous)} .bg-slate{background:var(--slate)}
+  .bg-ink{background:#12161b} .bg-white{background:#ffffff} .bg-bone{background:#F3F0EA}
+
+  /* lockup block */
+  .lockup{display:flex;align-items:center;gap:20px;flex-wrap:wrap;
+    background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:26px;margin-top:18px}
+  .lockup svg{width:72px;height:72px;flex:0 0 auto}
+  .lockup .lk-word{font-family:"Saira Condensed",sans-serif;font-weight:700;letter-spacing:.2em;
+    font-size:2.4rem;color:var(--fg);line-height:1;min-width:0}
+
+  /* favicon strip */
+  .favs{display:flex;align-items:flex-end;gap:22px;flex-wrap:wrap;margin-top:18px}
+  .favbox{text-align:center}
+  .favbox .cap{font-size:.7rem;color:var(--fg-soft);margin-top:7px}
+  .fav{border-radius:7px;overflow:hidden;display:block}
+
+  /* palette */
+  .swatches{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-top:18px}
+  @media(max-width:560px){.swatches{grid-template-columns:repeat(2,1fr)}}
+  .sw{border-radius:12px;border:1px solid var(--border);overflow:hidden;background:var(--surface)}
+  .sw .chip{height:64px;box-shadow:inset 0 0 0 1px var(--swatch-ring)}
+  .sw .meta{padding:9px 11px}
+  .sw .nm{font-size:.78rem;font-weight:600}
+  .sw .hex{font-family:"Saira Condensed",sans-serif;letter-spacing:.08em;font-size:.82rem;color:var(--fg-soft)}
+
+  footer{border-top:1px solid var(--border);padding-block:26px 48px;color:var(--fg-soft);font-size:.86rem}
+  .note{display:flex;gap:10px;align-items:flex-start}
+  .note .dot{color:var(--accent);font-size:1.1rem;line-height:1.3}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <svg viewBox="0 0 64 64" aria-label="Kestrel mark">
+      <path fill="var(--accent)" d="M32 7 C29.6 10 29 15 31 18 C23 12 12 11 5 18 C11 25 22 28 30 25 L29 31 L30 37 L27 52 L32 47 L37 52 L34 37 L35 31 L34 25 C42 28 53 25 59 18 C52 11 41 12 33 18 C35 15 34.4 10 32 7 Z"/>
+    </svg>
+    <div class="wordmark">KESTREL</div>
+    <div class="tagline">The windhover</div>
+  </div>
+
+  <section>
+    <div class="eyebrow">The idea</div>
+    <h2>A falcon that holds still to watch</h2>
+    <p>The kestrel is the one bird of prey that hangs <strong>motionless</strong> in the air —
+      wings working, body locked to a point, eyes fixed on the ground below. It stays put and
+      scans. That is the device: it sits in one place and reads the band around it, patient and
+      exact. The mark is that posture seen head-on, wings spread, tail fanned for the hold.</p>
+    <p>Drawn as a single solid silhouette so it survives everywhere it has to live — a browser
+      tab, a boot splash, and the <strong>1-bit e-ink screen</strong>, where it reads cleanly in
+      plain black or reversed white.</p>
+  </section>
+
+  <section>
+    <div class="eyebrow">Primary mark</div>
+    <h2>One shape, every surface</h2>
+    <div class="grid g4">
+      <div class="tile"><div class="art bg-bone"><svg viewBox="0 0 64 64"><path fill="#E2623C" d="M32 7 C29.6 10 29 15 31 18 C23 12 12 11 5 18 C11 25 22 28 30 25 L29 31 L30 37 L27 52 L32 47 L37 52 L34 37 L35 31 L34 25 C42 28 53 25 59 18 C52 11 41 12 33 18 C35 15 34.4 10 32 7 Z"/></svg></div><div class="cap">Rufous on bone</div></div>
+      <div class="tile"><div class="art bg-ink"><svg viewBox="0 0 64 64"><path fill="#E2623C" d="M32 7 C29.6 10 29 15 31 18 C23 12 12 11 5 18 C11 25 22 28 30 25 L29 31 L30 37 L27 52 L32 47 L37 52 L34 37 L35 31 L34 25 C42 28 53 25 59 18 C52 11 41 12 33 18 C35 15 34.4 10 32 7 Z"/></svg></div><div class="cap">On ink</div></div>
+      <div class="tile"><div class="art bg-white"><svg viewBox="0 0 64 64"><path fill="#12161b" d="M32 7 C29.6 10 29 15 31 18 C23 12 12 11 5 18 C11 25 22 28 30 25 L29 31 L30 37 L27 52 L32 47 L37 52 L34 37 L35 31 L34 25 C42 28 53 25 59 18 C52 11 41 12 33 18 C35 15 34.4 10 32 7 Z"/></svg></div><div class="cap">Mono · e-ink</div></div>
+      <div class="tile"><div class="art bg-ink"><svg viewBox="0 0 64 64"><path fill="#ffffff" d="M32 7 C29.6 10 29 15 31 18 C23 12 12 11 5 18 C11 25 22 28 30 25 L29 31 L30 37 L27 52 L32 47 L37 52 L34 37 L35 31 L34 25 C42 28 53 25 59 18 C52 11 41 12 33 18 C35 15 34.4 10 32 7 Z"/></svg></div><div class="cap">Reversed</div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Lockup</div>
+    <h2>Mark + wordmark</h2>
+    <div class="lockup">
+      <svg viewBox="0 0 64 64" aria-label="Kestrel"><path fill="var(--accent)" d="M32 7 C29.6 10 29 15 31 18 C23 12 12 11 5 18 C11 25 22 28 30 25 L29 31 L30 37 L27 52 L32 47 L37 52 L34 37 L35 31 L34 25 C42 28 53 25 59 18 C52 11 41 12 33 18 C35 15 34.4 10 32 7 Z"/></svg>
+      <div class="lk-word">KESTREL</div>
+    </div>
+    <p>Wordmark set in Saira&nbsp;Condensed — a lean, upright grotesque that echoes the bird's
+      alert, vertical hold.</p>
+  </section>
+
+  <section>
+    <div class="eyebrow">Alternate &amp; two-tone</div>
+    <h2>The dive, and full plumage</h2>
+    <div class="grid g3">
+      <div class="tile"><div class="art bg-bone"><svg viewBox="0 0 64 64"><path fill="#E2623C" d="M10 8 C20 12 30 19 39 29 C45 23 53 21 59 24 C54 29 47 32 41 32 C47 39 51 47 52 56 C44 51 37 44 33 36 C28 43 21 48 13 50 C17 43 23 37 28 33 C20 27 14 18 10 8 Z"/></svg></div><div class="cap">Stoop — in motion</div></div>
+      <div class="tile"><div class="art bg-ink"><svg viewBox="0 0 64 64"><path fill="#ffffff" d="M10 8 C20 12 30 19 39 29 C45 23 53 21 59 24 C54 29 47 32 41 32 C47 39 51 47 52 56 C44 51 37 44 33 36 C28 43 21 48 13 50 C17 43 23 37 28 33 C20 27 14 18 10 8 Z"/></svg></div><div class="cap">Stoop reversed</div></div>
+      <div class="tile"><div class="art bg-bone"><svg viewBox="0 0 64 64"><path fill="#5F7488" d="M31 18 C23 12 12 11 5 18 C11 25 22 28 30 25 L30 20 Z"/><path fill="#5F7488" d="M33 18 C41 12 52 11 59 18 C53 25 42 28 34 25 L34 20 Z"/><path fill="#E2623C" d="M32 7 C29.6 10 29 15 31 19 L30 25 L29 31 L30 37 L27 52 L32 47 L37 52 L34 37 L35 31 L34 25 L33 19 C35 15 34.4 10 32 7 Z"/></svg></div><div class="cap">Two-tone</div></div>
+    </div>
+    <p>The <strong>stoop</strong> is the kestrel's dive — a sharper, moving counterpart to the
+      steady hover, for places that want energy. The <strong>two-tone</strong> carries the real
+      bird: slate-blue wings over a rufous body.</p>
+  </section>
+
+  <section>
+    <div class="eyebrow">Small sizes</div>
+    <h2>Down to a favicon</h2>
+    <div class="favs">
+      <div class="favbox"><span class="fav" style="width:64px;height:64px"><svg viewBox="0 0 64 64" style="display:block"><rect width="64" height="64" rx="14" fill="#E2623C"/><path fill="#FFFFFF" d="M32 11 C29.6 14 29 19 31 22 C23 16 12 15 5 22 C11 29 22 32 30 29 L29 35 L30 41 L27 55 L32 50 L37 55 L34 41 L35 35 L34 29 C42 32 53 29 59 22 C52 15 41 16 33 22 C35 19 34.4 14 32 11 Z"/></svg></span><div class="cap">64</div></div>
+      <div class="favbox"><span class="fav" style="width:40px;height:40px"><svg viewBox="0 0 64 64" style="display:block"><rect width="64" height="64" rx="14" fill="#E2623C"/><path fill="#FFFFFF" d="M32 11 C29.6 14 29 19 31 22 C23 16 12 15 5 22 C11 29 22 32 30 29 L29 35 L30 41 L27 55 L32 50 L37 55 L34 41 L35 35 L34 29 C42 32 53 29 59 22 C52 15 41 16 33 22 C35 19 34.4 14 32 11 Z"/></svg></span><div class="cap">40</div></div>
+      <div class="favbox"><span class="fav" style="width:24px;height:24px"><svg viewBox="0 0 64 64" style="display:block"><rect width="64" height="64" rx="14" fill="#E2623C"/><path fill="#FFFFFF" d="M32 11 C29.6 14 29 19 31 22 C23 16 12 15 5 22 C11 29 22 32 30 29 L29 35 L30 41 L27 55 L32 50 L37 55 L34 41 L35 35 L34 29 C42 32 53 29 59 22 C52 15 41 16 33 22 C35 19 34.4 14 32 11 Z"/></svg></span><div class="cap">24</div></div>
+      <div class="favbox"><span class="fav" style="width:16px;height:16px"><svg viewBox="0 0 64 64" style="display:block"><rect width="64" height="64" rx="14" fill="#E2623C"/><path fill="#FFFFFF" d="M32 11 C29.6 14 29 19 31 22 C23 16 12 15 5 22 C11 29 22 32 30 29 L29 35 L30 41 L27 55 L32 50 L37 55 L34 41 L35 35 L34 29 C42 32 53 29 59 22 C52 15 41 16 33 22 C35 19 34.4 14 32 11 Z"/></svg></span><div class="cap">16</div></div>
+    </div>
+    <p>At tiny sizes the bird reverses out of a filled tile so it stays bold against any tab colour.</p>
+  </section>
+
+  <section>
+    <div class="eyebrow">Palette</div>
+    <h2>Rufous and slate</h2>
+    <div class="swatches">
+      <div class="sw"><div class="chip" style="background:#E2623C"></div><div class="meta"><div class="nm">Rufous</div><div class="hex">#E2623C</div></div></div>
+      <div class="sw"><div class="chip" style="background:#C24A24"></div><div class="meta"><div class="nm">Rufous deep</div><div class="hex">#C24A24</div></div></div>
+      <div class="sw"><div class="chip" style="background:#5F7488"></div><div class="meta"><div class="nm">Slate</div><div class="hex">#5F7488</div></div></div>
+      <div class="sw"><div class="chip" style="background:#1B2128"></div><div class="meta"><div class="nm">Ink</div><div class="hex">#1B2128</div></div></div>
+      <div class="sw"><div class="chip" style="background:#F3F0EA"></div><div class="meta"><div class="nm">Bone</div><div class="hex">#F3F0EA</div></div></div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="note"><span class="dot">●</span><span>Design asset only — nothing here is wired into the build.
+      The Kestrel name is parked until near v1.0, so the image and dashboard keep their current
+      identity. The raw <strong>SVG files</strong> (mark, stoop, two-tone, favicon, lockup) ship
+      alongside this sheet, ready whenever the switch happens.</span></div>
+  </footer>
+
+</div>
+</body>
+</html>

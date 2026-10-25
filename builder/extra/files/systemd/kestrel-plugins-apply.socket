@@ -1,0 +1,19 @@
+[Unit]
+Description=kestrel plugin settings socket (web page plugin controls)
+# The plugin host daemon runs as pi and can't write the root-owned config.toml.
+# When someone changes a plugin on the web page, the daemon sends the change
+# here; each connection starts kestrel-plugins-apply@.service as root,
+# which validates it against the plugin's declared options and writes only
+# that plugin's [plugins.<name>] table. Only the pi group can connect. It does
+# nothing unless web auth is turned on (kestrel web auth basic|token).
+
+[Socket]
+ListenStream=/run/kestrel-plugins-apply.sock
+SocketUser=root
+SocketGroup=pi
+SocketMode=0660
+Accept=yes
+MaxConnections=4
+
+[Install]
+WantedBy=sockets.target

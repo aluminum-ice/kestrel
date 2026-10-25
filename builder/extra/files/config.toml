@@ -1,0 +1,358 @@
+# kestrel capture configuration. Real TOML, read by the shell scripts via
+# the config-get helper (Python tomllib). Network plumbing lives separately in
+# /etc/default/kestrel. See docs/user-guide/capture-setup.md and
+# docs/developer/capture-interface.md. Edit, then: sudo systemctl restart
+# kestrel-capture.service  (or use `kestrel capture ...`).
+
+[capture]
+# Capture is OFF by default and only the tool turns it on, after an explicit
+# authorized-use acknowledgment. Enable with: sudo kestrel capture enable
+enabled = false
+# "auto" = the monitor-capable wlan whose driver is not the built-in chip
+# (brcmfmac). Pin an explicit interface name here to override detection.
+interface = "auto"
+# SSIDs and/or MACs that must NEVER be actively attacked (deauth). They may
+# still be observed passively. One or more; ESSIDs as strings, BSSIDs as MACs.
+#   whitelist = ["MyHomeWiFi", "AA:BB:CC:DD:EE:FF"]
+whitelist = []
+
+[capture.scan]
+# Default field behavior, usable before the learning agent exists.
+#   sweep    - rotate through the adapter's channels, dwelling on each (default)
+#   autohunt - scan all channels once, then lock onto channels with targets
+#   fixed    - use the explicit channel list in `bands`
+mode = "sweep"
+# Seconds to dwell on each channel before rotating (passed to AngryOxide
+# --dwell). Lower = faster revisits, better for a device moving at walking
+# speed; higher = more time per channel to force and catch a handshake, but a
+# slower full cycle. AngryOxide's own default is 2.
+dwell_seconds = 5
+# "auto" = every channel the adapter supports (both bands on a dual-band dongle)
+# "2" / "5" / "6" / "60" = one whole band
+# an explicit channel list, e.g. "1,6,11,36,40,44,48"
+bands = "auto"
+
+[capture.output]
+# "per-ssid" writes one <ssid>.hc22000 per network (default); "single" writes
+# one combined file. Both are only ever appended to and de-duplicated across
+# reboots and attack restarts, never truncated.
+mode = "per-ssid"
+single_file = "all.hc22000"
+
+[capture.angryoxide]
+# --headless (no TUI). Field modes never add --autoexit, so capture is
+# continuous. headless = false shows AngryOxide's terminal UI for debugging, but
+# only when capture-launch is run by hand in a terminal; the systemd service has
+# no terminal and always runs headless (it would otherwise fail to start).
+headless = true
+# Extra AngryOxide flags passed through verbatim, one string per entry, e.g.
+#   extra_args = ["--notransmit"]   # passive only, no deauth
+extra_args = []
+
+[capture.housekeeping]
+# The append-only store grows over time. This optional policy is applied by a
+# daily timer; it ships OFF, so nothing is archived or deleted automatically.
+# Manual `kestrel capture archive|clear` always works regardless.
+#   off     - do nothing automatically (default)
+#   rotate  - archive the store when a limit below is exceeded
+#   archive - archive the store on every timer run (daily snapshot)
+# The timer never deletes; only `capture clear --yes` deletes the live store.
+action = "off"
+max_store_mb = 0    # 0 = no size limit
+max_age_days = 0    # 0 = no age limit
+archive_dir = "/var/lib/kestrel/capture/archive"
+keep_archives = 0   # 0 = keep every archive set; N = keep only the newest N
+# Run-dir safety cap, enforced live by the capture service (not the timer, and
+# ON by default unlike the policy above). AngryOxide's raw pcapng + kismet DB in
+# .run/ grow for the whole session and can fill the card; the hashline store
+# does not. When .run/ reaches this many MB the capture rolls (restarts) and the
+# raw files are deleted -- captured hashlines are always kept in the store.
+#   0 = no cap (keep every packet capture; may fill the card on a long session)
+max_run_mb = 512
+
+[capture.environment]
+# The "what's in RF range?" readout on the dashboard and e-ink face: how many
+# distinct radios the capture has seen recently, so a quiet spot and a
+# target-rich one don't look the same. Derived best-effort from AngryOxide's
+# kismet DB (its packets table) by the collector, and only live while capture is
+# running (the radio must be scanning to see anything). Off => no count is shown.
+enabled = true
+# Window, in seconds, for "recently seen", counted over the most recent capture
+# data (anchored to the newest packet, not wall-clock) so AngryOxide's bursty DB
+# flush reads as "recent" rather than empty. A density reading, not an instant
+# count.
+window_s = 300
+# How old the newest capture data may be before the readout is shown as "as of N
+# ago" and, past this, dropped back to "unknown" rather than shown as current.
+max_age_s = 900
+# Distinct-radios buckets: the inclusive upper bound for Quiet / Light / Moderate
+# / Busy (anything above the last is Dense). The count is APs and clients
+# together, so these run higher than an APs-only count. A starting calibration --
+# a rural lane and a city centre differ; tune to taste. Also the code defaults.
+thresholds = [0, 10, 30, 60]
+
+[agent]
+# Phase 4: the reinforcement-learning capture agent. It ships OFF; with the
+# agent off, capture keeps running the Phase 2 scripted sweep. The agent never
+# starts AngryOxide or edits this file itself -- it writes a per-window scan
+# override that the capture launcher reads. Manage it with
+# `kestrel agent enable|disable|set|status|metrics`, or from the web UI
+# (with [web] auth on); both write the same keys here. See docs/user-guide/agent-setup.md.
+enabled = false             # opt-in; OFF => capture uses the Phase 2 scripted sweep.
+                            # Only runs when [capture] enabled is also true.
+algorithm = "RecurrentPPO"  # RecurrentPPO | PPO | DQN | QR-DQN
+policy = "baseline"         # baseline | learned — what actually drives capture.
+                            # baseline = Phase 2 sweep via the env; learned = model.zip
+model = "/var/lib/kestrel/agent/model.zip"   # learned-policy weights
+decision_seconds = 30       # one action per window; coarse to keep relaunches rare
+log_episodes = true         # append JSONL episode logs for offline training
+use_gps = true              # Phase 4.8: feed the gps plugin's fix into the agent
+                            # observation (motion + open-sky/enclosed fix quality).
+                            # A kill-switch only: inert without the gps plugin and a
+                            # fix (no receiver => the GPS features read zero), so the
+                            # default is safe. Reads the fix locally; no network, no
+                            # authorized-use ack. Set false to force GPS out of the
+                            # observation without disabling the gps plugin.
+train = "auto"              # auto | off | idle. auto => training on a board with
+                            # >= 4 GB RAM, off on smaller boards (the Zero 2 W's 512 MB).
+                            # Resolved from MemTotal at agent start; explicit off/idle
+                            # wins. Training is opportunistic + self-throttling and
+                            # only runs while the agent is enabled (itself opt-in).
+                            # A board below the RAM floor never trains, whatever the
+                            # knobs below say.
+train_while_capturing = "auto"   # auto | true | false. auto => fine-tune during capture
+                            # on a board that can train, off otherwise. The run is niced
+                            # so capture/inference always win; false = only train when idle.
+train_min_new_episodes = 60 # fine-tune after this many new episodes since the last run
+                            # (data-driven; replaces a fixed time interval)
+train_timesteps = 3000      # steps per fine-tune (a short run, not a full train)
+train_max_temp_c = 75       # skip training at/above this CPU temp (hard-capped at 85)
+train_min_free_mb = 512     # skip training below this free RAM (hard floor 256 MB)
+interleave_compare = false  # benchmark mode: alternate baseline/agent blocks in one
+                            # session for a fair A/B (see the agent-vs-sweep metrics)
+compare_block_minutes = 10  # length of each A/B block when interleave_compare is on
+metrics_window_minutes = 60 # rolling window for the live agent-vs-sweep metrics
+log_max_mb = 64             # cap on episode logs (oldest rotate out) so the agent dir,
+                            # which the backup plugin mirrors, stays bounded
+
+[agent.action]
+# The discrete action is posture x dwell-bucket x transmit; each piece maps only
+# to an AngryOxide v0.9.3 launch flag. There is no live or per-target control.
+postures = ["sweep-band", "lock-subset", "pin-channel", "autohunt"]
+lock_subset_n = 3                # top-N channels for the lock-subset posture (-c list)
+dwell_buckets = [2, 5, 10, 20]   # seconds the agent may choose (maps to --dwell)
+transmit_modes = ["active", "passive"]  # passive => AngryOxide --notransmit for the window
+
+[agent.reward]
+# Documented weights, not hard-coded, so they can be tuned without code changes.
+# Defaults are "almost pure yield" so the learned policy optimizes the same
+# handshakes/hour the baseline is scored on.
+per_handshake = 1.0         # per new UNIQUE hashline gained in the window
+time_penalty = 0.01         # mild per-step cost so it prefers productive channels
+idle_penalty = 0.05         # dwelling on a channel with no discoverable APs
+
+# --- Phase 3: plugin host -------------------------------------------------
+# The daemon hosts the plugins. It ships ENABLED but is benign with no plugins
+# enabled: it just runs the event loop and serves a read-only status page over
+# the management link. Nothing touches captures or the network until a plugin
+# is explicitly enabled. See docs/user-guide/managing-plugins.md. Manage plugins with
+# `kestrel plugins list|enable|disable|info` rather than hand-editing.
+[daemon]
+enabled = true              # the plugin host / event loop
+epoch_seconds = 60          # on_epoch cadence
+max_hook_seconds = 30       # soft deadline: a hook overrunning this is logged
+                            # (slow is fine; a hook that finishes is never punished)
+hook_workers = 4            # size of the off-loop dispatch worker pool
+hook_stuck_seconds = 300    # a hook still running this long has stopped returning:
+                            # the plugin is quarantined (taken out of rotation) so a
+                            # stuck hook can't drain the pool; 0 disables
+capture_poll_seconds = 5    # how often the store is polled for new handshakes
+connectivity_poll_seconds = 15  # how often the management paths are probed
+
+[web]
+enabled = true              # status page + plugin controls + plugin routes
+bind = "management"         # management = bnep0/wlan0/loopback only; never the dongle
+port = 8080
+# How often the dashboard reloads itself to show fresh device state, in seconds.
+# 0 disables the auto-refresh. Only the read-only dashboard refreshes; settings
+# and confirmation forms never reload under you. Device data updates at most each
+# epoch (epoch_seconds), so a value below that just re-renders the same numbers.
+refresh_seconds = 30
+auth = "system"             # system | basic | token | none
+# system (default): log in with the device account (same username/password you
+#   SSH in with); the web login can never drift from the SSH login because it is
+#   verified against the account, not a stored copy. The page requires this login
+#   to view and to change plugins. Note the page is plain HTTP on the management
+#   link, so the login travels unencrypted there.
+# basic: a web-only username/password set below. token: a web-only token below.
+# none: open, read-only page (no plugin controls). Set this with
+#   `sudo kestrel web auth <mode>` rather than by hand.
+username = ""               # system: overrides the account checked (default: the
+                            #   device login user); basic: the web username.
+password = ""               # basic only (system never stores a password here)
+token = ""
+# Optional explicit HTTP reachability probe for on_internet_available; empty
+# uses NetworkManager's own connectivity check, then a default HTTP probe when
+# that check is disabled (as it is on a stock image). Both read a captive
+# portal as offline.
+probe_url = ""
+# Soft deadline (seconds) for a plugin page handler (on_webhook). Past it the
+# page returns a timeout response instead of the browser hanging on a stuck
+# plugin; the call is left to finish in the background. 0 disables.
+webhook_timeout_seconds = 30
+
+# All reference plugins ship DISABLED. `kestrel plugins enable <name>`
+# shows the plugin's capabilities, takes the authorized-use acknowledgment for
+# any that leaves the device, and collects credentials before turning it on.
+[plugins.memtemp]
+enabled = false             # display plugin; renders via the Phase 5 stub for now
+
+[plugins.session-stats]
+enabled = false             # on_epoch + web view
+
+[plugins.gps]
+enabled = false             # position source: tags handshakes + shares current fix
+source = "auto"             # auto | gpsd | serial
+# auto (default): use gpsd if it is running, otherwise read the serial device
+#   below when present, so a plugged-in USB receiver works with no setup.
+# gpsd: host/port of the gpsd daemon (default 127.0.0.1:2947)
+host = "127.0.0.1"
+port = 2947
+# serial: device and baud, used when source = "serial" (and as the auto
+#   fallback). USB receivers usually appear as /dev/ttyACM0 or /dev/ttyUSB0;
+#   baud is ignored for USB CDC-ACM devices.
+device = "/dev/ttyACM0"
+baud = 9600
+
+[plugins.wpa-sec]
+enabled = false             # uploader: on_handshake + on_internet_available, opt-in
+# api_key and endpoint are supplied by the operator at enable time, never baked in.
+# Uploads only when a management path is online; queues otherwise.
+endpoint = "https://wpa-sec.stanev.org"
+download_results = true     # fetch your cracked results (every network recovered
+                            # under your key, however submitted) to a local potfile
+                            # at <store>/cracked/wpa-sec.potfile. On while enabled;
+                            # set false to upload only. Recovered PSKs stay on-device.
+results_interval_seconds = 3600   # at most this often, re-fetch while online
+
+[plugins.wigle]
+enabled = false             # wardriving uploader: gps optional (uploads use real fixes)
+# api_name / api_token supplied by the operator at enable time, never baked in.
+# Uploads only when online and only with a real gps fix (never fabricates one).
+# Loads without gps too: idle, or geolocate-only display when geolocate = true.
+endpoint = "https://api.wigle.net"
+geolocate = false           # fallback: when there is no local GPS fix, look the
+                            # network's coordinates up in WiGLE's own database (the
+                            # network SEARCH api, by BSSID/SSID). Off by default.
+                            # Results cached on-device in capture/geo/wigle-cache.json
+                            # (BSSID-keyed, marked source=wigle-search), kept separate
+                            # from real gps.json fixes and never fed back into an upload.
+
+[plugins.backup]
+enabled = false             # off-device backup of the capture data over SSH, opt-in
+# Mirrors the capture store (hashlines, GPS sidecars, the wigle geo-cache, the
+# wpa-sec cracked potfile and any archives) to a remote host, so a lost or
+# reflashed SD card doesn't lose it. host/user/path are set by the operator,
+# never baked in; set them and enable in one step:
+#   sudo kestrel plugins enable backup --set host=HOST --set user=USER --set path=/remote/dir
+# Then install the device key for passwordless copying (asks the remote password
+# once, stores nothing): sudo kestrel backup setup
+host = ""                   # remote server hostname or IP
+user = ""                   # remote account to copy as
+# Destination directory, created if missing. A bare name like "kestrel"
+# is relative to the remote account's home; a leading slash ("/kestrel")
+# is an absolute path, which only works if that account can write there.
+path = ""
+port = 22
+# The learning agent's model + episode logs are mirrored too (under agent/ at the
+# remote path), so a reflash keeps the trained model; the agent's live status.json
+# and scan-override.json are excluded. Blank agent_dir to back up only the capture
+# store.
+agent_dir = "/var/lib/kestrel/agent"
+tool = "rsync"              # rsync (recommended: incremental + resumable) or scp
+ssh_key = "/home/pi/.ssh/id_ed25519"   # the pi account's key used for copying
+interval_seconds = 3600     # at most this often; also runs at start and on reconnect
+timeout = 1800              # abort a single transfer after this many seconds
+
+[plugins.ups-hat]
+enabled = false             # Waveshare UPS HAT battery readout + low-battery auto-shutdown
+# Reads the HAT's INA219 fuel gauge over I2C and shows a battery card (charge
+# percent, charging/discharging, voltage, current, power). It confirms the HAT
+# is present before doing anything, so it is harmless on a board without one.
+# shutdown_percent is the minimum charge: at or below it, while on battery, the
+# device cleanly powers off (no prompt). Set it to 0 to monitor only.
+i2c_bus = 1                 # I2C bus the HAT is on (/dev/i2c-1 on a Pi)
+address = 0x42              # the HAT's INA219 I2C address (66)
+shutdown_percent = 5        # auto-shutdown at/below this percent on battery; 0 = off
+poll_seconds = 20           # how often to read the battery
+
+[plugins.eink]
+enabled = false             # e-ink "tamagotchi" face on the Waveshare 2.7" e-Paper HAT
+# Renders the classic animated face, a status line, a roaming/parked indicator
+# and the Kestrel brand mark to the panel, driven by live device + agent state.
+# Local-only: nothing leaves the device, so no authorized-use ack. It degrades
+# cleanly with no HAT attached (the face still renders to the web mirror). The
+# "View display" button on the Plugins page shows a live mirror of the exact
+# panel frame, so you can see the face from a phone. See
+# docs/user-guide/eink-setup.md.
+variant = "auto"            # panel driver: auto (probe) | v2 | v1
+rotation = 0                # rotate the frame: 0 | 90 | 180 | 270
+refresh_seconds = 10        # render/mirror cadence (floored at 10s); panel redraws only on change
+greyscale = false           # reserved: 4-gray rendering (slower full refresh)
+show_mascot = true          # draw the emoticon face
+show_brand_glyph = true     # draw the small Kestrel mark in the corner
+battery_low_percent = 10    # show the "tired" face at/below this charge while on battery
+bored_epochs = 15           # epochs idle before the face looks bored
+sad_epochs = 25             # epochs idle before the face looks sad
+
+[plugins.updates]
+enabled = false             # release-update notifier + on-demand in-place upgrade, opt-in
+# While enabled it periodically asks the release server (`host`, the project's
+# Forgejo instance) for the latest release and, if one is
+# newer than this image, shows an "update available" card and (on the web
+# dashboard, with [web] auth on) a confirm-then-upgrade button. It NEVER updates
+# on its own. Only the application layer is updated in place; a release that
+# changed the base OS is flagged "needs reflash" and the button is withheld.
+# Reaching the server is a network action, so enabling it takes the authorized-use
+# acknowledgment like the other networked plugins. See docs/developer/updates-setup.md.
+# For a PRIVATE repo or fork, supply an optional Forgejo access token (read-only
+# repository scope) at enable time (never baked in): sudo kestrel plugins enable
+# updates --set token=xxx. Empty => unauthenticated, public releases only.
+repo = "aluminum-ice/kestrel"   # Forgejo owner/repo to check (override for a fork)
+host = "https://git.3ntropy.io"       # Forgejo/Gitea server hosting repo (https:// only)
+check_interval_seconds = 21600        # at most this often, re-check while online (6h)
+timeout = 30
+
+[plugins.remote-train]
+enabled = false             # offload agent training to a remote desktop over SSH, opt-in
+# On-device training is capped hard by RAM/heat; this plugin runs the SAME
+# trainer on a more powerful Linux host and pulls the finished model back, while
+# the device keeps doing inference. Everything on the host lives under
+# train_path (its own venv, the uploaded episodes/models, job markers) - nothing
+# touches the host's system Python. host/user/path are set by the operator,
+# never baked in; set them and enable in one step:
+#   sudo kestrel plugins enable remote-train --set train_host=HOST --set train_user=USER --set train_path=/remote/dir
+# Then install the device key for passwordless SSH (asks the remote password
+# once, stores nothing): sudo kestrel remote-train setup
+# It ships captured-derived experience off-device, so enabling it takes the
+# authorized-use acknowledgment like the other networked plugins. The training
+# host is independent of the backup host. See docs/developer/remote-training.md.
+train_host = ""             # remote training host hostname or IP
+train_user = ""             # remote account to train as
+# Working directory on the host, created if missing. A bare name is relative to
+# the remote account's home; a leading slash is an absolute path.
+train_path = ""
+train_port = 22
+ssh_key = "/home/pi/.ssh/id_ed25519"   # the pi account's key, authorized on the host by setup
+# Which per-algorithm models to keep trained remotely: a comma-separated subset
+# of the agent's algorithms (case-sensitive), any of RecurrentPPO, PPO, DQN,
+# QR-DQN. Defaults to all four; set to "" to train nothing.
+algorithms = "RecurrentPPO,PPO,DQN,QR-DQN"
+# Data-driven trigger: launch a run for an algorithm only once this many new
+# episodes have accrued on-device since that model's last training.
+remote_train_min_new_episodes = 300
+stale_lock_hours = 6        # a running lock older than this is treated as a crashed run
+timesteps = 200000          # training timesteps per remote run (a desktop can afford more)
+interval_seconds = 3600     # at most this often; also runs at start, on reconnect and on `remote-train now`
+timeout = 1800              # abort a single SSH/rsync operation after this many seconds
+agent_dir = "/var/lib/kestrel/agent"   # on-device agent runtime dir (episodes + models)

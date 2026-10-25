@@ -1,0 +1,14 @@
+[Unit]
+Description=kestrel Bluetooth PAN link to the paired phone
+After=bluetooth.service NetworkManager.service
+Wants=bluetooth.service
+# Only meaningful once a phone has been recorded by onboarding.
+ConditionPathExists=/var/lib/kestrel/bt-phone
+
+[Service]
+ExecStart=/usr/local/lib/kestrel/bt-pan
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

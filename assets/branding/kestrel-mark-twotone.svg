@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Kestrel">
+  <title>Kestrel (two-tone)</title>
+  <path fill="#5F7488" d="M31 18 C23 12 12 11 5 18 C11 25 22 28 30 25 L30 20 Z"/>
+  <path fill="#5F7488" d="M33 18 C41 12 52 11 59 18 C53 25 42 28 34 25 L34 20 Z"/>
+  <path fill="#E2623C" d="M32 7 C29.6 10 29 15 31 19 L30 25 L29 31 L30 37 L27 52 L32 47 L37 52 L34 37 L35 31 L34 25 L33 19 C35 15 34.4 10 32 7 Z"/>
+</svg>

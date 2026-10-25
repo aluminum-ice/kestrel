@@ -1,0 +1,14 @@
+[Unit]
+Description=kestrel WiFi capture (AngryOxide) on the USB adapter
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+# The launcher exits 0 when capture is disabled or no adapter is present, so a
+# clean exit is not restarted; an unexpected AngryOxide crash is.
+ExecStart=/usr/local/lib/kestrel/capture-launch
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,50 @@
+{
+  "builders": [
+    {
+      "name": "my_rpi_image",
+      "type": "arm-image",
+      "iso_url": "https://downloads.raspberrypi.org/raspios_oldstable_lite_arm64/images/raspios_oldstable_lite_arm64-2026-06-19/2026-06-18-raspios-bookworm-arm64-lite.img.xz",
+      "iso_checksum": "df4c6fb0b625204a09ce587f35f01b4d6375cb3ee0f05df71a0eca6c7aeb8f8f",
+      "target_image_size": 8368709120,
+      "image_mounts": ["/boot/firmware", "/"],
+      "image_arch": "arm64"
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "shell",
+      "inline": [
+        "uname -a",
+        "dpkg-architecture"
+      ]
+    },
+    {
+      "type": "shell",
+      "inline": [
+        "apt-get -y --allow-releaseinfo-change update",
+        "apt-get install -y --no-install-recommends ansible-core",
+        "cd /tmp && apt-get download ansible",
+        "mkdir -p /tmp/kestrel-ansible-collections",
+        "dpkg-deb --fsys-tarfile /tmp/ansible_*.deb | tar -x -C /tmp/kestrel-ansible-collections --strip-components=5 ./usr/lib/python3/dist-packages/ansible_collections/community/general",
+        "rm -f /tmp/ansible_*.deb",
+        "test -f /tmp/kestrel-ansible-collections/ansible_collections/community/general/plugins/modules/timezone.py"
+      ]
+    },
+    {
+      "type": "ansible-local",
+      "playbook_dir":  "extra/",
+      "playbook_file": "config.yml",
+      "extra_arguments": [ "--extra-vars \"ansible_python_interpreter=/usr/bin/python3\"" ],
+      "command": "LC_ALL=C.UTF-8 LANG=C.UTF-8 ANSIBLE_FORCE_COLOR=1 PYTHONUNBUFFERED=1 ANSIBLE_PIPELINING=True ANSIBLE_COLLECTIONS_PATH=/tmp/kestrel-ansible-collections MY_VERSION={{user `my_version`}} MY_HOSTNAME={{user `my_hostname`}} ansible-playbook",
+      "clean_staging_directory": true
+    },
+    {
+      "type": "shell",
+      "inline": [
+        "apt-get purge -y --auto-remove ansible-core",
+        "apt-get clean",
+        "rm -rf /root/.ansible /root/.ansible_async /home/pi/.ansible /home/pi/.ansible_async /tmp/packer-provisioner-ansible-local /tmp/kestrel-ansible-collections"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+[Unit]
+Description=kestrel agent model import from the boot partition
+# Import a model staged on the FAT boot partition before the agent starts, so an
+# enabled agent picks it up on the same boot. Runs on EVERY boot (not just the
+# first): whenever the file is present it replaces the on-device model and is
+# then removed, so train off-device -> drop the model on the card -> reboot is
+# the recurring workflow.
+Before=kestrel-agent.service
+# Runs only when a staged model is present; the script removes it after import.
+# A glob so any staged model triggers it, not just the plain name: a device may
+# stage one model per algorithm (kestrel-model.zip and/or
+# kestrel-model-<name>.zip), and all are imported.
+ConditionPathExistsGlob=/boot/firmware/kestrel-model*.zip
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/kestrel/agent-provision
+
+[Install]
+WantedBy=multi-user.target

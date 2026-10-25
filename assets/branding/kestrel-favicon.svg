@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Kestrel">
+  <title>Kestrel</title>
+  <rect width="64" height="64" rx="14" fill="#E2623C"/>
+  <path fill="#FFFFFF" d="M32 11 C29.6 14 29 19 31 22 C23 16 12 15 5 22 C11 29 22 32 30 29 L29 35 L30 41 L27 55 L32 50 L37 55 L34 41 L35 35 L34 29 C42 32 53 29 59 22 C52 15 41 16 33 22 C35 19 34.4 14 32 11 Z"/>
+</svg>
