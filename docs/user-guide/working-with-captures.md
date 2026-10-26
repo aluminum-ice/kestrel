@@ -20,9 +20,10 @@ Everything is under the capture store, **`/var/lib/kestrel/capture/`**:
 
 | Path | What it is |
 | --- | --- |
-| `*.hc22000` | Your handshakes. In the default **per-SSID** layout, one file per network (`<name>.hc22000`); in **single** layout, one combined file (`all.hc22000`). |
-| `bssid-<MAC>.hc22000` | Handshakes whose network name isn't known yet (PMKID-only or hidden). |
-| `unknown.hc22000` | Handshakes that couldn't be attributed to a network. |
+| `*.hc22000` | Your handshakes. In the default **per-SSID** layout, one file per network (`<name>.hc22000`); in **per-AP** layout, one file per access point (`<name>_<bssid>.hc22000`); in **single** layout, one combined file (`all.hc22000`). |
+| `bssid-<MAC>.hc22000` | (per-SSID) Handshakes whose network name isn't known yet (PMKID-only or hidden). |
+| `__hidden_<MAC>.hc22000` | (per-AP) Handshakes from an access point with no/hidden network name. |
+| `unknown.hc22000` | Handshakes that couldn't be attributed to an access point. |
 | `*.gps.json` | A GPS location sidecar for a capture, when the `gps` plugin is providing fixes. |
 | `cracked/wpa-sec.potfile` | Passwords recovered for your key, downloaded by the `wpa-sec` plugin. |
 | `geo/wigle-cache.json` | WiGLE geolocation lookups (display-only; never uploaded). |
@@ -33,9 +34,12 @@ The store files are **append-only**: a reboot or a capture restart adds new
 unique lines, never truncates. Nothing is deleted except by the housekeeping you
 configure (below).
 
-Whether you get one file per network or one combined file is the
-`[capture.output] mode` setting (`per-ssid` or `single`) — see [the config
-reference](config-reference.md).
+Whether you get one file per network, one file per access point, or one combined
+file is the `[capture.output] mode` setting (`per-ssid`, `per-ap` or `single`) —
+see [the config reference](config-reference.md). Choose `per-ap` when you need
+one file to mean exactly one physical AP: network names are heavily reused (every
+`AndroidAP`, every POS/printer default), so `per-ssid` can pile unrelated APs into
+one file, whereas `per-ap` keys on the BSSID and keeps them apart.
 
 ## Seeing what you've got
 

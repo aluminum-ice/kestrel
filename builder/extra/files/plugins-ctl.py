@@ -96,7 +96,8 @@ CONFIG_SETTABLE = {
     "capture.scan.mode": {"type": "enum", "choices": ["sweep", "autohunt", "fixed"]},
     "capture.scan.dwell_seconds": {"type": "int", "min": 1},
     "capture.scan.bands": {"type": "str", "maxlen": 64},
-    "capture.output.mode": {"type": "enum", "choices": ["per-ssid", "single"]},
+    "capture.output.mode": {
+        "type": "enum", "choices": ["per-ssid", "per-ap", "single"]},
     "capture.output.single_file": {"type": "str", "maxlen": 128},
     "capture.angryoxide.headless": {"type": "bool"},
     "capture.housekeeping.action": {"type": "enum", "choices": ["off", "rotate", "archive"]},

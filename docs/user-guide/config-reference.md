@@ -46,7 +46,7 @@ is covered at the end.
 
 | Key | Values | Default | What it does |
 | --- | --- | --- | --- |
-| `mode` | `per-ssid` / `single` | `per-ssid` | One file per network, or one combined file. Both are only ever appended to. |
+| `mode` | `per-ssid` / `per-ap` / `single` | `per-ssid` | One file per network (`per-ssid`), one file per access point keyed on BSSID so unrelated APs sharing a name never merge (`per-ap`), or one combined file (`single`). All are only ever appended to. |
 | `single_file` | filename | `all.hc22000` | The combined file's name when `mode = single`. |
 
 ## `[capture.angryoxide]` — the capture engine

@@ -148,3 +148,76 @@ def test_status_file_is_not_a_hashline_file(mod):
     names = os.listdir(mod.STORE_DIR)
     assert mod.STATUS_NAME in names
     assert not any(n.endswith(".hc22000") for n in names)
+
+
+# --- target_for: routing a hashline to its store file --------------------
+
+def _hashline(bssid, essid, type_="02", sta="00:11:22:33:44:55"):
+    """One hc22000 line: WPA*TYPE*HASH*BSSID*STA*ESSID_HEX*... ``essid`` may be a
+    str (UTF-8 encoded to the hex field) or raw bytes (for non-UTF-8 names)."""
+    raw = essid.encode("utf-8") if isinstance(essid, str) else essid
+    return "*".join(["WPA", type_, "deadbeef", bssid, sta, raw.hex(), "", ""])
+
+
+def test_target_for_single_mode_combines(mod):
+    line = _hashline("aa:bb:cc:dd:ee:ff", "poswifi")
+    assert mod.target_for(line, "single", "all.hc22000") == "all.hc22000"
+
+
+def test_target_for_per_ssid_merges_reused_names(mod):
+    # The old default: two unrelated APs sharing the name "poswifi" land in the
+    # SAME file -- exactly what per-ap fixes.
+    a = _hashline("aa:bb:cc:dd:ee:ff", "poswifi")
+    b = _hashline("11:22:33:44:55:66", "poswifi")
+    assert mod.target_for(a, "per-ssid", "all.hc22000") == "poswifi.hc22000"
+    assert mod.target_for(b, "per-ssid", "all.hc22000") == "poswifi.hc22000"
+
+
+def test_target_for_per_ap_splits_reused_names_by_bssid(mod):
+    # Validation: a reused name produces one file PER BSSID, never a merge.
+    a = _hashline("aa:bb:cc:dd:ee:ff", "poswifi")
+    b = _hashline("11:22:33:44:55:66", "poswifi")
+    ta = mod.target_for(a, "per-ap", "all.hc22000")
+    tb = mod.target_for(b, "per-ap", "all.hc22000")
+    assert ta == "poswifi_aa_bb_cc_dd_ee_ff.hc22000"
+    assert tb == "poswifi_11_22_33_44_55_66.hc22000"
+    assert ta != tb
+
+
+def test_target_for_per_ap_keeps_pmkid_and_eapol_together(mod):
+    # Both record types for one AP route to the same file.
+    pmkid = _hashline("aa:bb:cc:dd:ee:ff", "poswifi", type_="01")
+    eapol = _hashline("aa:bb:cc:dd:ee:ff", "poswifi", type_="02")
+    assert mod.target_for(pmkid, "per-ap", "all.hc22000") == \
+        mod.target_for(eapol, "per-ap", "all.hc22000")
+
+
+def test_target_for_per_ap_composite_splits_multi_ssid_bssid(mod):
+    # One BSSID advertising two ESSIDs splits naturally on the composite key.
+    a = _hashline("aa:bb:cc:dd:ee:ff", "guest")
+    b = _hashline("aa:bb:cc:dd:ee:ff", "corp")
+    assert mod.target_for(a, "per-ap", "all.hc22000") == \
+        "guest_aa_bb_cc_dd_ee_ff.hc22000"
+    assert mod.target_for(b, "per-ap", "all.hc22000") == \
+        "corp_aa_bb_cc_dd_ee_ff.hc22000"
+
+
+def test_target_for_per_ap_hidden_essid_routes_by_bssid(mod):
+    line = _hashline("aa:bb:cc:dd:ee:ff", "")
+    assert mod.target_for(line, "per-ap", "all.hc22000") == \
+        "__hidden_aa_bb_cc_dd_ee_ff.hc22000"
+
+
+def test_target_for_per_ap_no_bssid_is_unknown(mod):
+    line = _hashline("", "poswifi")
+    assert mod.target_for(line, "per-ap", "all.hc22000") == "unknown.hc22000"
+
+
+def test_target_for_per_ap_decodes_non_utf8_essid_via_latin1(mod):
+    # A non-UTF-8 ESSID must route deterministically, not crash: 0xff is invalid
+    # UTF-8 but decodes under latin-1, then sanitizes to a safe filename.
+    line = _hashline("aa:bb:cc:dd:ee:ff", b"caf\xe9")
+    target = mod.target_for(line, "per-ap", "all.hc22000")
+    assert target.endswith("_aa_bb_cc_dd_ee_ff.hc22000")
+    assert set(target) <= set(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")

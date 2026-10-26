@@ -34,6 +34,14 @@ This file is the normative reference.
     64 characters. A handshake whose ESSID is unknown (PMKID-only or hidden) is
     written to `bssid-<AP-MAC>.hc22000` until the ESSID is learned; truly unknown
     lines go to `unknown.hc22000`.
+  - `per-ap`: one `<ssid>_<bssid>.hc22000` per access point. The grouping key is
+    the AP **BSSID** (field 4), the only field that uniquely identifies one AP
+    radio — SSIDs are reused across unrelated APs, so `per-ssid` can merge them,
+    while `per-ap` never does. The composite BSSID+ESSID is encoded in the name
+    (each part sanitized as above), so one BSSID advertising multiple ESSIDs
+    splits into one file per ESSID. A handshake with an empty/hidden ESSID routes
+    to `__hidden_<bssid>.hc22000`; a line with no BSSID goes to `unknown.hc22000`.
+    Both PMKID (`01`) and EAPOL (`02`) records for an AP share its one file.
   - `single`: one combined file named by `[capture.output] single_file`
     (default `all.hc22000`).
 - **Format:** hashcat 22000 (`.hc22000`) lines, one hashline per line. The
