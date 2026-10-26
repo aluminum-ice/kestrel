@@ -43,10 +43,15 @@ one file, whereas `per-ap` keys on the BSSID and keeps them apart.
 
 ## Seeing what you've got
 
-- **The dashboard, no terminal needed.** The **Captured networks** page lists the
-  unique access points you've captured, with BSSID and handshake counts,
-  searchable and paginated. The `session-stats` plugin card shows live counts for
-  the current session.
+- **The dashboard, no terminal needed.** The **Captured networks** page has two
+  views you can toggle between: **by network** (one row per SSID, with its
+  distinct-BSSID count and handshakes) and **by access point** (one row per
+  BSSID, so APs that reuse a name stay separate; search also matches a pasted
+  BSSID). It defaults to match your `[capture.output] mode`, but you can flip the
+  view anytime — it reads the whole store either way, regardless of how each
+  handshake was captured. Both are searchable and paginated, and the dashboard
+  card shows the network and access-point totals. The `session-stats` plugin card
+  shows live counts for the current session.
 - **From the terminal:** `kestrel capture status` reports the store size
   and how many capture files it holds.
 

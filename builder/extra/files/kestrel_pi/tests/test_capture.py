@@ -112,6 +112,52 @@ def test_captured_networks_empty_store(tmp_path):
     assert CaptureInterface(str(tmp_path)).captured_networks() == []
 
 
+# A line whose AP-MAC field is empty, so parse_hashline yields no BSSID.
+NO_BSSID = "WPA*02*0123456789abcdef0123456789abcdef**112233445566*486f6d65*0*0*00"
+
+
+def test_captured_access_points_one_row_per_bssid(tmp_path):
+    # Same store as the by-network test, viewed by AP: Home splits into its two
+    # BSSIDs (2 + 1 handshakes), Cafe and the hidden PMKID AP are one each.
+    (tmp_path / "Home.hc22000").write_text("\n".join([EAPOL, HOME_A2, HOME_B]) + "\n")
+    (tmp_path / "Other.hc22000").write_text("\n".join([CAFE, PMKID]) + "\n")
+
+    aps = CaptureInterface(str(tmp_path)).captured_access_points()
+    # One entry per distinct ESSID+BSSID; no handshake lost.
+    assert sum(a["handshakes"] for a in aps) == 5
+    by_key = {(a["essid"], a["bssid"]): a["handshakes"] for a in aps}
+    assert by_key[("Home", "AA:BB:CC:DD:EE:FF")] == 2
+    assert by_key[("Home", "AA:BB:CC:DD:EE:02")] == 1
+    assert by_key[("Cafe", "11:11:11:11:11:11")] == 1
+    # A hidden ESSID is NOT merged -- it keeps its own BSSID row.
+    assert by_key[("", "AA:BB:CC:DD:EE:01")] == 1
+    # Sorted by ESSID (hidden last) then BSSID.
+    assert [(a["essid"], a["bssid"]) for a in aps] == [
+        ("Cafe", "11:11:11:11:11:11"),
+        ("Home", "AA:BB:CC:DD:EE:02"),
+        ("Home", "AA:BB:CC:DD:EE:FF"),
+        ("", "AA:BB:CC:DD:EE:01"),
+    ]
+
+
+def test_captured_access_points_folds_missing_bssid(tmp_path):
+    # Handshakes with no parseable BSSID collapse into one trailing fold row.
+    (tmp_path / "Home.hc22000").write_text("\n".join([NO_BSSID, NO_BSSID.replace(
+        "112233445566", "112233445599")]) + "\n")
+    aps = CaptureInterface(str(tmp_path)).captured_access_points()
+    assert aps == [{"essid": "", "bssid": "", "handshakes": 2}]
+
+
+def test_capture_counts_networks_and_access_points(tmp_path):
+    (tmp_path / "Home.hc22000").write_text("\n".join([EAPOL, HOME_A2, HOME_B]) + "\n")
+    (tmp_path / "Other.hc22000").write_text("\n".join([CAFE, PMKID]) + "\n")
+    counts = CaptureInterface(str(tmp_path)).capture_counts()
+    # 3 distinct ESSIDs (Home, Cafe, hidden); 4 distinct ESSID+BSSID APs.
+    assert counts == {"networks": 3, "access_points": 4}
+    assert CaptureInterface(str(tmp_path / "empty")).capture_counts() == {
+        "networks": 0, "access_points": 0}
+
+
 def test_hashline_count_sums_nonempty_lines(tmp_path):
     iface = CaptureInterface(str(tmp_path))
     assert iface.hashline_count() == 0
