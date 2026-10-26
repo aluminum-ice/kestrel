@@ -435,10 +435,39 @@ def test_run_power_defers_the_command_past_the_reply(monkeypatch):
 def test_update_apply_returns_the_update_flag(env):
     _auth_on(env)
     reply = ctl.apply_change({"target": "update", "action": "apply", "tag": "0.7.0"})
-    assert reply == {"ok": True, "update": "apply", "update_tag": "0.7.0"}
+    assert reply == {"ok": True, "update": "apply", "update_tag": "0.7.0",
+                     "update_no_backup": False}
     beta = ctl.apply_change({"target": "update", "action": "apply",
                              "tag": "0.7.0-beta.2"})
     assert beta["ok"] is True and beta["update_tag"] == "0.7.0-beta.2"
+
+
+def test_update_apply_threads_no_backup_flag(env):
+    _auth_on(env)
+    reply = ctl.apply_change({"target": "update", "action": "apply",
+                              "tag": "0.7.0", "no_backup": True})
+    assert reply["ok"] is True and reply["update_no_backup"] is True
+    # Coerced to a plain bool, never echoed back attacker-shaped.
+    truthy = ctl.apply_change({"target": "update", "action": "apply",
+                               "tag": "0.7.0", "no_backup": "yes"})
+    assert truthy["update_no_backup"] is True
+
+
+def test_run_update_appends_no_backup_only_when_asked(monkeypatch):
+    seen = []
+    monkeypatch.setattr(ctl.subprocess, "run",
+                        lambda cmd, **kw: seen.append(list(cmd)))
+    ctl.run_update("0.7.0", no_backup=True)
+    ctl.run_update("0.7.0", no_backup=False)
+    with_nb, without_nb = seen
+    # Both go through the fixed-name transient unit, the shipped CLI, and pin
+    # the confirmed tag with --expect; only the asked-for one skips the backup.
+    for cmd in (with_nb, without_nb):
+        assert "--unit=kestrel-update" in cmd
+        assert cmd[-6:-1] == [ctl.PWN_TOOL, "update", "apply", "--yes", "--expect"] \
+            or ("update" in cmd and "--expect" in cmd and "0.7.0" in cmd)
+    assert with_nb[-1] == "--no-backup"
+    assert "--no-backup" not in without_nb
 
 
 def test_update_bad_action_is_refused(env):

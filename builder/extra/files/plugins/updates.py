@@ -201,6 +201,14 @@ class Updates(Plugin):
         "beta": {"type": "bool", "default": False,
                  "help": "Also offer beta (X.Y.Z-beta.N) releases. Turning it "
                          "off never downgrades a device already on a beta."},
+        # Seconds to allow the pre-update backup (the remote mirror the update
+        # takes before touching files) before the update gives up on it, so a
+        # backup that can't reach the remote cannot hold the daemon -- and the
+        # dashboard -- down for many minutes. The engine reads this directly;
+        # 0 waits indefinitely (the old behaviour).
+        "backup_timeout_seconds": {"type": "int", "default": 180,
+                 "help": "Seconds to allow the pre-update backup before the "
+                         "update cancels it (0 = wait indefinitely)."},
         # How often, at most, to re-check while online (6h default).
         "check_interval_seconds": {"type": "int", "default": 21600},
         "timeout": {"type": "int", "default": 30},

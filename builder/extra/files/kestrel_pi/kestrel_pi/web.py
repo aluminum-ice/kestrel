@@ -68,6 +68,10 @@ CONTROLS_OFF = (
 # an in-place update is offerable). The dashboard reads it to decide whether to
 # show the upgrade button; the root helper re-verifies before applying.
 UPDATE_STATE_FILE = "/var/lib/kestrel/update/state.json"
+# The update engine's own run status (root-owned, world-readable). Separate from
+# the plugin's offer state above: this records whether the last attempt failed
+# and why, so the dashboard can show the cause instead of silently re-offering.
+UPDATE_RUN_STATE_FILE = "/var/lib/kestrel/update-run/status.json"
 # The learning agent's enums for the dashboard dropdowns. Kept in step with
 # kestrel_pi.agent.policies (ALGORITHMS / POLICIES); the root apply helper
 # re-validates against the same lists, so this is only what the <select> offers.
@@ -869,10 +873,13 @@ def create_app(daemon):
             return html(_render_status(status, ctl, error=True, addresses=addrs,
                                        refresh=rfr,
                                        message="No in-place update is available."), 400)
+        no_backup = request.form.get("no_backup") == "yes"
         if request.form.get("confirm") != "yes":
             # First tap lands on a confirm page naming the version and that the
             # services will restart, so a stray tap never triggers an upgrade.
-            return html(_render_update_confirm(ctl, state))
+            # ``no_backup`` carries the retry-without-backup choice through so
+            # the confirm page reflects it.
+            return html(_render_update_confirm(ctl, state, no_backup=no_backup))
         # Install exactly the release the operator confirmed: if a check since
         # changed the offer, show it again rather than install something else.
         # The root helper and CLI re-check this tag (and re-verify the release
@@ -883,7 +890,8 @@ def create_app(daemon):
                 status, ctl, error=True, addresses=addrs, refresh=rfr,
                 message="The available update changed since you confirmed it; "
                         "review it again."), 400)
-        reply = apply_change({"target": "update", "action": "apply", "tag": tag})
+        reply = apply_change({"target": "update", "action": "apply", "tag": tag,
+                              "no_backup": no_backup})
         if reply.get("ok"):
             # The root helper runs the update in the background and restarts the
             # daemon when done; this reply still reaches the browser first, then
@@ -1155,6 +1163,14 @@ _STATUS_CSS = (
     "background:var(--accent);color:#fff;font-size:1rem;cursor:pointer;}"
     # Disable is destructive, so its button is red rather than the green accent.
     "button.danger{background:var(--err-bd);}"
+    # A secondary action (e.g. "retry without a fresh backup") reads as the
+    # lesser choice next to the primary button: outlined, not filled.
+    "button.secondary{background:transparent;color:var(--link);"
+    "border-color:var(--border);}"
+    # A checkbox+label line on the update confirm page (skip the pre-update backup).
+    ".chk{display:flex;align-items:flex-start;gap:.5em;margin:1em 0 .2em;"
+    "font-size:.92rem;color:var(--muted);}"
+    ".chk input{margin-top:.2em;}"
     "form.inline button{margin:0;padding:.35em .9em;font-size:.9rem;}"
     # The plugins-page config cell lays out Disable/settings on the left; the
     # per-plugin action buttons (Restore / Train, neutral blue) are grouped in
@@ -1769,6 +1785,47 @@ def _read_update_state(path=UPDATE_STATE_FILE):
         return {}
 
 
+def _read_update_run_state(path=UPDATE_RUN_STATE_FILE):
+    """The update engine's run status (root-owned but world-readable), or {} if
+    no in-place update has ever run. Carries ``status`` (ok|error|running) and a
+    plain-language ``detail`` for the most recent attempt - the only record of
+    *why* an update failed, which the dashboard otherwise never showed."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _update_failure(run_state):
+    """Classify the last update attempt for the dashboard, or ``None`` when the
+    most recent run did not fail. Returns ``{detail, verdict, backup}`` where
+    ``backup`` is True for the pre-update-backup class (safe to retry, and the
+    'update without a fresh backup' path applies) and ``verdict`` is the plain
+    retry guidance keyed to the failure class."""
+    if (run_state or {}).get("status") != "error":
+        return None
+    detail = str(run_state.get("detail") or "").strip()
+    low = detail.lower()
+    if "backup before updating" in low:
+        return {"detail": detail, "backup": True,
+                "verdict": "The device was not changed. Retry when the backup "
+                           "host is reachable, or update without a fresh backup."}
+    if "restart failed" in low or "rolled back" in low or "interrupted" in low:
+        return {"detail": detail, "backup": False,
+                "verdict": "The previous version was restored. The new version "
+                           "did not come up, so retrying the same release may "
+                           "fail again - check diagnostics before retrying."}
+    if ("could not fetch" in low or "commit mismatch" in low
+            or "verify" in low or "download" in low):
+        return {"detail": detail, "backup": False,
+                "verdict": "Nothing was changed. This is usually a transient "
+                           "network problem - safe to retry."}
+    return {"detail": detail, "backup": False,
+            "verdict": "Nothing was changed; safe to retry."}
+
+
 def _update_controls(control):
     """The release-update card: an 'Upgrade to X' button when the updates plugin
     found a newer, app-layer-updatable release, or a plain 'needs reflash' note
@@ -1799,12 +1856,35 @@ def _update_controls(control):
         return ('<div class="card"><h3>Update available</h3><p>Version ' + latest
                 + ' is available, but it needs a reflash (' + reason
                 + "). It can't be applied in place.</p>" + notes_link + "</div>")
-    return ('<div class="card"><h3>Update available</h3><p>Version ' + latest
-            + ' can be installed in place.</p>'
+
+    # If the last in-place attempt failed, say so and why, with retry guidance
+    # keyed to the failure class - otherwise the card just silently re-offers
+    # the same upgrade that already failed.
+    fail = _update_failure(_read_update_run_state())
+    fail_html = ""
+    retry_no_backup = ""
+    if fail:
+        fail_html = ('<div class="msg err"><strong>The last update attempt '
+                     'failed.</strong><br>' + _esc(fail["detail"]) + "<br>"
+                     + _esc(fail["verdict"]) + "</div>")
+        if fail["backup"]:
+            # A one-tap retry that skips the pre-update backup (lands on the
+            # confirm page with the skip box ticked).
+            retry_no_backup = (
+                '<form method="post" action="/update' + qs + '">'
+                + _csrf_field(control)
+                + '<input type="hidden" name="action" value="apply">'
+                + '<input type="hidden" name="no_backup" value="yes">'
+                + '<button type="submit" class="secondary">Retry without a '
+                  "fresh backup</button></form>")
+
+    verb = "Retry" if fail else "Upgrade to " + latest
+    return ('<div class="card"><h3>Update available</h3>' + fail_html
+            + '<p>Version ' + latest + ' can be installed in place.</p>'
             + '<form method="post" action="/update' + qs + '">' + _csrf_field(control)
             + '<input type="hidden" name="action" value="apply">'
-            + '<button type="submit">Upgrade to ' + latest + "</button></form>"
-            + notes_link + "</div>")
+            + '<button type="submit">' + verb + "</button></form>"
+            + retry_no_backup + notes_link + "</div>")
 
 
 def _bt_pair_control(status, control):
@@ -2832,15 +2912,20 @@ def _render_webhook_timeout(name, control, busy=False):
     return _page(name + " - Kestrel", body)
 
 
-def _render_update_confirm(control, state):
+def _render_update_confirm(control, state, no_backup=False):
     """The confirm page before an in-place upgrade. It spells out exactly what
     the update does - pause capture, training and the daemon, optionally back up
     first, install, then restart what was running - matching the CLI's prompt.
+    When a pre-update backup would run, it offers a "skip the pre-update backup"
+    checkbox (pre-ticked when the operator arrived via the retry-without-backup
+    button), so a device whose backup remote is unreachable can still update.
     The confirm re-posts with ``confirm=yes``; Cancel returns to the dashboard."""
     qs = _esc(control.get("qs", ""))
     latest = _esc(state.get("latest") or "the latest release")
     backup_on = bool(control.get("enabled", {}).get("backup")
                      and control.get("backup_ready"))
+    # "Skip the backup" only makes sense when a pre-update backup would run.
+    skip_backup = bool(no_backup) and backup_on
     # Soft single-link guardrail: warn when the device is reachable on only one
     # management link right now, since losing it mid-update (especially a BT PAN
     # link that then fails to re-establish) can leave the device unreachable.
@@ -2865,15 +2950,18 @@ def _render_update_confirm(control, state):
     )
     steps = ["<li>stop capture</li>",
              "<li>stop the learning agent (pausing training)</li>"]
-    if backup_on:
+    if backup_on and not skip_backup:
         steps.append("<li>back up the latest capture data and the learning model "
                      "to your remote first &mdash; and <strong>cancel the "
                      "update</strong> if that backup fails, so it only proceeds "
                      "with a current copy safe</li>")
+    elif skip_backup:
+        steps.append("<li><strong>skip the pre-update backup</strong> &mdash; "
+                     "updating without a fresh copy on your remote</li>")
     steps.append("<li>stop the plugin daemon</li>")
     steps.append("<li>install " + latest + ", then restart whatever was running</li>")
     # The network sentence names the backup only when a pre-update backup runs.
-    if backup_on:
+    if backup_on and not skip_backup:
         net_line = ("Only the download and the backup use the network, both "
                     "before anything on the device is changed and both retried, "
                     "so a dropped connection cancels the update with nothing "
@@ -2896,6 +2984,11 @@ def _render_update_confirm(control, state):
         + '<input type="hidden" name="confirm" value="yes">'
         + '<input type="hidden" name="tag" value="'
         + _esc(state.get("latest") or "") + '">'
+        + (('<label class="chk"><input type="checkbox" name="no_backup" '
+            'value="yes"' + (" checked" if skip_backup else "") + "> Skip the "
+            "pre-update backup (update without a fresh copy on your remote "
+            "&mdash; use this if the backup host is unreachable)</label>")
+           if backup_on else "")
         + '<button type="submit">Yes, upgrade now</button></form></div>'
         + '<p><a href="/' + qs + '">Cancel</a></p>'
     )

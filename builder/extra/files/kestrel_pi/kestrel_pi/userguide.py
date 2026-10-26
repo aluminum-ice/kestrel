@@ -160,7 +160,7 @@ With login on, the dashboard drives the same actions as the terminal through a s
 - Capture on/off, including the authorized-use acknowledgment (never pre-ticked). It does not restart the daemon.
 - Plugins: a page to enable, disable and configure plugins (set their options and secrets), with the authorized-use acknowledgment for network plugins.
 - AI Agent: enable/disable, choose the policy and algorithm, turn on-device training On or Off, and Train now, with the agent-vs-sweep comparison.
-- Upgrade: apply an available in-place update.
+- Upgrade: apply an available in-place update. If the last attempt failed, the card shows why; when it failed because the pre-update backup could not reach your remote, it offers **Retry without a fresh backup** (the confirm page also has a *skip the pre-update backup* checkbox, and the terminal equivalent is `sudo kestrel update apply --no-backup`). A stalled backup no longer holds the dashboard down — it is bounded by the `backup_timeout_seconds` option (0 waits indefinitely).
 - Reboot and Shut down: each opens a confirmation page first. A shutdown will not come back on its own; a reboot will.
 - Pair over Bluetooth: a button that appears only when no phone is paired, to reopen the pairing window without the terminal. It disappears once a phone is paired.
 - Advanced settings: a per-key editor for the core `config.toml` settings, reached by a discreet **Advanced settings** link at the very bottom of the dashboard. See [Advanced settings](#advanced-settings) just below.
