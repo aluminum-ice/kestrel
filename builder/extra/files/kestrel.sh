@@ -552,11 +552,13 @@ PLUGINS_NET_ACK_TEXT="This plugin transmits data off the device (captured\
  handshakes, or observed networks and their locations). Enable it only for\
  data you are authorized to collect and share. Unauthorized use may be illegal."
 
-# Run the plugins-ctl helper with the pi venv Python (kestrel_pi importable).
+# Run the plugins-ctl helper with the system Python in isolated mode, as the
+# socket helpers do: it often runs as root and reads plugin declarations
+# statically, so it needs nothing from the pi-owned venv.
 plugins_ctl() {
     PWN_CONFIG="$PWN_CONFIG" \
     PWN_PLUGIN_PATHS="$PWN_PLUGINS_DIR:$PWN_PLUGINS_USER_DIR" \
-        "$PWN_VENV_PYTHON" "$PWN_PLUGINS_CTL" "$@"
+        python3 -I "$PWN_PLUGINS_CTL" "$@"
 }
 
 plugin_has_network_cap() {
@@ -633,7 +635,7 @@ cmd_plugins_info() {
     health=$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/status.json" 2>/dev/null || true)
     if [ -n "$health" ]; then
         echo "health:"
-        echo "$health" | "$PWN_VENV_PYTHON" -c 'import json,sys
+        echo "$health" | python3 -I -c 'import json,sys
 name=sys.argv[1]
 data=json.load(sys.stdin)
 for p in data.get("plugins", []):
@@ -662,7 +664,7 @@ cmd_plugins_enable() {
         esac
     done
     [ -n "$name" ] || die "usage: $PROG plugins enable <name> [--yes] [--set k=v ...]"
-    plugins_ctl caps "$name" >/dev/null 2>&1 || die "no such plugin: $name"
+    plugins_ctl caps "$name" >/dev/null || die "cannot enable plugin '$name'"
 
     echo "Enabling plugin '$name'. Declared capabilities:"
     plugins_ctl caps "$name" | sed 's/^/  - /'
@@ -732,7 +734,7 @@ cmd_plugins_enable() {
 cmd_plugins_disable() {
     need_root
     [ $# -ge 1 ] || die "usage: $PROG plugins disable <name>"
-    plugins_ctl caps "$1" >/dev/null 2>&1 || die "no such plugin: $1"
+    plugins_ctl exists "$1" || die "no such plugin: $1"
     plugins_ctl set "$1" enabled false
     systemctl restart "$PWN_DAEMON_SERVICE"
     log "plugin '$1' disabled; daemon restarted"
@@ -862,7 +864,7 @@ cmd_web_auth() {
             config_set web auth '"basic"'
             ;;
         token)
-            token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+            token=$(python3 -I -c 'import secrets; print(secrets.token_urlsafe(24))')
             printf '%s' "$token" | config_set_string web token
             config_set web auth '"token"'
             echo "token: $token"
@@ -1441,7 +1443,7 @@ cmd_agent_import() {
     fi
     if [ -n "$meta" ]; then
         [ -f "$meta" ] || die "no such sidecar: $meta"
-        algo=$(PWN_META="$meta" "$PWN_VENV_PYTHON" -c 'import json,os;print(json.load(open(os.environ["PWN_META"])).get("algorithm",""))' 2>/dev/null || true)
+        algo=$(PWN_META="$meta" python3 -I -c 'import json,os;print(json.load(open(os.environ["PWN_META"])).get("algorithm",""))' 2>/dev/null || true)
     fi
     [ -n "$algo" ] || die "give the model's algorithm: --algorithm <$AGENT_ALGORITHMS>"
     agent_valid_algo "$algo" || die "unknown algorithm '$algo' (one of: $AGENT_ALGORITHMS)"
@@ -1452,7 +1454,7 @@ cmd_agent_import() {
     model_file=$(run_as_pi "$PWN_VENV_PYTHON" -c 'import sys; from kestrel_pi.agent import model_name_for; print(model_name_for(sys.argv[1]))' "$algo") \
         || die "could not resolve the model filename for $algo"
     install -o pi -g pi -m 0644 "$model" "$PWN_AGENT_DIR/$model_file"
-    run_as_pi "$PWN_VENV_PYTHON" -c "from kestrel_pi.agent import policies; policies.write_meta('$PWN_AGENT_DIR', '$algo')"
+    run_as_pi "$PWN_VENV_PYTHON" -c 'import sys; from kestrel_pi.agent import policies; policies.write_meta(sys.argv[1], sys.argv[2])' "$PWN_AGENT_DIR" "$algo"
     config_set agent algorithm "\"$algo\""
     config_set agent policy '"learned"'
     agent_running && systemctl restart "$PWN_AGENT_SERVICE" || true
@@ -1487,10 +1489,12 @@ cmd_agent_train_now() {
 
 cmd_agent_metrics() {
     local status="$PWN_AGENT_DIR/status.json"
-    PWN_AGENT_DIR="$PWN_AGENT_DIR" "$PWN_VENV_PYTHON" - <<'PY' || true
+    # As pi: it imports kestrel_pi from the venv, which root never runs.
+    run_as_pi "$PWN_VENV_PYTHON" - "$PWN_AGENT_DIR" <<'PY' || true
 import os
+import sys
 from kestrel_pi.agent import metrics
-d = os.environ["PWN_AGENT_DIR"]
+d = sys.argv[1]
 rows = metrics.load_rows(os.path.join(d, "episodes"))
 print(metrics.format_table(metrics.summarize(rows)))
 PY
@@ -1512,7 +1516,7 @@ cmd_agent_status() {
     local status="$PWN_AGENT_DIR/status.json"
     if [ -f "$status" ]; then
         echo "  last status:"
-        PWN_STATUS="$status" "$PWN_VENV_PYTHON" -c 'import json,os
+        PWN_STATUS="$status" python3 -I -c 'import json,os
 s=json.load(open(os.environ["PWN_STATUS"]))
 for k in ("policy","algorithm","posture","dwell","transmit","last_reward","session_yield","decisions","detail"):
     if s.get(k) not in (None,""): print("    %s: %s" % (k, s[k]))' 2>/dev/null || true
@@ -1724,7 +1728,7 @@ PWN_UPDATE_ENGINE=$PWN_LIB_DIR/update-apply
 # Read one field from the updates plugin's state file ("" if missing). A JSON
 # bool is normalised to the strings True/False so callers can test it.
 update_state_get() {
-    python3 -c 'import json,os,sys
+    python3 -I -c 'import json,os,sys
 p=sys.argv[1]; k=sys.argv[2]
 d=json.load(open(p)) if os.path.exists(p) else {}
 v=d.get(k, "")

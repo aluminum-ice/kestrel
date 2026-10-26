@@ -111,7 +111,7 @@ echo
 
 echo "Live fix (from the running daemon)"
 if [ -r "$POS" ]; then
-    python3 - "$POS" <<'PY'
+    python3 -I - "$POS" <<'PY'
 import json,sys,time,calendar
 try:
     d=json.load(open(sys.argv[1]))
@@ -149,7 +149,7 @@ if [ "$SAMPLE" = 1 ]; then
     sudo timeout "$SAMPLE_SECS" cat "$dev" > "$raw" 2>/dev/null || true
     sudo systemctl start "$DAEMON" 2>/dev/null || true
     lines=$(wc -l < "$raw" | tr -d ' ')
-    python3 - "$raw" <<'PY'
+    python3 -I - "$raw" <<'PY'
 import sys,re
 maxsnr=0.0; strong=0; have_fix=False; nmea=0
 for line in open(sys.argv[1],"rb"):

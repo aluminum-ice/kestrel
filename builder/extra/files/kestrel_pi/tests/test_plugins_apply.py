@@ -84,7 +84,7 @@ def test_plugin_files_are_parsed_not_imported(env, monkeypatch):
     assert not marker.exists()
 
 
-def test_computed_declarations_are_left_to_the_cli(env, monkeypatch):
+def test_computed_declarations_are_refused(env, monkeypatch):
     plugdir = env / "plugins"
     plugdir.mkdir()
     (plugdir / "computed.py").write_text(
@@ -100,7 +100,7 @@ def test_computed_declarations_are_left_to_the_cli(env, monkeypatch):
     _auth_on(env)
     for name in ("computed", "odd"):
         reply = ctl.apply_change({"plugin": name, "enabled": True})
-        assert reply["ok"] is False and "use sudo kestrel plugins" in reply["error"]
+        assert reply["ok"] is False and "aren't plain literals" in reply["error"]
 
 
 def test_refused_while_web_auth_is_off(env):

@@ -3,6 +3,16 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # variables are used by the scripts that source this
 
+# As root, never resolve a command through an inherited PATH: pi's login shell
+# activates the pi-owned venv, whose python3 runs pi-writable site-packages code
+# (-I does not stop that). sudo already resets PATH (secure_path); this covers a
+# root shell that kept pi's. Python run as root is always `python3 -I` (no cwd,
+# PYTHONPATH or user site on sys.path), and never the venv's.
+if [ "$(id -u)" -eq 0 ]; then
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    export PATH
+fi
+
 PWN_DEFAULTS=${PWN_DEFAULTS:-/etc/default/kestrel}
 PWN_LIB_DIR=${PWN_LIB_DIR:-/usr/local/lib/kestrel}
 PWN_STATE_DIR=${PWN_STATE_DIR:-/var/lib/kestrel}
@@ -29,9 +39,10 @@ PWN_CAPTURE_ACK_FILE=${PWN_CAPTURE_ACK_FILE:-/etc/kestrel/capture-ack}
 
 # Plugin host (Phase 3). The daemon runs in the pi venv; the shipped reference
 # plugins are read-only, operator plugins are user-added. plugins-ctl is the
-# introspection/config helper (run with the venv Python so kestrel_pi is
-# importable). The same authorized-use ack as capture gates device-leaving
-# plugin capabilities (network).
+# introspection/config helper; it reads plugin declarations statically and runs
+# under the system `python3 -I`, never the venv (PWN_VENV_PYTHON is only ever
+# run as pi, via run_as_pi). The same authorized-use ack as capture gates
+# device-leaving plugin capabilities (network).
 PWN_DAEMON_SERVICE=kestrel-daemon.service
 PWN_VENV_PYTHON=${PWN_VENV_PYTHON:-/home/pi/.venv/bin/python}
 
@@ -302,7 +313,7 @@ capture_whitelist_merge() {
     [ -f "$PWN_CONFIG" ] || die "missing $PWN_CONFIG"
     local current added
     current=$(cfg capture.whitelist "" || true)
-    added=$(PWN_CONFIG="$PWN_CONFIG" CURRENT="$current" python3 - "$@" <<'PY'
+    added=$(PWN_CONFIG="$PWN_CONFIG" CURRENT="$current" python3 -I - "$@" <<'PY'
 import json
 import os
 import re

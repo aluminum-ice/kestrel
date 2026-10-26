@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Plugin config/introspection helper for the `kestrel plugins` tool.
 
-Run by the pi venv's Python (so `kestrel_pi` is importable). It introspects
-the shipped and operator plugin files for their declarations and reads/edits the
-`[plugins.<name>]` tables in config.toml. The TOML writer is a line editor that
+Run by the system Python in isolated mode (`/usr/bin/python3 -I`), never the
+pi-owned venv: the CLI runs it as root under sudo. It reads the shipped and
+operator plugin files' declarations statically (ast, never importing the plugin
+or kestrel_pi) and reads/edits the `[plugins.<name>]` tables in config.toml. The TOML writer is a line editor that
 preserves the rest of the file (tomllib is read-only); it only ever touches the
 named plugin's table.
 
 Usage:
   plugins-ctl list                     name<TAB>enabled<TAB>source, per plugin
   plugins-ctl info <name>              human-readable declarations + config
+  plugins-ctl exists <name>            exit 0 if a plugin file of that name exists
   plugins-ctl caps <name>              declared capabilities, one per line
   plugins-ctl missing <name>           required options with no value set
   plugins-ctl schema <name>            TSV of options for the interactive enable
@@ -23,7 +25,7 @@ Usage:
 
 `apply` and `checkauth` run as root (kestrel-plugins-apply@.service and
 kestrel-web-auth@.service, one instance per connection on sockets only
-the pi group can reach) under the system Python in isolated mode. `apply` never
+the pi group can reach) under the system Python in isolated mode. No subcommand
 imports kestrel_pi or a plugin: declarations are read with ast, so nothing
 the pi user can write is executed as root. `checkauth` reads /etc/shadow (root
 only, which is why web-login verification lives here) and never logs the
@@ -147,56 +149,56 @@ def load_config():
         return {}
 
 
-def discover():
-    """{name: (cls, source)} across the search paths (operator overrides)."""
-    from kestrel_pi.loader import discover_plugin_classes
-
-    found = {}
-    for directory in PLUGIN_PATHS:
-        if not os.path.isdir(directory):
-            continue
-        for fname in sorted(os.listdir(directory)):
-            if not fname.endswith(".py") or fname.startswith("_"):
-                continue
-            source = os.path.join(directory, fname)
-            try:
-                for name, cls in discover_plugin_classes(source):
-                    found[name] = (cls, source)
-            except Exception as exc:  # noqa: BLE001
-                sys.stderr.write("plugins-ctl: %s: %s\n" % (source, exc))
-    return found
-
-
 def plugin_table(config, name):
     return (config.get("plugins", {}) or {}).get(name, {}) or {}
 
 
+def find_plugin(name):
+    """The named plugin's static declarations, or None (with the reason on
+    stderr) if there is no such plugin or its declarations can't be read."""
+    decl, source = static_plugins().get(name, (None, None))
+    if source is None:
+        sys.stderr.write("no such plugin: %s\n" % name)
+    elif decl is None:
+        sys.stderr.write("plugin %s (%s) has declarations that aren't plain "
+                         "literals; the daemon refuses it too\n" % (name, source))
+    return decl
+
+
 def cmd_list():
     config = load_config()
-    for name, (_cls, source) in sorted(discover().items()):
-        enabled = bool(plugin_table(config, name).get("enabled", False))
-        print("%s\t%s\t%s" % (name, "enabled" if enabled else "disabled", source))
+    for name, (decl, source) in sorted(static_plugins().items()):
+        if decl is None:
+            state = "invalid"
+        elif plugin_table(config, name).get("enabled", False):
+            state = "enabled"
+        else:
+            state = "disabled"
+        print("%s\t%s\t%s" % (name, state, source))
     return 0
 
 
+def cmd_exists(name):
+    """Exit 0 if a plugin file of this name exists, readable or not (so an
+    invalid one can still be disabled)."""
+    return 0 if name in static_plugins() else 1
+
+
 def cmd_caps(name):
-    found = discover()
-    if name not in found:
-        sys.stderr.write("no such plugin: %s\n" % name)
+    decl = find_plugin(name)
+    if decl is None:
         return 1
-    for cap in getattr(found[name][0], "__capabilities__", ()) or ():
+    for cap in decl["capabilities"]:
         print(cap)
     return 0
 
 
 def cmd_missing(name):
-    found = discover()
-    if name not in found:
-        sys.stderr.write("no such plugin: %s\n" % name)
+    decl = find_plugin(name)
+    if decl is None:
         return 1
-    cls, _source = found[name]
     table = plugin_table(load_config(), name)
-    for opt, spec in (getattr(cls, "__options__", {}) or {}).items():
+    for opt, spec in decl["options"].items():
         spec = spec or {}
         if spec.get("required") and "default" not in spec and opt not in table:
             print(opt)
@@ -218,13 +220,11 @@ def cmd_schema(name):
     current is the config value or the default, rendered as a string; it is
     always empty for a secret option (a stored secret is never echoed), while
     has_value still reflects whether one is set."""
-    found = discover()
-    if name not in found:
-        sys.stderr.write("no such plugin: %s\n" % name)
+    decl = find_plugin(name)
+    if decl is None:
         return 1
-    cls, _source = found[name]
     table = plugin_table(load_config(), name)
-    for opt, spec in (getattr(cls, "__options__", {}) or {}).items():
+    for opt, spec in decl["options"].items():
         spec = spec or {}
         required = "1" if spec.get("required") else "0"
         secret = "1" if spec.get("secret") else "0"
@@ -243,23 +243,22 @@ def cmd_schema(name):
 
 
 def cmd_info(name):
-    found = discover()
-    if name not in found:
-        sys.stderr.write("no such plugin: %s\n" % name)
+    decl = find_plugin(name)
+    if decl is None:
         return 1
-    cls, source = found[name]
+    source = static_plugins()[name][1]
     table = plugin_table(load_config(), name)
     print("name:          %s" % name)
     print("source:        %s" % source)
     print("enabled:       %s" % bool(table.get("enabled", False)))
-    print("description:   %s" % (getattr(cls, "__description__", "") or "-"))
-    print("version:       %s" % getattr(cls, "__version__", "?"))
-    print("target_api:    %s" % getattr(cls, "__target_api__", "?"))
-    print("capabilities:  %s" % (", ".join(getattr(cls, "__capabilities__", ()) or ()) or "-"))
-    print("provides:      %s" % (", ".join(getattr(cls, "__provides__", ()) or ()) or "-"))
-    print("requires:      %s" % (", ".join(getattr(cls, "__requires__", ()) or ()) or "-"))
-    print("optional:      %s" % (", ".join(getattr(cls, "__optional_requires__", ()) or ()) or "-"))
-    opts = getattr(cls, "__options__", {}) or {}
+    print("description:   %s" % (decl["description"] or "-"))
+    print("version:       %s" % decl["version"])
+    print("target_api:    %s" % decl["target_api"])
+    print("capabilities:  %s" % (", ".join(decl["capabilities"]) or "-"))
+    print("provides:      %s" % (", ".join(decl["provides"]) or "-"))
+    print("requires:      %s" % (", ".join(decl["requires"]) or "-"))
+    print("optional:      %s" % (", ".join(decl["optional_requires"]) or "-"))
+    opts = decl["options"]
     if opts:
         print("options:")
         for opt, spec in opts.items():
@@ -332,8 +331,31 @@ def cmd_set(name, key, raw):
     return 0
 
 
-# -- apply: the root side of the web plugin controls ------------------------
-_DECLARED = ("__plugin_name__", "__capabilities__", "__options__")
+# -- static plugin declarations ---------------------------------------------
+# Every subcommand reads plugin declarations with ast and never imports the
+# plugin: this helper runs as root. This is a mirror of read_declarations in
+# kestrel_pi/declarations.py (which this helper can't import: it is in the
+# pi-writable venv); the daemon's loader refuses any plugin this reader can't
+# read, and a drift test keeps the two identical. Change both together.
+
+# Declaration attribute -> (key, default). The defaults mirror the Plugin base
+# class, so an undeclared attribute reads the same statically as on the class.
+DECLARED = {
+    "__plugin_name__": ("name", None),
+    "__description__": ("description", ""),
+    "__version__": ("version", "0.0.0"),
+    "__target_api__": ("target_api", 1),
+    "__capabilities__": ("capabilities", ()),
+    "__options__": ("options", {}),
+    "__provides__": ("provides", ()),
+    "__requires__": ("requires", ()),
+    "__optional_requires__": ("optional_requires", ()),
+}
+_TUPLES = ("capabilities", "provides", "requires", "optional_requires")
+
+
+class DeclarationError(ValueError):
+    """A plugin file whose declarations can't be read statically."""
 
 
 def _base_name(node):
@@ -344,13 +366,37 @@ def _base_name(node):
     return None
 
 
+def normalize(raw, where):
+    """{key: value} from the raw declared attributes, defaults filled in and the
+    shapes checked. Raises DeclarationError for a malformed declaration."""
+    decl = {}
+    for attr, (key, default) in DECLARED.items():
+        value = raw.get(attr, default)
+        if key in _TUPLES:
+            if value is None:
+                value = ()
+            if not isinstance(value, (tuple, list)) or not all(
+                    isinstance(item, str) for item in value):
+                raise DeclarationError("%s: %s is not a list of strings" % (where, attr))
+            value = tuple(value)
+        elif key == "options":
+            value = value or {}
+            if not isinstance(value, dict) or not all(
+                    isinstance(spec, dict) or spec is None for spec in value.values()):
+                raise DeclarationError("%s: __options__ is not a dict of option specs" % where)
+        decl[key] = value
+    return decl
+
+
 def read_declarations(path):
-    """{name: {"capabilities": tuple, "options": dict}} for the ``Plugin``
-    classes in ``path``, read statically: the file is parsed, never imported,
-    so this is safe to run as root. Raises ValueError for a declaration that
-    isn't a plain literal."""
+    """{name: declarations} for the classes in ``path`` that subclass ``Plugin``
+    directly, read statically: the file is parsed, never imported. Raises
+    DeclarationError for a declaration that isn't a plain literal."""
     with open(path, "r", encoding="utf-8") as handle:
-        tree = ast.parse(handle.read(), filename=path)
+        try:
+            tree = ast.parse(handle.read(), filename=path)
+        except SyntaxError as exc:
+            raise DeclarationError("%s: %s" % (path, exc)) from None
     file_default = os.path.splitext(os.path.basename(path))[0]
     found = {}
     for node in tree.body:
@@ -358,7 +404,7 @@ def read_declarations(path):
             continue
         if "Plugin" not in [_base_name(base) for base in node.bases]:
             continue
-        decl = {}
+        raw = {}
         for stmt in node.body:
             if isinstance(stmt, ast.Assign):
                 targets = stmt.targets
@@ -367,17 +413,19 @@ def read_declarations(path):
             else:
                 continue
             for target in targets:
-                if isinstance(target, ast.Name) and target.id in _DECLARED:
-                    decl[target.id] = ast.literal_eval(stmt.value)
-        name = decl.get("__plugin_name__") or file_default
-        options = decl.get("__options__") or {}
-        if not isinstance(options, dict) or not all(
-                isinstance(spec, dict) or spec is None for spec in options.values()):
-            raise ValueError("%s: __options__ is not a dict of option specs" % name)
-        found[name] = {
-            "capabilities": tuple(decl.get("__capabilities__") or ()),
-            "options": options,
-        }
+                if isinstance(target, ast.Name) and target.id in DECLARED:
+                    try:
+                        raw[target.id] = ast.literal_eval(stmt.value)
+                    except (ValueError, TypeError, SyntaxError, MemoryError,
+                            RecursionError):
+                        raise DeclarationError("%s: %s.%s is not a plain literal"
+                                               % (path, node.name, target.id)) from None
+        decl = normalize(raw, "%s: %s" % (path, node.name))
+        name = decl["name"] or file_default
+        if not isinstance(name, str):
+            raise DeclarationError("%s: %s.__plugin_name__ is not a string" % (path, node.name))
+        decl["name"] = name
+        found[name] = decl
     return found
 
 
@@ -396,12 +444,13 @@ def static_plugins():
             try:
                 for name, decl in read_declarations(source).items():
                     found[name] = (decl, source)
-            except (OSError, SyntaxError, ValueError, TypeError) as exc:
+            except (OSError, UnicodeDecodeError, DeclarationError) as exc:
                 found[os.path.splitext(fname)[0]] = (None, source)
-                sys.stderr.write("plugins-ctl: %s: %s\n" % (source, exc))
+                sys.stderr.write("plugins-ctl: %s\n" % exc)
     return found
 
 
+# -- apply: the root side of the web plugin controls ------------------------
 def web_control_ready(config):
     """Plugin changes from the web page need web auth on, with its credential
     set. Checked here as well as in the daemon, so the root side enforces it."""
@@ -955,11 +1004,10 @@ def apply_change(change):
     plugins = static_plugins()
     decl = plugins.get(name, (None, None))[0]
     if decl is None:
-        # Not found, or its declarations aren't plain literals (a legacy
-        # @plugins.on module, a computed __options__): reading them would mean
-        # running the plugin as root, so it is left to the CLI.
-        return {"ok": False, "error": "%s can't be managed from the web page; use "
-                "sudo kestrel plugins on the device" % name}
+        # Not found, or its declarations aren't plain literals (reading them
+        # would mean running the plugin as root; the daemon refuses it too).
+        return {"ok": False, "error": "%s can't be managed: no such plugin, or "
+                "its declarations aren't plain literals" % name}
     options = decl["options"]
     updates = change.get("set", {})
     enabled = change.get("enabled")
@@ -1190,6 +1238,8 @@ def main(argv):
         return cmd_list()
     if cmd == "info" and len(argv) == 3:
         return cmd_info(argv[2])
+    if cmd == "exists" and len(argv) == 3:
+        return cmd_exists(argv[2])
     if cmd == "caps" and len(argv) == 3:
         return cmd_caps(argv[2])
     if cmd == "missing" and len(argv) == 3:

@@ -66,19 +66,3 @@ How to use this file:
 - **What to do:** move the shared logic into such a module (installed as a lib
   script), have both sides use it, and drop the duplicate.
 - **Pick up when:** either side's decision logic next changes.
-
-## Privilege boundaries elsewhere
-
-### Root CLI commands run the pi-owned venv Python
-
-- **What:** `plugins_ctl` in `builder/extra/files/kestrel.sh` runs
-  `plugins-ctl` with the pi venv's Python (`$PWN_VENV_PYTHON`) when invoked as
-  root (`sudo kestrel plugins ...`). The venv is pi-owned, so code pi drops into
-  it (a `.pth` file in site-packages) runs as root. The socket-activated root
-  helpers already use `/usr/bin/python3 -I` and are not affected.
-- **Why deferred:** outside the update work that found it; the venv is used so
-  `kestrel_pi` is importable, so the fix needs `plugins-ctl`'s imports checked.
-- **What to do:** run `plugins-ctl` as root with `/usr/bin/python3 -I` (as the
-  systemd helpers do), or drop to pi for the parts that need the venv; audit the
-  CLI for other root invocations of `$PWN_VENV_PYTHON`.
-- **Pick up when:** next change to the `plugins` CLI, or sooner.
