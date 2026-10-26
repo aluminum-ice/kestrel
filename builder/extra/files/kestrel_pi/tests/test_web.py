@@ -1741,7 +1741,8 @@ def test_update_apply_confirm_goes_through_the_root_helper(monkeypatch, tmp_path
                        data={"csrf": _csrf(page), "action": "apply",
                              "confirm": "yes", "tag": "0.5.0"})
     assert resp.status_code == 200
-    assert sent == [{"target": "update", "action": "apply", "tag": "0.5.0"}]
+    assert sent == [{"target": "update", "action": "apply", "tag": "0.5.0",
+                     "no_backup": False}]
     assert "Upgrading" in resp.get_data(as_text=True)
 
 
@@ -1792,6 +1793,75 @@ def test_update_unknown_action_changes_nothing(monkeypatch, tmp_path):
                        data={"csrf": _csrf(page), "action": "wat"})
     assert sent == []
     assert "Nothing changed." in resp.get_data(as_text=True)
+
+
+# -- surfacing a failed update + the "update without a fresh backup" path -----
+
+def test_update_card_surfaces_a_backup_failure_with_retry(monkeypatch, tmp_path):
+    client, _ = _update_client(monkeypatch, tmp_path, state=_OFFERABLE)
+    monkeypatch.setattr(web, "_read_update_run_state", lambda path=None: {
+        "status": "error",
+        "detail": "backup before updating failed (exit 10); nothing changed"})
+    body = client.get("/", headers=_basic()).get_data(as_text=True)
+    assert "The last update attempt failed." in body
+    assert "backup before updating failed" in body
+    assert "update without a fresh backup" in body          # the verdict text
+    assert "Retry without a fresh backup" in body           # the one-tap button
+    assert 'name="no_backup" value="yes"' in body
+
+
+def test_update_card_restart_failure_warns_against_blind_retry(monkeypatch, tmp_path):
+    client, _ = _update_client(monkeypatch, tmp_path, state=_OFFERABLE)
+    monkeypatch.setattr(web, "_read_update_run_state", lambda path=None: {
+        "status": "error",
+        "detail": "installed 0.5.0 but restart failed (...); rolled back"})
+    body = client.get("/", headers=_basic()).get_data(as_text=True)
+    assert "The last update attempt failed." in body
+    assert "check diagnostics before retrying" in body
+    # Not a backup-class failure, so no skip-backup retry button.
+    assert "Retry without a fresh backup" not in body
+
+
+def test_update_card_clean_when_last_run_ok(monkeypatch, tmp_path):
+    client, _ = _update_client(monkeypatch, tmp_path, state=_OFFERABLE)
+    monkeypatch.setattr(web, "_read_update_run_state", lambda path=None: {
+        "status": "ok", "detail": "updated to 0.4.0"})
+    body = client.get("/", headers=_basic()).get_data(as_text=True)
+    assert "The last update attempt failed." not in body
+    assert "Upgrade to 0.5.0" in body
+
+
+def test_update_confirm_offers_skip_backup_checkbox(monkeypatch):
+    monkeypatch.setattr(web, "iface_ipv4", lambda iface: None)
+    ctl = {"ready": True, "csrf": "t0ken", "qs": "", "token": "",
+           "enabled": {"backup": True}, "backup_ready": True}
+    state = {"latest": "0.5.0"}
+    off = web._render_update_confirm(ctl, state)
+    assert 'name="no_backup" value="yes"' in off and " checked" not in off.split(
+        'name="no_backup"')[1][:40]
+    # Arriving via the retry-without-backup path pre-ticks the box.
+    on = web._render_update_confirm(ctl, state, no_backup=True)
+    assert 'name="no_backup" value="yes" checked' in on
+    assert "skip the pre-update backup" in on.lower()
+
+
+def test_update_confirm_no_checkbox_without_a_backup(monkeypatch):
+    monkeypatch.setattr(web, "iface_ipv4", lambda iface: None)
+    ctl = {"ready": True, "csrf": "t", "qs": "", "token": "",
+           "enabled": {"backup": False}, "backup_ready": False}
+    body = web._render_update_confirm(ctl, {"latest": "0.5.0"}, no_backup=True)
+    assert 'name="no_backup"' not in body        # nothing to skip
+
+
+def test_update_submit_threads_no_backup_through(monkeypatch, tmp_path):
+    client, sent = _update_client(monkeypatch, tmp_path, state=_OFFERABLE)
+    page = client.get("/", headers=_basic()).get_data(as_text=True)
+    resp = client.post("/update", headers=_basic(),
+                       data={"csrf": _csrf(page), "action": "apply",
+                             "confirm": "yes", "tag": "0.5.0", "no_backup": "yes"})
+    assert resp.status_code == 200
+    assert sent == [{"target": "update", "action": "apply", "tag": "0.5.0",
+                     "no_backup": True}]
 
 
 # -- generic plugin row buttons (__actions__ + /plugins/<name>/<path>) -------

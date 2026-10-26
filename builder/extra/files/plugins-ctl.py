@@ -732,8 +732,14 @@ def apply_update(change):
     tag = change.get("tag")
     if not isinstance(tag, str) or not _UPDATE_TAG_RE.fullmatch(tag):
         return {"ok": False, "error": "bad request"}
-    sys.stderr.write("plugins-ctl apply: update apply %s via web\n" % tag)
-    return {"ok": True, "update": "apply", "update_tag": tag}
+    # Optional "update without a fresh backup": the CLI re-verifies the release
+    # either way, so this only skips the pre-update mirror, granting no new
+    # privilege. Coerced to a plain bool so the marker is never attacker-shaped.
+    no_backup = bool(change.get("no_backup"))
+    sys.stderr.write("plugins-ctl apply: update apply %s via web%s\n"
+                     % (tag, " (no-backup)" if no_backup else ""))
+    return {"ok": True, "update": "apply", "update_tag": tag,
+            "update_no_backup": no_backup}
 
 
 def apply_update_check(change, config):
@@ -1154,19 +1160,22 @@ def run_power(action):
         sys.stderr.write("plugins-ctl apply: could not %s: %s\n" % (action, exc))
 
 
-def run_update(tag):
+def run_update(tag, no_backup=False):
     # Deferred past the reply (same as run_power) so the browser gets its answer
     # before the daemon restarts under the in-place update. The shipped CLI does
     # the privileged work: verify and clone the release, exec the clone's apply
     # engine so overwriting the installed CLI/package is safe, restart services.
     # A fixed unit name means a second request while one is pending or running
     # is refused by systemd rather than started alongside (the engine also
-    # takes a lock).
+    # takes a lock). --no-backup only skips the pre-update mirror; the CLI still
+    # re-verifies the release, so it is not a privilege.
+    cmd = ["systemd-run", "--quiet", "--collect", "--on-active=2",
+           "--unit=kestrel-update",
+           PWN_TOOL, "update", "apply", "--yes", "--expect", tag]
+    if no_backup:
+        cmd.append("--no-backup")
     try:
-        subprocess.run(["systemd-run", "--quiet", "--collect", "--on-active=2",
-                        "--unit=kestrel-update",
-                        PWN_TOOL, "update", "apply", "--yes", "--expect", tag],
-                       check=False, timeout=15,
+        subprocess.run(cmd, check=False, timeout=15,
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as exc:
         sys.stderr.write("plugins-ctl apply: could not start update: %s\n" % exc)
@@ -1222,7 +1231,7 @@ def cmd_apply():
     if reply.get("power"):
         run_power(reply["power"])
     if reply.get("update"):
-        run_update(reply["update_tag"])
+        run_update(reply["update_tag"], reply.get("update_no_backup"))
     if reply.get("backup_restore"):
         run_backup_restore()
     if reply.get("backup_now"):

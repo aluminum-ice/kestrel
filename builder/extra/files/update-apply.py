@@ -518,6 +518,13 @@ def _restore_quietly(prior, runner=run):
         pass
 
 
+# Default seconds to allow the pre-update backup before giving up on it, so a
+# backup that can't reach the remote (a flaky field uplink) cannot hold the
+# paused daemon -- and the dashboard -- down for many minutes. Overridable via
+# [plugins.updates] backup_timeout_seconds; 0 there means wait indefinitely.
+BACKUP_TIMEOUT_DEFAULT = 180
+
+
 def backup_configured(config_file=CONFIG_FILE, key_file=BACKUP_KEY):
     """True when the backup plugin is enabled, has host/user/path set, and the
     device SSH key exists - i.e. a pre-update backup can actually run. Read
@@ -537,15 +544,48 @@ def backup_configured(config_file=CONFIG_FILE, key_file=BACKUP_KEY):
     return os.path.isfile(backup.get("ssh_key") or key_file)
 
 
-def run_backup(runner=run, cli=BIN):
+def backup_timeout(config_file=CONFIG_FILE):
+    """Seconds to allow the pre-update backup, from [plugins.updates]
+    backup_timeout_seconds. Returns an int, or ``None`` for "no bound" (the
+    operator set 0). A missing or bad value falls back to
+    ``BACKUP_TIMEOUT_DEFAULT``. Read straight from config.toml with the stdlib
+    TOML parser; never imports the plugin (root)."""
+    try:
+        import tomllib
+        with open(config_file, "rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, ValueError, ImportError):
+        return BACKUP_TIMEOUT_DEFAULT
+    raw = ((data.get("plugins") or {}).get("updates") or {}).get(
+        "backup_timeout_seconds", BACKUP_TIMEOUT_DEFAULT)
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return BACKUP_TIMEOUT_DEFAULT
+    if val == 0:
+        return None            # explicit "wait as long as it takes"
+    return val if val > 0 else BACKUP_TIMEOUT_DEFAULT
+
+
+def run_backup(runner=run, cli=BIN, timeout=None):
     """Run one pre-update backup through the installed CLI (still the old one at
     this point - files are replaced only afterwards). The CLI's rsync already
-    retries a dropped transfer. Returns (ok, detail)."""
+    retries a dropped transfer, so ``timeout`` (seconds, ``None`` = no bound)
+    caps the whole attempt: past it the backup is abandoned and the update is
+    cancelled, rather than holding the paused daemon down for many minutes on a
+    backup that cannot finish (e.g. the remote host is unreachable). Returns
+    (ok, detail). The detail names the recovery so the dashboard can show it."""
+    advice = ("; check the backup host is reachable, or update without a fresh "
+              "backup")
     try:
-        runner([cli, "backup", "now"], check=True)
+        runner([cli, "backup", "now"], check=True, timeout=timeout)
         return True, ""
+    except subprocess.TimeoutExpired:
+        return False, ("backup before updating timed out after %ss; nothing "
+                       "changed%s" % (timeout, advice))
     except subprocess.SubprocessError as exc:
-        return False, "backup before updating failed (%s)" % exc
+        return False, "backup before updating failed (%s); nothing changed%s" % (
+            exc, advice)
 
 
 def write_state(state_file, **fields):
@@ -724,7 +764,7 @@ def _apply_locked(src, tag, state_file, version_file, prefix, do_package,
     # stop, so the device stays as it was with a safe copy not taken.
     if do_backup and backup_configured(config_file=config_file):
         write_state(state_file, status="running", detail="backing up before updating")
-        bok, berr = run_backup(runner=runner)
+        bok, berr = run_backup(runner=runner, timeout=backup_timeout(config_file))
         if not bok:
             write_state(state_file, status="error", detail=berr, finished_at=time.time())
             if do_services:

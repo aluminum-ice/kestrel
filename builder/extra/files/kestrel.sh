@@ -1836,7 +1836,13 @@ else:
 print("status:   ", st)
 if d.get("update_available") and not d.get("offerable") and d.get("reason"):
     print("reason:   ", d.get("reason"))
-if run.get("detail"):
+if run.get("status") == "error" and run.get("detail"):
+    print("last run:   FAILED -", run.get("detail"))
+    if "backup" in run.get("detail", ""):
+        print("            the device was not changed; retry when the backup host")
+        print("            is reachable, or update without a fresh backup:")
+        print("              sudo kestrel update apply --no-backup")
+elif run.get("detail"):
     print("last run: ", run.get("detail"))' "$PWN_UPDATE_STATE" "$PWN_UPDATE_RUN_STATE" /etc/kestrel/version
 }
 
@@ -1846,13 +1852,14 @@ if run.get("detail"):
 # update-apply engine.
 cmd_update_apply() {
     need_root
-    local yes=no ref= force=no expect=
+    local yes=no ref= force=no expect= no_backup=no
     while [ $# -gt 0 ]; do
         case "$1" in
             --yes|-y) yes=yes; shift ;;
             --ref) ref=$2; shift 2 ;;
             --force) force=yes; shift ;;
             --expect) expect=$2; shift 2 ;;
+            --no-backup) no_backup=yes; shift ;;
             *) die "unknown option for 'update apply': $1" ;;
         esac
     done
@@ -1905,7 +1912,11 @@ cmd_update_apply() {
         bk_key=$(cfg plugins.backup.ssh_key /home/pi/.ssh/id_ed25519)
         if [ "$bk_en" = true ] && [ -n "$bk_host" ] && [ -n "$bk_user" ] \
             && [ -n "$bk_path" ] && run_as_pi test -f "$bk_key"; then
-            bk_line="  - back up the latest capture data and model to $bk_user@$bk_host first (the update is cancelled if that backup fails)"
+            if [ "$no_backup" = yes ]; then
+                bk_line="  - SKIP the pre-update backup (--no-backup): updating without a fresh copy on $bk_user@$bk_host"
+            else
+                bk_line="  - back up the latest capture data and model to $bk_user@$bk_host first (the update is cancelled if that backup fails)"
+            fi
         fi
         echo "Update to $tag from $repo."
         echo "Before installing it will, in order:"
@@ -1913,9 +1924,10 @@ cmd_update_apply() {
         echo "  - stop the learning agent (pausing training)"
         [ -n "$bk_line" ] && echo "$bk_line"
         echo "  - stop the plugin daemon"
-        # Name the backup in the summary only when a pre-update backup runs.
+        # Name the backup in the summary only when a pre-update backup runs
+        # (a bk_line that is the --no-backup SKIP notice does not).
         local net_subject="the download"
-        [ -n "$bk_line" ] && net_subject="the download or backup"
+        [ -n "$bk_line" ] && [ "$no_backup" != yes ] && net_subject="the download or backup"
         echo "then install $tag and restart whatever was running. Your settings and"
         echo "captured data are kept; if $net_subject is interrupted the update is"
         echo "cancelled and nothing on the device changes."
@@ -1998,8 +2010,9 @@ cmd_update_apply() {
     # file we are about to overwrite. The helper takes the update lock, records
     # its progress under $PWN_UPDATE_RUN_DIR and removes $tmp when done.
     trap - EXIT INT TERM
-    exec python3 -I "$helper" --src "$tmp/src" --tag "$tag" --repo "$repo" \
-        --cleanup "$tmp"
+    local -a eargs=(--src "$tmp/src" --tag "$tag" --repo "$repo" --cleanup "$tmp")
+    [ "$no_backup" = yes ] && eargs+=(--no-backup)
+    exec python3 -I "$helper" "${eargs[@]}"
 }
 
 cmd_update() {

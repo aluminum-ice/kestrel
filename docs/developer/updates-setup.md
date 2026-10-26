@@ -197,6 +197,11 @@ The device then, in order:
    capture data and the agent model to your remote before anything is replaced,
    so a current copy is safe. If that backup can't finish, the update is
    **cancelled** and the paused services are restarted; nothing is installed.
+   The backup is bounded by `backup_timeout_seconds` (default 180): if the
+   remote is unreachable, the update gives up on the backup and restarts the
+   daemon rather than holding the dashboard down for the length of a doomed
+   transfer. You can also update **without** a fresh backup — see
+   [If the pre-update backup fails](#if-the-pre-update-backup-fails).
 5. **backs up the current application files and snapshots the installed
    package**, then records an in-progress marker naming that backup.
 6. **lays the new files down** — each written beside its target and renamed into
@@ -242,6 +247,32 @@ release that changed since you confirmed it.
 
 Only one update runs at a time: a second one (another browser tab, or the CLI
 while the web update runs) is refused.
+
+### If an update fails
+
+Every attempt records its outcome in the engine's run-state
+(`/var/lib/kestrel/update-run/status.json`, world-readable). When the most
+recent attempt **failed**, the dashboard's Updates card says so and shows the
+reason in plain words, with guidance keyed to the failure: a failure *before*
+anything was installed (the pre-update backup, or the download) is safe to
+retry, while "installed … but restart failed … rolled back" means the new
+version didn't come up — collect a bundle with
+`builder/extra/files/scripts/pull-web-diagnostics.sh` before retrying the same
+release. `kestrel update status` shows the same `last run:` detail from the
+terminal.
+
+### If the pre-update backup fails
+
+Because the update is **cancelled** when the pre-update backup can't finish (an
+unreachable remote, a flaky field uplink), a device whose backup remote is down
+would otherwise never be able to update. When the last attempt failed on the
+backup, the Updates card offers a **Retry without a fresh backup** button, and
+the confirm page has a **skip the pre-update backup** checkbox; either updates
+in place without taking a new remote mirror first (the update itself does not
+touch your captured data or model, so skipping only forgoes the extra safety
+copy). From the terminal it is `sudo kestrel update apply --no-backup`. Tune how
+long the backup may run before the update gives up with
+`backup_timeout_seconds` (0 waits indefinitely, the old behaviour).
 
 ### If an update is interrupted
 
@@ -302,7 +333,9 @@ it:
 - **The pre-update backup needs the backup plugin set up.** Without a configured
   remote and an installed key, no snapshot is taken (an app-layer update does not
   touch your captured data or model, so the backup is an extra safety net, not a
-  requirement).
+  requirement). When it *is* set up but the remote is unreachable, the backup is
+  bounded by `backup_timeout_seconds` and you can update without it (see
+  [If the pre-update backup fails](#if-the-pre-update-backup-fails)).
 - **Dev builds are never offered updates.** A local `make image` build with no
   `MY_VERSION` is stamped `master`, which reads as a dev build.
 - **Needs a management link online.** The check and the fetch need the
@@ -357,6 +390,7 @@ All keys live under `[plugins.updates]` in `/etc/kestrel/config.toml`.
 | `check_interval_seconds` | `21600` | At most this often, re-check while online. |
 | `timeout` | `30` | Per-request network timeout. |
 | `beta` | `false` | Also offer beta (`X.Y.Z-beta.N`) releases. See [Stable and beta releases](#stable-and-beta-releases). |
+| `backup_timeout_seconds` | `180` | How long the pre-update backup may run before the update gives up on it (so an unreachable remote can't hold the daemon down). `0` = wait indefinitely. See [If the pre-update backup fails](#if-the-pre-update-backup-fails). |
 
 ## How the device knows its own version
 

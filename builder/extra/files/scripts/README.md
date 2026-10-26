@@ -36,6 +36,17 @@ shareable `.tar.gz`; `gps-check.sh` is an interactive live check instead.
   agent's model-promotion state off a field unit (read-only over SSH), so
   quality-aware promotion can be reviewed off-device. It never pulls the model
   `.zip` files, raw episode logs, captures, keys or config.
+- `pull-web-diagnostics.sh` — triage a web dashboard that won't come up (while
+  SSH still works): image + `update status`, the update **run-state and
+  rollback** evidence (the engine's `status.json`, the in-progress marker,
+  `kestrel-update-recover.service` and the apply journal, so a failed update
+  that reverted to the prior version is obvious), the `kestrel-daemon` state and
+  its web-subsystem journal (bind / port / "Address already in use" / traceback
+  lines — the dashboard is served by the daemon, not a separate unit), the
+  login-helper units, the safe `[web]` scalars only, whether the port is bound,
+  an on-device HTTP probe of the loopback page, and a pi-venv import check of
+  flask and the web module. MAC/IP-redacted on the device; never reads the web
+  username, password or token, and never dumps `config.toml` wholesale.
 - `pull-eink-diagnostics.sh` — triage a blank / not-updating Waveshare e-Paper
   panel: the eink plugin's state, the `[plugins.eink]` table only, SPI
   nodes/module/config, venv imports and the daemon's eink journal lines. Pulls

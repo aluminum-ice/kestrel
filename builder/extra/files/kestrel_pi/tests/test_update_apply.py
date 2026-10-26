@@ -368,6 +368,58 @@ def test_apply_update_skips_backup_when_not_set_up(tmp_path):
     assert not any(c[:1] == [ua.BIN] for c in calls)
 
 
+def test_backup_timeout_reads_the_updates_option(tmp_path):
+    # Default when the option is absent (e.g. only [plugins.backup] is set).
+    assert ua.backup_timeout(config_file=_backup_config(tmp_path)) == \
+        ua.BACKUP_TIMEOUT_DEFAULT
+    cfg = tmp_path / "updates.toml"
+    cfg.write_text("[plugins.updates]\nbackup_timeout_seconds = 42\n")
+    assert ua.backup_timeout(config_file=str(cfg)) == 42
+    cfg.write_text("[plugins.updates]\nbackup_timeout_seconds = 0\n")
+    assert ua.backup_timeout(config_file=str(cfg)) is None     # 0 = no bound
+    cfg.write_text('[plugins.updates]\nbackup_timeout_seconds = "nope"\n')
+    assert ua.backup_timeout(config_file=str(cfg)) == ua.BACKUP_TIMEOUT_DEFAULT
+    assert ua.backup_timeout(config_file=str(tmp_path / "missing")) == \
+        ua.BACKUP_TIMEOUT_DEFAULT
+
+
+def test_run_backup_times_out_fast(tmp_path):
+    def runner(cmd, **kw):
+        raise ua.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+    ok, detail = ua.run_backup(runner=runner, timeout=5)
+    assert not ok
+    assert "timed out after 5s" in detail and "nothing changed" in detail
+
+
+def test_run_backup_passes_the_timeout_to_the_runner(tmp_path):
+    seen = {}
+    def runner(cmd, **kw):
+        seen["timeout"] = kw.get("timeout")
+        return _Result(0)
+    ok, _ = ua.run_backup(runner=runner, timeout=90)
+    assert ok and seen["timeout"] == 90
+
+
+def test_apply_update_aborts_and_restores_when_the_backup_times_out(tmp_path):
+    cfg = _backup_config(tmp_path)
+    calls = []
+    def runner(cmd, **kw):
+        calls.append(list(cmd))
+        if cmd[:3] == [ua.BIN, "backup", "now"]:
+            raise ua.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return _Result(0 if cmd[-1] in (ua.CAPTURE_SERVICE, ua.AGENT_SERVICE,
+                                            ua.DAEMON) else 1)
+        return _Result(0)
+    kwargs = _apply_kwargs(tmp_path, do_backup=True, config_file=cfg)
+    ok, err = ua.apply_update(REPO, "0.5.0", runner=runner, **kwargs)
+    assert not ok and "timed out" in err
+    # Nothing was installed, and the paused services are brought back.
+    assert not os.path.exists(kwargs["prefix"] + ua.BIN)
+    assert ["systemctl", "start", ua.CAPTURE_SERVICE] in calls
+    assert json.load(open(kwargs["state_file"], encoding="utf-8"))["status"] == "error"
+
+
 def test_backup_configured_requires_enabled_remote_and_key(tmp_path):
     assert ua.backup_configured(config_file=_backup_config(tmp_path)) is True
     assert ua.backup_configured(

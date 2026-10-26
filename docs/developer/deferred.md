@@ -43,6 +43,25 @@ How to use this file:
   on rollback.
 - **Pick up when:** the first release that renames or drops a unit.
 
+### Kill the whole backup process group on a pre-update-backup timeout
+
+- **What:** the bounded pre-update backup (`run_backup` in
+  `builder/extra/files/update-apply.py`, `backup_timeout_seconds`) stops *waiting*
+  after the timeout and lets the update proceed to cancel/restart, but
+  `subprocess` kills only the direct child (`kestrel backup now`), not the
+  `rsync`/`ssh` grandchild it spawned. A doomed transfer can keep running in the
+  background until it dies on its own (broken pipe / its own timeout).
+- **Why deferred:** the operator-visible symptom — the dashboard held down for
+  many minutes — is fixed (the daemon restarts at the timeout); the lingering
+  rsync is harmless and short-lived, so a clean process-group kill was not worth
+  widening the generic `run()` wrapper for right now.
+- **What to do:** run the backup in its own session/process group
+  (`start_new_session=True`) and, on `TimeoutExpired`, signal the whole group so
+  the rsync/ssh child is torn down with its parent.
+- **Pick up when:** the lingering transfer is shown to cause real trouble (e.g.
+  two overlapping backups contending), or the `run()` wrapper gains process-group
+  handling for another reason.
+
 ### Don't make beta testers reflash for a stable release after a reflash beta
 
 - **What:** a stable release's manifest is built against the previous stable
