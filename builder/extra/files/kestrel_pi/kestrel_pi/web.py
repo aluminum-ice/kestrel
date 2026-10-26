@@ -857,7 +857,17 @@ def create_app(daemon):
             # First tap lands on a confirm page naming the version and that the
             # services will restart, so a stray tap never triggers an upgrade.
             return html(_render_update_confirm(ctl, state))
-        reply = apply_change({"target": "update", "action": "apply"})
+        # Install exactly the release the operator confirmed: if a check since
+        # changed the offer, show it again rather than install something else.
+        # The root helper and CLI re-check this tag (and re-verify the release
+        # with the server) too.
+        tag = request.form.get("tag") or ""
+        if tag != (state.get("latest") or ""):
+            return html(_render_status(
+                status, ctl, error=True, addresses=addrs, refresh=rfr,
+                message="The available update changed since you confirmed it; "
+                        "review it again."), 400)
+        reply = apply_change({"target": "update", "action": "apply", "tag": tag})
         if reply.get("ok"):
             # The root helper runs the update in the background and restarts the
             # daemon when done; this reply still reaches the browser first, then
@@ -2794,6 +2804,8 @@ def _render_update_confirm(control, state):
         + '<form method="post" action="/update' + qs + '">' + _csrf_field(control)
         + '<input type="hidden" name="action" value="apply">'
         + '<input type="hidden" name="confirm" value="yes">'
+        + '<input type="hidden" name="tag" value="'
+        + _esc(state.get("latest") or "") + '">'
         + '<button type="submit">Yes, upgrade now</button></form></div>'
         + '<p><a href="/' + qs + '">Cancel</a></p>'
     )
@@ -2854,7 +2866,9 @@ def _render_update_notes(control, state):
         intro = ""
         url = (state.get("notes_url") or "").strip()
         link = ""
-        if url:
+        # The URL comes from the release server via pi-owned state: link it
+        # only as https, never javascript: or another scheme.
+        if url.startswith("https://"):
             link = ('<p><a href="' + _esc(url) + '" target="_blank" '
                     'rel="noopener noreferrer">View the latest release</a></p>')
         article = ("<article class='guide'><p>Release notes aren't on the device "

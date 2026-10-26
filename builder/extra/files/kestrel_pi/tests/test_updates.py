@@ -60,12 +60,21 @@ def _card(plugin):
 
 
 class _Resp:
+    """A streamed ``requests`` response: the plugin reads the body through
+    iter_content (capped) and closes it."""
+
     def __init__(self, code, body):
         self.status_code = code
         self._body = body
+        self.closed = False
 
-    def json(self):
-        return self._body
+    def iter_content(self, chunk_size=1):
+        data = json.dumps(self._body).encode("utf-8")
+        for i in range(0, len(data), chunk_size):
+            yield data[i:i + chunk_size]
+
+    def close(self):
+        self.closed = True
 
 
 def _release(tag, manifest=None):
@@ -179,8 +188,8 @@ def test_check_writes_state_and_card(tmp_path, monkeypatch):
     manifest = {"kind": "app-layer", "commit": "deadbeef"}
 
     def fake_get(url, **kwargs):
-        if url.endswith("/releases/latest"):
-            return _Resp(200, _release("0.4.2", manifest))
+        if "/releases?" in url:
+            return _Resp(200, [_release("0.4.2", manifest)])
         return _Resp(200, manifest)        # the manifest asset
 
     monkeypatch.setattr(requests, "get", fake_get)
@@ -206,7 +215,7 @@ def test_check_up_to_date_card(tmp_path, monkeypatch):
     mod = _load()
     plugin = _plugin(tmp_path, mod, installed="0.4.2", online=False)
     monkeypatch.setattr(requests, "get",
-                        lambda url, **k: _Resp(200, _release("0.4.2")))
+                        lambda url, **k: _Resp(200, [_release("0.4.2")]))
     plugin._last_check = None
     plugin._check()
     assert _card(plugin)["status"]["value"] == "up to date"
@@ -232,7 +241,7 @@ def test_check_is_throttled(tmp_path, monkeypatch):
     plugin = _plugin(tmp_path, mod, installed="0.4.1", online=False)
     calls = []
     monkeypatch.setattr(requests, "get",
-                        lambda url, **k: calls.append(1) or _Resp(200, _release("0.4.1")))
+                        lambda url, **k: calls.append(1) or _Resp(200, [_release("0.4.1")]))
     plugin._maybe_check()            # first check runs
     plugin._maybe_check()            # within the interval -> skipped
     assert calls == [1]
@@ -261,7 +270,7 @@ def test_force_check_bypasses_the_throttle(tmp_path, monkeypatch):
     plugin = _plugin(tmp_path, mod, installed="0.4.1", online=False)
     calls = []
     monkeypatch.setattr(requests, "get",
-                        lambda url, **k: calls.append(1) or _Resp(200, _release("0.4.1")))
+                        lambda url, **k: calls.append(1) or _Resp(200, [_release("0.4.1")]))
     plugin._maybe_check()            # first check runs, arms the throttle
     plugin._maybe_check()            # within the interval -> skipped
     assert calls == [1]
@@ -281,7 +290,7 @@ def test_worker_tick_forces_a_check_when_the_trigger_is_present(tmp_path, monkey
     plugin.context.connectivity.online = True                # now "online"
     calls = []
     monkeypatch.setattr(requests, "get",
-                        lambda url, **k: calls.append(1) or _Resp(200, _release("0.4.1")))
+                        lambda url, **k: calls.append(1) or _Resp(200, [_release("0.4.1")]))
     plugin._last_check = time.monotonic()                    # throttle closed
     plugin._tick()                                           # no trigger -> skipped
     assert calls == []
@@ -340,10 +349,8 @@ def _release_on_host(tag, host=HOST):
 def _recording_get(calls, release, manifest, releases=None):
     def fake_get(url, headers=None, **kwargs):
         calls.append((url, dict(headers or {})))
-        if url.endswith("/releases/latest"):
-            return _Resp(200, release)
         if "/releases?" in url:
-            return _Resp(200, releases or [])
+            return _Resp(200, releases if releases is not None else [release])
         return _Resp(200, manifest)
     return fake_get
 
@@ -359,9 +366,9 @@ def test_check_uses_the_forgejo_api_on_the_default_host(tmp_path, monkeypatch):
     plugin._last_check = None
     plugin._check()
 
-    assert calls[0][0] == HOST + "/api/v1/repos/o/r/releases/latest"
-    assert any(c[0].startswith(HOST + "/api/v1/repos/o/r/releases?limit=50&page=1")
-               for c in calls)
+    # Both channels read the release list (not /releases/latest, which goes
+    # by date) and pick the highest version.
+    assert calls[0][0] == HOST + "/api/v1/repos/o/r/releases?limit=50&page=1"
     state = json.load(open(mod.STATE_FILE))
     assert state["host"] == HOST
     assert state["offerable"] is True
@@ -434,7 +441,7 @@ def test_a_custom_host_is_used_and_normalised(tmp_path, monkeypatch):
     plugin._last_check = None
     plugin._check()
     assert calls[0][0] == ("https://forgejo.example.org/api/v1/repos/o/r/"
-                           "releases/latest")
+                           "releases?limit=50&page=1")
 
 
 def test_a_non_https_host_is_never_contacted(tmp_path, monkeypatch):
@@ -468,9 +475,9 @@ def test_release_list_reads_a_second_page(tmp_path, monkeypatch):
         return _Resp(200, pages.get(page, []))
 
     monkeypatch.setattr(requests, "get", fake_get)
-    releases = plugin._fetch_releases("o/r", 30)
+    releases, complete = plugin._fetch_releases("o/r", 30)
     assert seen == [1, 2]
-    assert len(releases) == 51
+    assert len(releases) == 51 and complete is True
 
 
 def test_release_list_stops_at_the_page_cap(tmp_path, monkeypatch):
@@ -485,7 +492,8 @@ def test_release_list_stops_at_the_page_cap(tmp_path, monkeypatch):
         return _Resp(200, [{"tag_name": "0.0.%d" % i} for i in range(50)])
 
     monkeypatch.setattr(requests, "get", fake_get)
-    assert len(plugin._fetch_releases("o/r", 30)) == 100
+    releases, complete = plugin._fetch_releases("o/r", 30)
+    assert len(releases) == 100 and complete is False     # capped, maybe more
     assert len(seen) == mod.RELEASES_MAX_PAGES
 
 
@@ -516,8 +524,6 @@ def test_check_captures_release_notes_in_range(tmp_path, monkeypatch):
     ]
 
     def fake_get(url, **kwargs):
-        if url.endswith("/releases/latest"):
-            return _Resp(200, _release("0.4.3", manifest))
         if "/releases?" in url:
             return _Resp(200, releases)
         return _Resp(200, manifest)
@@ -534,29 +540,125 @@ def test_check_captures_release_notes_in_range(tmp_path, monkeypatch):
     assert state["offerable"] is True
 
 
-def test_notes_failure_does_not_break_the_check(tmp_path, monkeypatch):
-    # A failed release-list fetch just leaves notes empty; the update is still
-    # offered (the "What's new" link then falls back to the release page).
+def test_a_failed_release_list_offers_nothing_and_retries_soon(tmp_path, monkeypatch):
+    # The list is what the reflash-gap check reads, so a list that can't be read
+    # must never be taken as "nothing in between" (that offered an in-place
+    # update over a skipped reflash). Nothing is stored, and the check is
+    # retried within RETRY_SECONDS instead of a whole interval later.
+    import time
     import requests
 
     mod = _load()
     plugin = _plugin(tmp_path, mod, installed="0.4.1", online=False)
-    manifest = {"kind": "app-layer", "commit": "deadbeef"}
+    full = [_rel_manifest_url("0.4.%d" % (i + 2)) for i in range(50)]
 
     def fake_get(url, **kwargs):
-        if url.endswith("/releases/latest"):
-            return _Resp(200, _release("0.4.2", manifest))
-        if "/releases?" in url:
-            return _Resp(500, {})
-        return _Resp(200, manifest)
+        if "page=1" in url:
+            return _Resp(200, full)           # a full page: there may be more
+        if "page=2" in url:
+            return _Resp(500, {})             # ...and the rest can't be read
+        return _Resp(200, {"kind": "app-layer"})
 
     monkeypatch.setattr(requests, "get", fake_get)
-    plugin._last_check = None
-    plugin._check()
+    plugin._maybe_check()
+    assert not os.path.exists(mod.STATE_FILE)
+    since = time.monotonic() - plugin._last_check
+    assert plugin._interval() - since <= mod.RETRY_SECONDS + 1
 
+
+def test_a_list_too_short_to_reach_installed_needs_reflash(tmp_path, monkeypatch):
+    # The newest 100 releases don't reach back to the installed version, so the
+    # releases in between can't all be checked: not offered in place.
+    mod = _load()
+    plugin = _plugin(tmp_path, mod, installed="0.1.0", online=False)
+    monkeypatch.setattr(plugin, "_fetch_manifest",
+                        lambda rel, t, tok="": {"kind": "app-layer"})
+    releases = [_rel_manifest_url("0.5.%d" % i) for i in range(100)]
+    reason = plugin._gap_requires_reflash(releases, "0.1.0", "0.5.99", 30, "",
+                                          complete=False)
+    assert "too far behind" in reason
+    assert plugin._gap_requires_reflash(releases, "0.1.0", "0.5.99", 30, "",
+                                        complete=True) == ""
+
+
+def test_a_malformed_reply_does_not_end_the_worker(tmp_path, monkeypatch):
+    # Non-string fields and a manifest that is a list must not raise out of the
+    # check; the bad fields are ignored.
+    import requests
+
+    mod = _load()
+    plugin = _plugin(tmp_path, mod, installed="0.4.1", online=False)
+    plugin.context.connectivity.online = True     # after load: no startup check
+    bad = {"tag_name": "0.4.2", "body": 7, "published_at": None, "html_url": 3,
+           "assets": [{"name": "update-manifest.json",
+                       "browser_download_url": "https://example.test/m.json"}]}
+
+    def fake_get(url, **kwargs):
+        if "/releases?" in url:
+            return _Resp(200, [bad, "junk", {"tag_name": 5}])
+        return _Resp(200, ["not", "a", "manifest"])
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    plugin._tick()
     state = json.load(open(mod.STATE_FILE))
-    assert state["notes"] == []
-    assert state["offerable"] is True
+    assert state["latest"] == "0.4.2"
+    assert state["offerable"] is False                  # no usable manifest
+    assert state["notes_url"] == ""                     # not an https URL
+
+
+def test_tick_survives_an_unexpected_error(tmp_path, monkeypatch):
+    # An exception out of a check used to end the worker thread, and with it
+    # every later check, until the daemon restarted.
+    mod = _load()
+    plugin = _plugin(tmp_path, mod, installed="0.4.1", online=False)
+    plugin.context.connectivity.online = True
+
+    def boom():
+        raise KeyError("bug")
+
+    monkeypatch.setattr(plugin, "_check", boom)
+    plugin._tick()                                      # must not raise
+    assert plugin._run_lock.acquire(blocking=False)     # and released the lock
+
+
+def test_an_oversized_reply_is_refused(tmp_path, monkeypatch):
+    import requests
+
+    mod = _load()
+    plugin = _plugin(tmp_path, mod, installed="0.4.1", online=False)
+    monkeypatch.setattr(mod, "MAX_RESPONSE_BYTES", 100)
+    big = [_release("0.4.2")] * 20
+    monkeypatch.setattr(requests, "get", lambda url, **k: _Resp(200, big))
+    assert plugin._check() is False
+    assert not os.path.exists(mod.STATE_FILE)
+
+
+def test_a_non_https_release_url_is_not_stored(tmp_path):
+    mod = _load()
+    plugin = _plugin(tmp_path, mod, installed="0.4.1", online=False)
+    rel = dict(_release("0.4.2"), html_url="javascript:alert(1)")
+    state = plugin._compute_state("0.4.1", rel, {"kind": "app-layer"})
+    assert state["notes_url"] == ""
+
+
+def test_a_malformed_min_update_from_needs_reflash(tmp_path):
+    mod = _load()
+    plugin = _plugin(tmp_path, mod, installed="0.4.1", online=False)
+    state = plugin._compute_state("0.4.1", _release("0.4.2"),
+                                  {"kind": "app-layer", "min_update_from": "soon"})
+    assert state["offerable"] is False and "min_update_from" in state["reason"]
+
+
+def test_an_update_since_the_check_withdraws_the_offer(tmp_path):
+    # The stored offer was computed for 0.6.5; the device is now on 0.6.6.
+    mod = _load()
+    os.makedirs(str(tmp_path / "state"))
+    stored = {"installed": "0.6.5", "latest": "0.6.6", "update_available": True,
+              "offerable": True, "channel": "stable", "checked_at": 1.0}
+    (tmp_path / "state" / "state.json").write_text(json.dumps(stored))
+    _plugin(tmp_path, mod, installed="0.6.6")
+    state = json.load(open(mod.STATE_FILE))
+    assert state["offerable"] is False and state["installed"] == "0.6.6"
 
 
 # -- reflash gap: an app-layer latest can't skip a reflash in between ---------
@@ -638,8 +740,6 @@ def test_check_blocks_in_place_when_a_reflash_is_in_the_gap(tmp_path, monkeypatc
                  "0.6.3": {"kind": "app-layer"}}
 
     def fake_get(url, **kwargs):
-        if url.endswith("/releases/latest"):
-            return _Resp(200, _rel_manifest_url("0.6.5"))
         if "/releases?" in url:
             return _Resp(200, [_rel_manifest_url(t)
                                for t in ("0.6.5", "0.6.4", "0.6.3")])
@@ -670,8 +770,6 @@ def test_check_offers_in_place_when_the_gap_is_all_app_layer(tmp_path, monkeypat
     manifests = {t: {"kind": "app-layer"} for t in ("0.6.5", "0.6.4", "0.6.3")}
 
     def fake_get(url, **kwargs):
-        if url.endswith("/releases/latest"):
-            return _Resp(200, _rel_manifest_url("0.6.5"))
         if "/releases?" in url:
             return _Resp(200, [_rel_manifest_url(t)
                                for t in ("0.6.5", "0.6.4", "0.6.3")])
@@ -687,3 +785,200 @@ def test_check_offers_in_place_when_the_gap_is_all_app_layer(tmp_path, monkeypat
     state = json.load(open(mod.STATE_FILE))
     assert state["offerable"] is True
     assert state["kind"] == "app-layer"
+
+
+# -- beta channel: X.Y.Z-beta.N pre-releases, opt-in via the beta option ------
+def test_version_key_orders_betas_before_their_release():
+    mod = _load()
+    order = ["0.6.9", "0.7.0-beta.1", "0.7.0-beta.2", "0.7.0-beta.10",
+             "0.7.0", "v0.7.1-beta.1"]
+    keys = [mod.version_key(v) for v in order]
+    assert keys == sorted(keys)
+    assert mod.version_key("0.7.0+build5") == mod.version_key("0.7.0")
+    # Only -beta.N is a recognised pre-release; anything else is never offered.
+    for bad in ("0.7.0-rc.1", "0.7.0-beta", "0.7.0-beta.x", "0.7.0-dirty",
+                "master", "", None, "0.7a.0"):
+        assert mod.version_key(bad) is None
+
+
+def test_is_newer_and_is_prerelease_with_betas():
+    mod = _load()
+    assert mod.is_newer("0.7.0-beta.2", "0.7.0-beta.1") is True
+    assert mod.is_newer("0.7.0", "0.7.0-beta.3") is True
+    assert mod.is_newer("0.7.0-beta.1", "0.7.0") is False
+    assert mod.is_newer("0.7.0-beta.1", "0.6.9") is True
+    assert mod.is_newer("0.7.0-rc.1", "0.6.9") is False
+    assert mod.is_prerelease("0.7.0-beta.1") is True
+    assert mod.is_prerelease("0.7.0") is False
+    assert mod.release_is_prerelease({"tag_name": "0.7.0", "prerelease": True})
+    assert mod.release_is_prerelease({"tag_name": "0.7.0-beta.1"})
+    assert not mod.release_is_prerelease({"tag_name": "0.7.0"})
+
+
+def _channel_get(releases, manifests):
+    """A fake GET serving a release list and per-tag manifests (via
+    _rel_manifest_url)."""
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        if "/releases?" in url:
+            return _Resp(200, releases)
+        if "/m/" in url:
+            tag = url.rsplit("/", 1)[1][:-len(".json")]
+            return _Resp(200, manifests[tag]) if tag in manifests else _Resp(404, {})
+        return _Resp(404, {})
+    return fake_get, calls
+
+
+def _beta_rel(tag, **extra):
+    """A release as Forgejo lists it, flagged a pre-release when it is a beta."""
+    rel = _rel_manifest_url(tag)
+    rel["prerelease"] = "-beta." in tag
+    rel.update(extra)
+    return rel
+
+
+def test_stable_channel_never_offers_a_beta(tmp_path, monkeypatch):
+    # A beta flagged as a pre-release, or one only tagged -beta.N, is skipped.
+    import requests
+
+    mod = _load()
+    plugin = _plugin(tmp_path, mod, installed="0.6.9")
+    unflagged = _beta_rel("0.7.1-beta.1", prerelease=False)
+    fake, calls = _channel_get([_beta_rel("0.7.0-beta.1"), unflagged,
+                                _beta_rel("0.6.9")], {})
+    monkeypatch.setattr(requests, "get", fake)
+    plugin._check()
+
+    state = json.load(open(mod.STATE_FILE))
+    assert state["update_available"] is False
+    assert state["channel"] == "stable"
+    assert "/releases?limit=50&page=1" in calls[0]
+
+
+def test_beta_channel_offers_the_highest_version(tmp_path, monkeypatch):
+    # Picked by version, not list order: a stable hotfix created after the beta
+    # is listed first but is the lower version.
+    import requests
+
+    mod = _load()
+    plugin = _plugin(tmp_path, mod, installed="0.6.5")
+    plugin.options["beta"] = True
+    releases = [_beta_rel("0.6.6"), _beta_rel("0.7.0-beta.1"),
+                _beta_rel("0.8.0", draft=True), _beta_rel("0.6.5")]
+    manifests = {t: {"kind": "app-layer", "commit": t}
+                 for t in ("0.6.6", "0.7.0-beta.1")}
+    fake, calls = _channel_get(releases, manifests)
+    monkeypatch.setattr(requests, "get", fake)
+    plugin._check()
+
+    assert "/releases?limit=50&page=1" in calls[0]
+    state = json.load(open(mod.STATE_FILE))
+    assert state["latest"] == "0.7.0-beta.1"
+    assert state["prerelease"] is True and state["channel"] == "beta"
+    assert state["offerable"] is True
+    assert [n["version"] for n in state["notes"]] == ["0.7.0-beta.1", "0.6.6"]
+
+
+def test_beta_device_moves_on_to_the_final_release(tmp_path, monkeypatch):
+    import requests
+
+    mod = _load()
+    plugin = _plugin(tmp_path, mod, installed="0.7.0-beta.2")
+    plugin.options["beta"] = True
+    releases = [_beta_rel("0.7.0"), _beta_rel("0.7.0-beta.2"),
+                _beta_rel("0.7.0-beta.1"), _beta_rel("0.6.5")]
+    fake, _calls = _channel_get(releases, {"0.7.0": {"kind": "app-layer"}})
+    monkeypatch.setattr(requests, "get", fake)
+    plugin._check()
+
+    state = json.load(open(mod.STATE_FILE))
+    assert state["latest"] == "0.7.0" and state["prerelease"] is False
+    assert state["offerable"] is True
+    # A stable target's notes leave out the betas (its own notes cover them).
+    assert [n["version"] for n in state["notes"]] == ["0.7.0"]
+
+
+def test_beta_target_gap_includes_betas(tmp_path, monkeypatch):
+    # A stable device that turns beta on: an earlier reflash beta in the gap
+    # blocks an in-place jump to a later app-layer beta.
+    import requests
+
+    mod = _load()
+    plugin = _plugin(tmp_path, mod, installed="0.6.5")
+    plugin.options["beta"] = True
+    releases = [_beta_rel("0.7.0-beta.2"), _beta_rel("0.7.0-beta.1"),
+                _beta_rel("0.6.5")]
+    manifests = {"0.7.0-beta.2": {"kind": "app-layer"},
+                 "0.7.0-beta.1": {"kind": "reflash"}}
+    fake, _calls = _channel_get(releases, manifests)
+    monkeypatch.setattr(requests, "get", fake)
+    plugin._check()
+
+    state = json.load(open(mod.STATE_FILE))
+    assert state["update_available"] is True
+    assert state["offerable"] is False
+    assert "0.7.0-beta.1" in state["reason"]
+
+
+def test_stable_target_gap_skips_betas(tmp_path, monkeypatch):
+    # A stable target's manifest is built against the previous stable release,
+    # so a reflash beta in between is already accounted for and doesn't block.
+    import requests
+
+    mod = _load()
+    plugin = _plugin(tmp_path, mod, installed="0.6.5")
+    releases = [_beta_rel("0.7.0"), _beta_rel("0.7.0-beta.1"), _beta_rel("0.6.5")]
+    manifests = {"0.7.0": {"kind": "app-layer"},
+                 "0.7.0-beta.1": {"kind": "reflash"}}
+    fake, _calls = _channel_get(releases, manifests)
+    monkeypatch.setattr(requests, "get", fake)
+    plugin._check()
+
+    state = json.load(open(mod.STATE_FILE))
+    assert state["offerable"] is True
+    assert [n["version"] for n in state["notes"]] == ["0.7.0"]
+
+
+def test_beta_channel_with_no_release(tmp_path, monkeypatch):
+    import requests
+
+    mod = _load()
+    plugin = _plugin(tmp_path, mod, installed="0.6.5")
+    plugin.options["beta"] = True
+    fake, _calls = _channel_get([], {})
+    monkeypatch.setattr(requests, "get", fake)
+    plugin._check()
+
+    state = json.load(open(mod.STATE_FILE))
+    assert state["update_available"] is False
+    assert state["checked_at"]
+
+
+def test_turning_beta_off_withdraws_a_stored_beta_offer(tmp_path):
+    # The web Upgrade button and `update apply` act on the state file, so a beta
+    # offer found earlier must not survive the toggle being switched off.
+    mod = _load()
+    os.makedirs(str(tmp_path / "state"))
+    stored = {"installed": "0.6.5", "latest": "0.7.0-beta.1",
+              "update_available": True, "offerable": True, "commit": "abc",
+              "channel": "beta", "checked_at": 1.0, "detail": "kept"}
+    (tmp_path / "state" / "state.json").write_text(json.dumps(stored))
+    plugin = _plugin(tmp_path, mod, installed="0.6.5")
+
+    state = json.load(open(mod.STATE_FILE))
+    assert state["offerable"] is False and state["update_available"] is False
+    assert state["latest"] == "" and state["channel"] == "stable"
+    assert state["detail"] == "kept"
+    assert _card(plugin)["status"]["value"] == "checking…"
+
+
+def test_a_same_channel_offer_survives_a_reload(tmp_path):
+    mod = _load()
+    os.makedirs(str(tmp_path / "state"))
+    stored = {"installed": "0.6.5", "latest": "0.6.6",
+              "update_available": True, "offerable": True, "checked_at": 1.0}
+    (tmp_path / "state" / "state.json").write_text(json.dumps(stored))
+    _plugin(tmp_path, mod, installed="0.6.5")
+    assert json.load(open(mod.STATE_FILE))["offerable"] is True

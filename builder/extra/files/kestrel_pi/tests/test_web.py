@@ -1649,10 +1649,31 @@ def test_update_apply_confirm_goes_through_the_root_helper(monkeypatch, tmp_path
     page = client.get("/", headers=_basic()).get_data(as_text=True)
     resp = client.post("/update", headers=_basic(),
                        data={"csrf": _csrf(page), "action": "apply",
-                             "confirm": "yes"})
+                             "confirm": "yes", "tag": "0.5.0"})
     assert resp.status_code == 200
-    assert sent == [{"target": "update", "action": "apply"}]
+    assert sent == [{"target": "update", "action": "apply", "tag": "0.5.0"}]
     assert "Upgrading" in resp.get_data(as_text=True)
+
+
+def test_update_confirm_page_carries_the_confirmed_tag(monkeypatch, tmp_path):
+    client, _sent = _update_client(monkeypatch, tmp_path, state=_OFFERABLE)
+    page = client.get("/", headers=_basic()).get_data(as_text=True)
+    body = client.post("/update", headers=_basic(),
+                       data={"csrf": _csrf(page), "action": "apply"}).get_data(as_text=True)
+    assert 'name="tag" value="0.5.0"' in body
+
+
+def test_update_apply_refused_when_the_offer_changed_since_confirming(monkeypatch,
+                                                                     tmp_path):
+    # Confirmed 0.4.9, but a check since moved the offer to 0.5.0: never install
+    # something other than what the operator confirmed.
+    client, sent = _update_client(monkeypatch, tmp_path, state=_OFFERABLE)
+    page = client.get("/", headers=_basic()).get_data(as_text=True)
+    resp = client.post("/update", headers=_basic(),
+                       data={"csrf": _csrf(page), "action": "apply",
+                             "confirm": "yes", "tag": "0.4.9"})
+    assert resp.status_code == 400 and sent == []
+    assert "changed since you confirmed" in resp.get_data(as_text=True)
 
 
 def test_update_apply_refused_when_not_offerable_server_side(monkeypatch, tmp_path):
@@ -2041,6 +2062,14 @@ def test_update_notes_page_falls_back_to_github_when_no_notes():
     html = web._render_update_notes(_ctl(), state)
     assert "aren't on the device yet" in html
     assert 'href="https://example.test/r/0.4.3"' in html
+
+
+def test_update_notes_fallback_links_only_https():
+    state = dict(_update_state_with_notes(), notes=[],
+                 notes_url="javascript:alert(1)")
+    html = web._render_update_notes(_ctl(), state)
+    assert "javascript:" not in html
+    assert "View the latest release" not in html
 
 
 def test_update_card_shows_whats_new_link(monkeypatch):

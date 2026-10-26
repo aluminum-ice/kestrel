@@ -1,0 +1,19 @@
+[Unit]
+Description=kestrel rollback of an interrupted in-place update
+# An in-place update writes an in-progress marker naming its pre-update backup
+# before it changes any installed file, and removes it once the new version is
+# up. A marker still present at boot means the update was cut short (power loss,
+# crash), so the previous files, package and version stamp are restored before
+# the daemon, capture or agent start on a half-updated tree.
+# See docs/developer/updates-setup.md.
+After=local-fs.target
+Before=kestrel-daemon.service kestrel-capture.service kestrel-agent.service
+ConditionPathExists=/var/lib/kestrel/update-run/in-progress.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/lib/kestrel/update-apply --recover
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

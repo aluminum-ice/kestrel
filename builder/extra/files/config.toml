@@ -322,6 +322,7 @@ repo = "aluminum-ice/kestrel"   # Forgejo owner/repo to check (override for a fo
 host = "https://git.3ntropy.io"       # Forgejo/Gitea server hosting repo (https:// only)
 check_interval_seconds = 21600        # at most this often, re-check while online (6h)
 timeout = 30
+beta = false                # also offer beta (X.Y.Z-beta.N) releases, not just stable
 
 [plugins.remote-train]
 enabled = false             # offload agent training to a remote desktop over SSH, opt-in

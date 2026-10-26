@@ -434,14 +434,29 @@ def test_run_power_defers_the_command_past_the_reply(monkeypatch):
 
 def test_update_apply_returns_the_update_flag(env):
     _auth_on(env)
-    reply = ctl.apply_change({"target": "update", "action": "apply"})
-    assert reply == {"ok": True, "update": "apply"}
+    reply = ctl.apply_change({"target": "update", "action": "apply", "tag": "0.7.0"})
+    assert reply == {"ok": True, "update": "apply", "update_tag": "0.7.0"}
+    beta = ctl.apply_change({"target": "update", "action": "apply",
+                             "tag": "0.7.0-beta.2"})
+    assert beta["ok"] is True and beta["update_tag"] == "0.7.0-beta.2"
 
 
 def test_update_bad_action_is_refused(env):
     _auth_on(env)
     assert ctl.apply_change({"target": "update", "action": "check"})["ok"] is False
     assert ctl.apply_change({"target": "update"})["ok"] is False
+
+
+@pytest.mark.parametrize("tag", [None, "", "master", "--force", "0.7.0; reboot",
+                                 "0.7.0-rc.1", 7])
+def test_update_apply_needs_the_confirmed_release_tag(env, tag):
+    # The confirmed tag is passed on to the CLI as an argument, so only a
+    # release-shaped tag is accepted.
+    _auth_on(env)
+    change = {"target": "update", "action": "apply"}
+    if tag is not None:
+        change["tag"] = tag
+    assert ctl.apply_change(change)["ok"] is False
 
 
 def test_update_refused_while_web_auth_is_off(env):
@@ -455,9 +470,12 @@ def test_update_refused_while_web_auth_is_off(env):
 def test_run_update_defers_the_cli_past_the_reply(monkeypatch):
     calls = []
     monkeypatch.setattr(ctl.subprocess, "run", lambda *a, **k: calls.append(a[0]))
-    ctl.run_update()
+    ctl.run_update("0.7.0")
+    # A fixed unit name: a second request while one is pending is refused by
+    # systemd instead of running alongside. --expect pins the confirmed tag.
     assert calls == [["systemd-run", "--quiet", "--collect", "--on-active=2",
-                      ctl.PWN_TOOL, "update", "apply", "--yes"]]
+                      "--unit=kestrel-update",
+                      ctl.PWN_TOOL, "update", "apply", "--yes", "--expect", "0.7.0"]]
 
 
 def _backup_configured(env):

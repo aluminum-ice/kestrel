@@ -536,6 +536,9 @@
       - /usr/local/lib/kestrel
       - /var/lib/kestrel
       - /usr/local/share/kestrel/scripts
+      # Root-owned: the in-place update engine's run status, lock, in-progress
+      # marker and backups (never in the pi-owned update state dir below).
+      - /var/lib/kestrel/update-run
 
   # Multi-file installs use one `install` command per group, not a copy loop:
   # every Ansible module run starts Python under QEMU (~1.5 s), and copy costs
@@ -726,7 +729,9 @@
 
   # Pi-owned so the daemon (pi) can write the `updates` plugin's shared state
   # file, which the web dashboard reads to decide whether to offer the upgrade
-  # button. The root `kestrel update` helper also reads/updates it.
+  # button. Root only ever reads it, as a hint: `kestrel update apply`
+  # re-verifies the release itself, and the engine writes its own status under
+  # the root-owned /var/lib/kestrel/update-run.
   - name: create the kestrel update state directory
     file:
       path: /var/lib/kestrel/update
@@ -734,6 +739,14 @@
       owner: pi
       group: pi
       mode: '0755'
+
+  # Rolls back an in-place update that a power cut or crash interrupted, at
+  # boot before the daemon starts; a no-op unless the update left its
+  # in-progress marker (the unit file comes from files/systemd/).
+  - name: enable the interrupted-update recovery
+    systemd:
+      name: kestrel-update-recover.service
+      enabled: yes
 
   - name: install the kestrel plugins-ctl helper
     copy:

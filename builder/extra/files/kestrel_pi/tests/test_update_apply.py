@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import stat
+import urllib.parse
 
 import pytest
 
@@ -191,8 +192,14 @@ def test_apply_update_lays_files_down_and_records_ok(tmp_path, monkeypatch):
     saved = json.load(open(state, encoding="utf-8"))
     assert saved["status"] == "ok"
     assert saved["installed"] == "0.5.0"
-    assert saved["offerable"] is False
-    assert saved["update_available"] is False
+    # Every file was written to a temp name and renamed into place.
+    leftovers = [n for _r, _d, names in os.walk(prefix) for n in names
+                 if n.endswith(".kestrel-new")]
+    assert leftovers == []
+    # The marker is gone and the install list recorded for the next update.
+    run_dir = prefix + ua.RUN_DIR
+    assert not os.path.exists(os.path.join(run_dir, ua.MARKER))
+    assert cli in json.load(open(os.path.join(run_dir, ua.INSTALLED_LIST)))
 
 
 def test_apply_update_validate_failure_writes_nothing(tmp_path):
@@ -224,7 +231,12 @@ def test_apply_update_rolls_back_on_package_failure(tmp_path, monkeypatch):
     def boom(_src, runner=None):
         raise OSError("pip exploded")
 
+    pkg = []
     monkeypatch.setattr(ua, "install_package", boom)
+    monkeypatch.setattr(ua, "snapshot_package",
+                        lambda snap, runner=None: pkg.append(("snapshot", snap)))
+    monkeypatch.setattr(ua, "restore_package",
+                        lambda snap, runner=None: pkg.append(("restore", snap)))
     ok, err = ua.apply_update(REPO, "0.5.0", state_file=state,
                               version_file=version, prefix=prefix,
                               do_package=True, do_services=False, do_backup=False)
@@ -232,6 +244,11 @@ def test_apply_update_rolls_back_on_package_failure(tmp_path, monkeypatch):
     assert "restored" in err
     with open(cli, encoding="utf-8") as handle:
         assert handle.read() == "OLD CLI\n"  # original came back
+    # Files the update added are removed again, not left half-new.
+    assert not os.path.exists(prefix + os.path.join(ua.LIB_DIR, "plugins", "updates.py"))
+    # The previous package is put back too (pip may have installed the new one).
+    assert [k for k, _ in pkg] == ["snapshot", "restore"]
+    assert pkg[0][1] == pkg[1][1]
     assert not os.path.exists(version)  # never got to the stamp
     assert json.load(open(state, encoding="utf-8"))["status"] == "error"
 
@@ -259,10 +276,11 @@ def test_apply_update_restart_failure_is_reported_after_version_stamp(tmp_path):
 # ---- the package reinstall wrapper ----------------------------------------
 
 def test_install_package_installs_and_imports_as_pi(tmp_path, monkeypatch):
-    monkeypatch.setattr(ua.shutil, "copytree", lambda *a, **k: None)
-    monkeypatch.setattr(ua.shutil, "rmtree", lambda *a, **k: None)
+    monkeypatch.setattr(ua, "STAGING_PARENT", str(tmp_path))
     calls, runner = _recorder()
     ua.install_package(REPO, runner=runner)
+    # Staged in a fresh root-created dir, removed afterwards.
+    assert os.listdir(str(tmp_path)) == []
     joined = [" ".join(c) for c in calls]
     assert any("chown -R pi:pi" in j for j in joined)
     assert any(ua.VENV_PIP in j and "install" in j for j in joined)
@@ -276,7 +294,8 @@ def _apply_kwargs(tmp_path, **extra):
     base = dict(state_file=str(tmp_path / "state.json"),
                 version_file="/etc/kestrel/version",
                 prefix=str(tmp_path / "root"),
-                do_package=False, do_services=True, do_backup=False)
+                do_package=False, do_services=True, do_backup=False,
+                sleep=lambda _s: None)       # the post-restart health settle
     base.update(extra)
     return base
 
@@ -358,3 +377,397 @@ def test_backup_configured_requires_enabled_remote_and_key(tmp_path):
     assert ua.backup_configured(
         config_file=_backup_config(tmp_path, with_key=False)) is False
     assert ua.backup_configured(config_file=str(tmp_path / "nope.toml")) is False
+
+
+# ---- removals, health check, recovery and the lock ------------------------
+
+def _seed(prefix, rel, text):
+    path = prefix + rel
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    return path
+
+
+def _plain(tmp_path, **extra):
+    base = dict(state_file=str(tmp_path / "state.json"),
+                version_file="/etc/kestrel/version",
+                prefix=str(tmp_path / "root"),
+                do_package=False, do_services=False, do_backup=False)
+    base.update(extra)
+    return base
+
+
+def test_a_plugin_dropped_upstream_is_removed(tmp_path):
+    kwargs = _plain(tmp_path)
+    stale = _seed(kwargs["prefix"], os.path.join(ua.LIB_DIR, "plugins", "retired.py"),
+                  "OLD\n")
+    plan = ua.file_plan(REPO, prefix=kwargs["prefix"])
+    assert stale in ua.removal_plan(plan, prefix=kwargs["prefix"])
+    ok, err = ua.apply_update(REPO, "0.5.0", **kwargs)
+    assert ok, err
+    assert not os.path.exists(stale)
+
+
+def test_a_dropped_file_comes_back_on_rollback(tmp_path, monkeypatch):
+    kwargs = _plain(tmp_path, do_package=True)
+    stale = _seed(kwargs["prefix"], os.path.join(ua.LIB_DIR, "plugins", "retired.py"),
+                  "OLD\n")
+    monkeypatch.setattr(ua, "snapshot_package", lambda snap, runner=None: None)
+    monkeypatch.setattr(ua, "restore_package", lambda snap, runner=None: None)
+
+    def boom(_src, runner=None):
+        raise OSError("pip exploded")
+
+    monkeypatch.setattr(ua, "install_package", boom)
+    ok, _err = ua.apply_update(REPO, "0.5.0", **kwargs)
+    assert not ok
+    assert open(stale, encoding="utf-8").read() == "OLD\n"
+
+
+def test_recorded_files_are_pruned_but_only_inside_the_install_roots(tmp_path):
+    prefix = str(tmp_path / "root")
+    run_dir = prefix + ua.RUN_DIR
+    os.makedirs(run_dir)
+    old_script = _seed(prefix, os.path.join(ua.LIB_DIR, "retired-script"), "x")
+    outside = _seed(prefix, "/etc/passwd", "root:x:0:0")
+    with open(os.path.join(run_dir, ua.INSTALLED_LIST), "w", encoding="utf-8") as handle:
+        json.dump([old_script, outside], handle)
+    removals = ua.removal_plan(ua.file_plan(REPO, prefix=prefix), prefix=prefix)
+    assert old_script in removals
+    assert outside not in removals
+
+
+class _Shown(_Result):
+    def __init__(self, stdout):
+        super().__init__(0)
+        self.stdout = stdout
+
+
+def test_a_daemon_that_does_not_stay_up_rolls_the_update_back(tmp_path):
+    kwargs = _plain(tmp_path, do_services=True)
+    prefix = kwargs["prefix"]
+    cli = _seed(prefix, ua.BIN, "OLD CLI\n")
+    stamp = _seed(prefix, "/etc/kestrel/version", "0.4.0\n")
+    calls = []
+
+    def runner(cmd, **kw):
+        calls.append(list(cmd))
+        if cmd[:2] == ["systemctl", "is-active"]:
+            if cmd[-1] != ua.DAEMON:
+                return _Result(1)
+            # Running before the update; after the restart it keeps failing.
+            restarted = ["systemctl", "restart", ua.DAEMON] in calls
+            return _Result(3 if restarted else 0)
+        return _Result(0)
+
+    ok, err = ua.apply_update(REPO, "0.5.0", runner=runner,
+                              sleep=lambda _s: None, **kwargs)
+    assert not ok and "rolled back" in err
+    assert open(cli, encoding="utf-8").read() == "OLD CLI\n"
+    assert open(stamp, encoding="utf-8").read() == "0.4.0\n"
+    assert json.load(open(kwargs["state_file"]))["status"] == "error"
+    assert not os.path.exists(os.path.join(prefix + ua.RUN_DIR, ua.MARKER))
+    # The previous version is started again after the rollback.
+    assert calls.count(["systemctl", "restart", ua.DAEMON]) == 2
+
+
+def test_a_daemon_restarting_during_the_settle_is_unhealthy():
+    count = {"n": 0}
+
+    def runner(cmd, **kw):
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return _Result(0)
+        if cmd[:2] == ["systemctl", "show"]:
+            count["n"] += 1
+            return _Shown(str(count["n"]))
+        return _Result(0)
+
+    assert ua.daemon_healthy(runner=runner, sleep=lambda _s: None) is False
+
+
+def test_a_steady_daemon_is_healthy():
+    def runner(cmd, **kw):
+        if cmd[:2] == ["systemctl", "show"]:
+            return _Shown("0")
+        return _Result(0)
+
+    assert ua.daemon_healthy(runner=runner, sleep=lambda _s: None) is True
+
+
+def test_the_recovery_unit_is_enabled(tmp_path):
+    calls, runner = _service_recorder(active=("daemon",))
+    ok, err = ua.apply_update(REPO, "0.5.0", runner=runner, **_apply_kwargs(tmp_path))
+    assert ok, err
+    assert ["systemctl", "enable", "--quiet", ua.RECOVER_SERVICE] in calls
+
+
+def test_recover_rolls_back_an_interrupted_update(tmp_path, monkeypatch):
+    kwargs = _plain(tmp_path)
+    prefix = kwargs["prefix"]
+    cli = _seed(prefix, ua.BIN, "OLD CLI\n")
+    stamp = _seed(prefix, "/etc/kestrel/version", "0.4.0\n")
+    real_apply = ua.apply_plan
+
+    def cut(plan, removals=()):
+        real_apply(plan, removals)
+        raise KeyboardInterrupt      # the power goes: nothing after this runs
+
+    monkeypatch.setattr(ua, "apply_plan", cut)
+    with pytest.raises(KeyboardInterrupt):
+        ua.apply_update(REPO, "0.5.0", **kwargs)
+    marker = os.path.join(prefix + ua.RUN_DIR, ua.MARKER)
+    assert os.path.exists(marker)
+    assert open(cli, encoding="utf-8").read() != "OLD CLI\n"   # half-updated
+
+    calls, runner = _recorder()
+    ok, detail = ua.recover(prefix=prefix, runner=runner, do_package=False)
+    assert ok and "rolled back" in detail
+    assert open(cli, encoding="utf-8").read() == "OLD CLI\n"
+    assert open(stamp, encoding="utf-8").read() == "0.4.0\n"
+    assert not os.path.exists(prefix + os.path.join(ua.LIB_DIR, "plugins", "updates.py"))
+    assert not os.path.exists(marker)
+    assert ["systemctl", "daemon-reload"] in calls
+    assert ua.recover(prefix=prefix, runner=runner) == (True, "nothing to recover")
+
+
+def test_recover_only_restores_from_the_run_dir(tmp_path):
+    prefix = str(tmp_path / "root")
+    run_dir = prefix + ua.RUN_DIR
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, ua.MARKER), "w", encoding="utf-8") as handle:
+        json.dump({"backup_dir": str(tmp_path / "elsewhere")}, handle)
+    _calls, runner = _recorder()
+    ok, _detail = ua.recover(prefix=prefix, runner=runner, do_package=False)
+    assert not ok
+
+
+def test_an_unrecovered_interrupted_update_blocks_a_new_one(tmp_path):
+    kwargs = _plain(tmp_path)
+    run_dir = kwargs["prefix"] + ua.RUN_DIR
+    os.makedirs(run_dir)
+    open(os.path.join(run_dir, ua.MARKER), "w").close()
+    ok, err = ua.apply_update(REPO, "0.5.0", **kwargs)
+    assert not ok and "interrupted" in err
+    assert not os.path.exists(kwargs["prefix"] + ua.BIN)
+
+
+def test_only_one_update_runs_at_a_time(tmp_path):
+    kwargs = _plain(tmp_path)
+    run_dir = kwargs["prefix"] + ua.RUN_DIR
+    ua.ensure_run_dir(run_dir)
+    held = ua.acquire_lock(run_dir)
+    try:
+        ok, err = ua.apply_update(REPO, "0.5.0", **kwargs)
+        assert not ok and "already running" in err
+    finally:
+        held.close()
+    assert ua.apply_update(REPO, "0.5.0", **kwargs)[0] is True
+
+
+def test_old_backups_are_pruned(tmp_path):
+    run_dir = str(tmp_path)
+    for stamp in ("20260101-000000", "20260102-000000", "20260103-000000"):
+        os.makedirs(os.path.join(run_dir, "backup-" + stamp))
+    ua.prune_backups(run_dir, keep=2)
+    assert sorted(os.listdir(run_dir)) == ["backup-20260102-000000",
+                                           "backup-20260103-000000"]
+
+
+def test_main_never_writes_the_legacy_pi_owned_state_file(monkeypatch):
+    # Older CLIs pass the pi-owned state file; the engine writes its own.
+    seen = {}
+
+    def fake_apply(src, tag, **kwargs):
+        seen.update(kwargs)
+        return True, ""
+
+    monkeypatch.setattr(ua, "apply_update", fake_apply)
+    assert ua.main(["x", "--src", "/s", "--tag", "0.5.0",
+                    "--state", ua.LEGACY_STATE_FILE]) == 0
+    assert seen["state_file"] is None
+
+
+# ---- the package snapshot (run as pi) --------------------------------------
+
+def test_package_snapshot_and_restore_run_as_pi():
+    calls, runner = _recorder()
+    ua.snapshot_package("/s", runner=runner)
+    ua.restore_package("/s", runner=runner)
+    ua.discard_snapshot("/s", runner=runner)
+    assert calls and all(c[:4] == ["runuser", "-u", "pi", "--"] for c in calls)
+
+
+def test_package_snapshot_script_copies_a_distribution(tmp_path):
+    import subprocess
+    import sys
+
+    snap = str(tmp_path / "snaps" / "pkg-1")
+    subprocess.run([sys.executable, "-I", "-c", ua.SNAPSHOT_PY, snap, "pytest"],
+                   check=True)
+    index = json.load(open(os.path.join(snap, "index.json"), encoding="utf-8"))
+    root = os.path.realpath(sys.prefix) + os.sep
+    assert index
+    assert all(os.path.isfile(saved) and path.startswith(root) for saved, path in index)
+
+
+def test_package_restore_script_compiles():
+    compile(ua.RESTORE_PY, "restore", "exec")
+
+
+# ---- --verify: what may be installed, from root-owned inputs only ----------
+
+SHA = "a" * 40
+FORGE = "https://forge.test"
+
+
+def _updates_config(tmp_path, beta=False, token="", host=FORGE, repo="o/r"):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[plugins.updates]\nrepo = "%s"\nhost = "%s"\ntoken = "%s"\n'
+                   "beta = %s\n" % (repo, host, token, "true" if beta else "false"),
+                   encoding="utf-8")
+    return str(cfg)
+
+
+def _rel(tag, manifest_host=FORGE, **extra):
+    rel = {"tag_name": tag, "prerelease": "-beta." in tag,
+           "assets": [{"name": "update-manifest.json",
+                       "browser_download_url": "%s/m/%s.json" % (manifest_host, tag)}]}
+    rel.update(extra)
+    return rel
+
+
+def _forge(releases, manifests, calls=None, list_status=200):
+    by_tag = {r["tag_name"]: r for r in releases}
+
+    def fetch(url, token, timeout, limit):
+        if calls is not None:
+            calls.append((url, token))
+        if "/releases/tags/" in url:
+            tag = urllib.parse.unquote(url.rsplit("/", 1)[1])
+            return (200, by_tag[tag]) if tag in by_tag else (404, None)
+        if "/releases?" in url:
+            return (list_status, releases if list_status < 400 else None)
+        if "/m/" in url:
+            tag = url.rsplit("/", 1)[1][:-len(".json")]
+            return (200, manifests[tag]) if tag in manifests else (404, None)
+        return 404, None
+    return fetch
+
+
+def _app(commit=SHA):
+    return {"kind": "app-layer", "commit": commit}
+
+
+def _verify(tmp_path, tag, releases, manifests, installed="0.6.5", calls=None,
+            cfg=None, list_status=200, **kwargs):
+    version = tmp_path / "version"
+    version.write_text(installed + "\n", encoding="utf-8")
+    return ua.verify_release(
+        tag, config_file=_updates_config(tmp_path, **(cfg or {})),
+        version_file=str(version),
+        fetch=_forge(releases, manifests, calls, list_status), **kwargs)
+
+
+def test_verify_accepts_a_newer_app_layer_release(tmp_path):
+    out = _verify(tmp_path, "0.6.6", [_rel("0.6.6"), _rel("0.6.5")],
+                  {"0.6.6": _app()})
+    assert out["ok"] is True, out
+    # The host and repo come from config.toml, never from the pi-owned state.
+    assert (out["tag"], out["commit"], out["host"], out["repo"]) == (
+        "0.6.6", SHA, FORGE, "o/r")
+
+
+def test_verify_sends_the_token_only_to_the_configured_host(tmp_path):
+    calls = []
+    out = _verify(tmp_path, "0.6.6",
+                  [_rel("0.6.6", manifest_host="https://cdn.test"), _rel("0.6.5")],
+                  {"0.6.6": _app()}, calls=calls, cfg={"token": "TKN"})
+    assert out["ok"] is True, out
+    on_host = [t for u, t in calls if u.startswith(FORGE + "/")]
+    off_host = [t for u, t in calls if not u.startswith(FORGE + "/")]
+    assert on_host and all(t == "TKN" for t in on_host)
+    assert off_host and all(t == "" for t in off_host)
+
+
+def test_verify_refuses_a_non_https_host(tmp_path):
+    out = _verify(tmp_path, "0.6.6", [_rel("0.6.6")], {"0.6.6": _app()},
+                  cfg={"host": "http://forge.test"})
+    assert out["ok"] is False and "https" in out["error"]
+
+
+def test_verify_refuses_a_downgrade_unless_forced(tmp_path):
+    rels = [_rel("0.6.5"), _rel("0.6.4")]
+    out = _verify(tmp_path, "0.6.4", rels, {"0.6.4": _app()})
+    assert out["ok"] is False and "not newer" in out["error"]
+    forced = _verify(tmp_path, "0.6.4", rels, {"0.6.4": _app()}, force=True)
+    assert forced["ok"] is True and forced["warnings"]
+
+
+def test_verify_keeps_betas_off_the_stable_channel(tmp_path):
+    rels = [_rel("0.7.0-beta.1"), _rel("0.6.5")]
+    manifests = {"0.7.0-beta.1": _app()}
+    out = _verify(tmp_path, "0.7.0-beta.1", rels, manifests)
+    assert out["ok"] is False and "beta" in out["error"]
+    # An operator-named tag (--ref), or the beta option on, may be a beta.
+    assert _verify(tmp_path, "0.7.0-beta.1", rels, manifests, explicit=True)["ok"]
+    assert _verify(tmp_path, "0.7.0-beta.1", rels, manifests, cfg={"beta": True})["ok"]
+
+
+def test_verify_refuses_a_reflash_release(tmp_path):
+    out = _verify(tmp_path, "0.6.6", [_rel("0.6.6"), _rel("0.6.5")],
+                  {"0.6.6": {"kind": "reflash", "commit": SHA,
+                             "requires_reflash_reason": "apt change"}})
+    assert out["ok"] is False and "apt change" in out["error"]
+
+
+def test_verify_refuses_a_skipped_reflash_in_between(tmp_path):
+    rels = [_rel("0.6.7"), _rel("0.6.6"), _rel("0.6.5")]
+    out = _verify(tmp_path, "0.6.7", rels,
+                  {"0.6.7": _app(), "0.6.6": {"kind": "reflash"}})
+    assert out["ok"] is False and "0.6.6" in out["error"]
+
+
+def test_verify_refuses_when_the_release_list_cannot_be_read(tmp_path):
+    out = _verify(tmp_path, "0.6.7", [_rel("0.6.7"), _rel("0.6.5")],
+                  {"0.6.7": _app()}, list_status=500)
+    assert out["ok"] is False and "release list" in out["error"]
+
+
+def test_verify_refuses_a_changed_confirmation(tmp_path):
+    out = _verify(tmp_path, "0.6.6", [_rel("0.6.6")], {"0.6.6": _app()},
+                  expect="0.6.7", force=True)
+    assert out["ok"] is False and "changed since" in out["error"]
+
+
+def test_verify_never_installs_a_draft_or_a_bad_commit(tmp_path):
+    draft = _verify(tmp_path, "0.6.6", [_rel("0.6.6", draft=True)],
+                    {"0.6.6": _app()}, force=True)
+    assert draft["ok"] is False and "draft" in draft["error"]
+    bad = _verify(tmp_path, "0.6.6", [_rel("0.6.6"), _rel("0.6.5")],
+                  {"0.6.6": _app(commit="not-a-sha")})
+    assert bad["ok"] is False and "commit" in bad["error"]
+
+
+def test_verify_an_unpublished_ref_needs_force(tmp_path):
+    out = _verify(tmp_path, "main", [_rel("0.6.5")], {}, explicit=True)
+    assert out["ok"] is False and "not a published release" in out["error"]
+    forced = _verify(tmp_path, "main", [_rel("0.6.5")], {}, explicit=True, force=True)
+    assert forced["ok"] is True and forced["commit"] == ""
+
+
+def test_verify_refuses_a_dev_build_unless_forced(tmp_path):
+    rels = [_rel("0.6.6")]
+    out = _verify(tmp_path, "0.6.6", rels, {"0.6.6": _app()}, installed="master")
+    assert out["ok"] is False and "dev build" in out["error"]
+    assert _verify(tmp_path, "0.6.6", rels, {"0.6.6": _app()}, installed="master",
+                   force=True)["ok"] is True
+
+
+def test_version_key_matches_the_plugin():
+    plugin = _load("pwn_updates_plugin_parity",
+                   os.path.join(FILES, "plugins", "updates.py"))
+    for text in ("0.6.9", "0.7.0-beta.1", "0.7.0-beta.10", "0.7.0", "v1.2.3",
+                 "1.2.3+b5", "0.7.0-rc.1", "0.7.0-beta", "master", "", None, "0.7",
+                 "0.7a.0"):
+        assert ua.version_key(text) == plugin.version_key(text), text

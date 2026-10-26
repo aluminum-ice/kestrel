@@ -11,6 +11,12 @@ on) that, after a confirmation step, runs the root ``kestrel update
 apply`` helper through the same privileged socket the capture/plugin controls
 use. There is **no** auto-update.
 
+Releases come in two channels, told apart by the tag: a stable ``X.Y.Z`` and a
+beta ``X.Y.Z-beta.N`` (which the Release workflow also flags as a Forgejo
+pre-release). Only stable releases are offered unless the ``beta`` option is
+on; versions compare by SemVer precedence, so a beta device moves on to the
+final release when it is out.
+
 Only the *application layer* can be updated in place - the ``kestrel_pi``
 package, the reference plugins, the helper scripts, the systemd units and
 additive config keys, i.e. everything built from ``builder/extra/files``. A
@@ -64,6 +70,30 @@ RELEASES_MAX_PAGES = 2
 # The release asset the Release workflow attaches, describing whether a release
 # is app-layer-updatable or needs a reflash, and the commit to check out.
 MANIFEST_ASSET = "update-manifest.json"
+# A check that failed for a passing reason is retried this soon, not a whole
+# check interval later.
+RETRY_SECONDS = 900
+# Response size caps: a release list page carries up to 50 release notes; a
+# manifest is a few hundred bytes.
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_MANIFEST_BYTES = 256 * 1024
+
+
+def _text(value):
+    """A stripped string from a JSON field, or "" for anything else, so a
+    malformed reply can't raise in the check."""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def read_json_capped(resp, limit):
+    """Parse a streamed ``requests`` response as JSON, refusing a body over
+    ``limit`` bytes."""
+    buf = bytearray()
+    for chunk in resp.iter_content(chunk_size=65536):
+        buf += chunk
+        if len(buf) > limit:
+            raise ValueError("reply larger than %d bytes" % limit)
+    return json.loads(bytes(buf).decode("utf-8"))
 
 
 def read_installed_version(path=None):
@@ -93,13 +123,50 @@ def parse_version(text):
     return tuple(nums) if nums else None
 
 
+def version_key(text):
+    """A sortable key for a release tag or installed version, with SemVer
+    pre-release precedence: ``0.7.0-beta.1`` < ``0.7.0-beta.2`` < ``0.7.0``.
+    The key is ``(numbers, pre)``, where ``pre`` is ``(1,)`` for a stable
+    release and ``(0, N)`` for ``-beta.N``, the only pre-release form the
+    Release workflow cuts. Returns ``None`` for a dev string like ``"master"``
+    and for any other suffix (``-rc1``, ``-dirty``), so an unrecognised version
+    is never offered and never compared."""
+    if not text:
+        return None
+    body = text.strip().lstrip("vV").split("+", 1)[0]
+    core, sep, suffix = body.partition("-")
+    nums = parse_version(core)
+    if nums is None or not core.replace(".", "").isdigit():
+        return None
+    if not sep:
+        return (nums, (1,))
+    label, dot, number = suffix.partition(".")
+    if label == "beta" and dot and number.isdigit():
+        return (nums, (0, int(number)))
+    return None
+
+
+def is_prerelease(tag):
+    """True when ``tag`` is a ``-beta.N`` pre-release version."""
+    key = version_key(tag)
+    return key is not None and key[1][0] == 0
+
+
 def is_newer(latest, installed):
-    """True when release tag ``latest`` is strictly newer than ``installed``.
+    """True when release tag ``latest`` is strictly newer than ``installed``,
+    by SemVer precedence (a final release is newer than its own betas).
     Unparseable/dev installed version => never newer (we don't nag dev builds)."""
-    lv, iv = parse_version(latest), parse_version(installed)
+    lv, iv = version_key(latest), version_key(installed)
     if lv is None or iv is None:
         return False
     return lv > iv
+
+
+def release_is_prerelease(rel):
+    """True for a release Forgejo flags as a pre-release, or whose tag is a
+    ``-beta.N`` version (so a beta published without the flag still never
+    reaches the stable channel)."""
+    return bool(rel.get("prerelease")) or is_prerelease(_text(rel.get("tag_name")))
 
 
 class Updates(Plugin):
@@ -127,6 +194,13 @@ class Updates(Plugin):
         # marked secret so the CLI and web never echo it. It needs read-only
         # "repository" scope. It also authenticates the `update apply` clone.
         "token": {"type": "str", "default": "", "secret": True},
+        # Opt in to beta (-beta.N pre-release) updates as well as stable ones.
+        # Off => only stable releases are offered. Turning it off while on a
+        # beta keeps the device where it is (no downgrade) until a stable
+        # release newer than that beta is out.
+        "beta": {"type": "bool", "default": False,
+                 "help": "Also offer beta (X.Y.Z-beta.N) releases. Turning it "
+                         "off never downgrades a device already on a beta."},
         # How often, at most, to re-check while online (6h default).
         "check_interval_seconds": {"type": "int", "default": 21600},
         "timeout": {"type": "int", "default": 30},
@@ -140,6 +214,7 @@ class Updates(Plugin):
         self._wake = threading.Event()
         self._last_check = None
         self._state = self._load_state()
+        self._withdraw_stale_offer()
         self.log.info("updates loaded; installed version %r",
                       read_installed_version() or "unknown")
         # The release check is several sequential HTTP requests, so it runs on
@@ -150,6 +225,30 @@ class Updates(Plugin):
         self._worker = threading.Thread(
             target=self._run, name="updates-worker", daemon=True)
         self._worker.start()
+
+    def _channel(self):
+        return "beta" if self.options.get("beta") is True else "stable"
+
+    def _withdraw_stale_offer(self):
+        """Withdraw a stored offer that no longer applies: one the other
+        channel found (the beta toggle changed), or one computed for a version
+        that is no longer installed (an update ran since). The web Upgrade
+        button acts on the shared state file, so such an offer must not linger
+        until the next check, which may be hours away while offline. The
+        cleared state reads as "checking…"."""
+        state = self._state
+        if not state.get("update_available"):
+            return
+        if state.get("channel", "stable") == self._channel() and \
+                state.get("installed") == read_installed_version():
+            return
+        cleared = dict(state)
+        cleared.update({"latest": "", "update_available": False,
+                        "offerable": False, "commit": "", "reason": "",
+                        "notes": [], "notes_url": "", "checked_at": None,
+                        "installed": read_installed_version(),
+                        "channel": self._channel()})
+        self._store(cleared)
 
     def on_unload(self):
         self._stop.set()
@@ -165,12 +264,13 @@ class Updates(Plugin):
             self._tick()
 
     def _poll_interval(self):
-        # Wake around the check interval so the periodic check still happens with
-        # no connectivity edges; never busier than 60s.
-        try:
-            return max(60, int(self.options.get("check_interval_seconds", 21600)))
-        except (TypeError, ValueError):
-            return 21600
+        # Wake when the next check is due (sooner after a failed one, see
+        # _schedule_retry) so it happens even with no connectivity edges or
+        # epochs; never busier than 60s.
+        interval = self._interval()
+        if self._last_check is None:
+            return interval
+        return max(60, interval - (time.monotonic() - self._last_check))
 
     def _tick(self):
         if not self.context.connectivity.online:
@@ -185,6 +285,11 @@ class Updates(Plugin):
                 self._force_check()
             else:
                 self._maybe_check()
+        except Exception as exc:  # noqa: BLE001 - the worker must outlive any bug
+            # An exception here would end the worker thread and with it every
+            # later check, silently, until the daemon restarts.
+            self.log.warning("updates: check failed unexpectedly: %r", exc)
+            self._schedule_retry()
         finally:
             self._run_lock.release()
 
@@ -247,13 +352,19 @@ class Updates(Plugin):
         return "update available — needs reflash"
 
     # -- the check -------------------------------------------------------
+    def _interval(self):
+        try:
+            return max(60, int(self.options.get("check_interval_seconds", 21600)))
+        except (TypeError, ValueError):
+            return 21600
+
     def _maybe_check(self):
-        interval = max(60, int(self.options.get("check_interval_seconds", 21600)))
         now = time.monotonic()
-        if self._last_check is not None and now - self._last_check < interval:
+        if self._last_check is not None and now - self._last_check < self._interval():
             return
         self._last_check = now
-        self._check()
+        if not self._check():
+            self._schedule_retry()
 
     def _force_check(self):
         """Check now, ignoring the interval throttle, and reset the throttle
@@ -262,7 +373,15 @@ class Updates(Plugin):
         drop a trigger file this plugin consumes on its next hook - the force is
         the point, since the whole reason to ask is not to wait out the interval."""
         self._last_check = time.monotonic()
-        self._check()
+        if not self._check():
+            self._schedule_retry()
+
+    def _schedule_retry(self):
+        """After a check that failed for a passing reason (no route, a server
+        error), try again in RETRY_SECONDS rather than a whole interval."""
+        interval = self._interval()
+        if interval > RETRY_SECONDS:
+            self._last_check = time.monotonic() - interval + RETRY_SECONDS
 
     def _consume_check_request(self):
         """True if a "check now" trigger file is present, removing it. The file
@@ -278,62 +397,90 @@ class Updates(Plugin):
         return False
 
     def _check(self):
+        """One release check. Returns False when it failed for a passing reason
+        (so it is retried soon), True otherwise - including a definite answer
+        stored in the shared state, or a configuration problem that retrying
+        will not fix."""
         if not self.context.require_capability("network"):
-            return
-        import requests
-
+            return True
         repo = (self.options.get("repo") or DEFAULT_REPO).strip()
         host = self._host()
         if not host:
             self.log.warning("updates: host %r is not an https:// URL; not "
                              "checking", self.options.get("host"))
-            return
+            return True
         token = (self.options.get("token") or "").strip()
         installed = read_installed_version()
-        timeout = int(self.options.get("timeout", 30))
-        url = "%s/api/v1/repos/%s/releases/latest" % (host, repo)
         try:
-            resp = requests.get(url, headers=self._headers(token),
-                                timeout=timeout)
-            if resp.status_code == 404:
-                # Forgejo also returns 404 for a private repo the caller can't
-                # see, so when no token is set say that rather than "no release".
-                if token:
-                    self.log.info("updates: no published release for %s yet", repo)
-                else:
-                    self.log.info("updates: %s has no public release (a private "
-                                  "repo needs a token - see docs)", repo)
-                self._store(self._compute_state(installed, None, None))
-                return
-            if resp.status_code in (401, 403):
-                self.log.warning("updates: %s HTTP %s - check the token's "
-                                 "validity and scope", host, resp.status_code)
-                return
-            if resp.status_code >= 400:
-                self.log.warning("updates: %s HTTP %s", host, resp.status_code)
-                return
-            release = resp.json()
+            timeout = int(self.options.get("timeout", 30))
+        except (TypeError, ValueError):
+            timeout = 30
+        beta = self._channel() == "beta"
+        # Both channels read the release list and pick the highest version
+        # themselves (Forgejo's /releases/latest goes by date, so a hotfix on an
+        # older line published later would win); the stable channel skips
+        # pre-releases. The same list feeds the notes and the reflash-gap scan.
+        url = "%s/api/v1/repos/%s/releases?limit=%d&page=1" % (host, repo, RELEASES_PAGE)
+        try:
+            status, body = self._get(url, token, timeout)
         except Exception as exc:  # noqa: BLE001 - never let a check break the loop
             self.log.warning("updates: release check failed: %s", exc)
-            return
+            return False
+        if status == 404:
+            # Forgejo also returns 404 for a private repo the caller can't
+            # see, so when no token is set say that rather than "no release".
+            if token:
+                self.log.info("updates: %s not found on %s", repo, host)
+            else:
+                self.log.info("updates: %s has no public releases (a private "
+                              "repo needs a token - see docs)", repo)
+            self._store(self._compute_state(installed, None, None))
+            return True
+        if status in (401, 403):
+            self.log.warning("updates: %s HTTP %s - check the token's "
+                             "validity and scope", host, status)
+            return True
+        if status >= 400 or not isinstance(body, list):
+            self.log.warning("updates: %s answered HTTP %s%s", host, status,
+                             "" if status >= 400 else " with no release list")
+            return False
 
-        tag = (release.get("tag_name") or "").strip()
-        available = is_newer(tag, installed)
-        manifest = self._fetch_manifest(release, timeout, token) if available else None
-        releases = self._fetch_releases(repo, timeout, token) if available else []
-        notes = self._notes_from_releases(releases, installed, tag) \
-            if available else None
-        # If the latest is an in-place (app-layer) update, make sure the device
-        # did not skip a reflash-only release in between: an app-layer update can
-        # only be applied on top of every build-layer release since the installed
-        # one. A reflash sitting in the gap (e.g. 0.6.4 reflash, device on 0.6.3,
-        # latest 0.6.5 app-layer) means this update needs a flash, not an
-        # in-place apply.
-        gap_reason = ""
-        if available and manifest and \
-                (manifest.get("kind") or "").strip().lower() == "app-layer":
-            gap_reason = self._gap_requires_reflash(releases, installed, tag,
-                                                    timeout, token)
+        try:
+            releases, complete = self._fetch_releases(repo, timeout, token, first=body)
+            if releases is None:
+                return False
+            release = self._newest_release(releases, include_prereleases=beta)
+            if release is None:
+                self.log.info("updates: no published release for %s yet", repo)
+                self._store(self._compute_state(installed, None, None))
+                return True
+            tag = _text(release.get("tag_name"))
+            available = is_newer(tag, installed)
+            manifest = self._fetch_manifest(release, timeout, token) if available else None
+            # Which releases sit on the target's update path follows the target,
+            # not the channel: the Release workflow builds a stable release's
+            # manifest and notes against the previous stable release (they
+            # already cover any betas in between), and a beta's against the
+            # previous release of either kind.
+            path_prereleases = is_prerelease(tag)
+            notes = self._notes_from_releases(releases, installed, tag,
+                                              path_prereleases) \
+                if available else None
+            # If the latest is an in-place (app-layer) update, make sure the
+            # device did not skip a reflash-only release in between: an
+            # app-layer update can only be applied on top of every build-layer
+            # release since the installed one. A reflash sitting in the gap
+            # (e.g. 0.6.4 reflash, device on 0.6.3, latest 0.6.5 app-layer)
+            # means this update needs a flash, not an in-place apply.
+            gap_reason = ""
+            if available and manifest and \
+                    _text(manifest.get("kind")).lower() == "app-layer":
+                gap_reason = self._gap_requires_reflash(
+                    releases, installed, tag, timeout, token, path_prereleases,
+                    complete=complete)
+        except Exception as exc:  # noqa: BLE001 - a bad reply must not end checks
+            self.log.warning("updates: release check failed: %s", exc)
+            return False
         state = self._compute_state(installed, release, manifest, notes,
                                     gap_reason=gap_reason)
         self._store(state)
@@ -341,68 +488,101 @@ class Updates(Plugin):
             self.log.info("updates: %s available (installed %s, %s)",
                           tag, installed or "unknown",
                           "in-place" if state["offerable"] else "needs reflash")
+        return True
+
+    def _get(self, url, token, timeout, limit=None):
+        """GET ``url`` and return (status, parsed JSON or None for an HTTP
+        error). The body is streamed and refused past ``limit`` bytes, so a
+        broken or hostile server can't exhaust the device's memory. The token
+        is only sent to ``host``."""
+        import requests
+
+        host = self._host()
+        on_host = bool(host) and url.startswith(host + "/")
+        resp = requests.get(url, headers=self._headers(token if on_host else ""),
+                            timeout=timeout, stream=True)
+        try:
+            if resp.status_code >= 400:
+                return resp.status_code, None
+            return resp.status_code, read_json_capped(resp, limit or MAX_RESPONSE_BYTES)
+        finally:
+            resp.close()
 
     def _fetch_manifest(self, release, timeout, token=""):
-        """Fetch the release's update-manifest.json asset, or None if absent.
+        """Fetch the release's update-manifest.json asset: the manifest dict, or
+        None when the release has none (or it is not a JSON object). Raises on
+        a network or server error, so a passing failure is retried instead of
+        reading as "needs reflash".
 
         Forgejo serves assets from ``browser_download_url`` (under
         ``releases/download/``), which accepts the same token as the API, so a
         private repo's manifest comes from the same URL with the token added.
         The token is only sent when that URL is on ``host``."""
-        import requests
-
         asset = None
         for candidate in release.get("assets") or []:
-            if candidate.get("name") == MANIFEST_ASSET:
+            if isinstance(candidate, dict) and candidate.get("name") == MANIFEST_ASSET:
                 asset = candidate
                 break
         if not asset:
             return None
-        url = asset.get("browser_download_url")
+        url = _text(asset.get("browser_download_url"))
         if not url:
             return None
-        host = self._host()
-        on_host = bool(host) and url.startswith(host + "/")
-        headers = self._headers(token if on_host else "")
-        try:
-            resp = requests.get(url, headers=headers, timeout=timeout)
-            if resp.status_code >= 400:
-                return None
-            return resp.json()
-        except Exception as exc:  # noqa: BLE001
-            self.log.warning("updates: manifest fetch failed: %s", exc)
+        status, body = self._get(url, token, timeout, MAX_MANIFEST_BYTES)
+        if status == 404:
             return None
+        if status >= 400:
+            raise OSError("manifest HTTP %s" % status)
+        return body if isinstance(body, dict) else None
 
-    def _fetch_releases(self, repo, timeout, token=""):
-        """The repo's published releases (newest first, up to 100), or [] on any
-        error. Fetched once per check and reused for the "What's new" notes and
-        the reflash-gap scan, so the two don't each hit the API. Forgejo pages
-        at 50, so this reads up to RELEASES_MAX_PAGES pages, stopping at the
-        first short one."""
-        import requests
-
+    def _fetch_releases(self, repo, timeout, token="", first=None):
+        """The repo's published releases (newest first, up to 100) and whether
+        that is all of them, as ``(releases, complete)``; ``(None, False)`` when
+        a page could not be read. Fetched once per check and reused for the
+        "What's new" notes and the reflash-gap scan. Forgejo pages at 50, so this
+        reads up to RELEASES_MAX_PAGES pages, stopping at the first short one.
+        ``first`` is page 1 when the caller already has it."""
         host = self._host()
         if not host:
-            return []
+            return None, False
         releases = []
-        for page in range(1, RELEASES_MAX_PAGES + 1):
+        start = 1
+        if first is not None:
+            releases.extend(r for r in first if isinstance(r, dict))
+            if len(first) < RELEASES_PAGE:
+                return releases, True
+            start = 2
+        for page in range(start, RELEASES_MAX_PAGES + 1):
             url = "%s/api/v1/repos/%s/releases?limit=%d&page=%d" % (
                 host, repo, RELEASES_PAGE, page)
             try:
-                resp = requests.get(url, headers=self._headers(token),
-                                    timeout=timeout)
-                if resp.status_code >= 400:
-                    return []
-                batch = resp.json()
-            except Exception as exc:  # noqa: BLE001 - best-effort
+                status, batch = self._get(url, token, timeout)
+            except Exception as exc:  # noqa: BLE001
                 self.log.warning("updates: releases fetch failed: %s", exc)
-                return []
-            if not isinstance(batch, list):
-                return []
-            releases.extend(batch)
+                return None, False
+            if status >= 400 or not isinstance(batch, list):
+                return None, False
+            releases.extend(r for r in batch if isinstance(r, dict))
             if len(batch) < RELEASES_PAGE:
-                break
-        return releases
+                return releases, True
+        return releases, False
+
+    @staticmethod
+    def _newest_release(releases, include_prereleases=False):
+        """The highest-versioned published release, or None; betas only when
+        ``include_prereleases``. Picked by version, not list order: Forgejo
+        lists by creation date, so a hotfix cut after a newer release would
+        otherwise outrank it."""
+        best, best_key = None, None
+        for rel in releases:
+            if not isinstance(rel, dict) or rel.get("draft"):
+                continue
+            if not include_prereleases and release_is_prerelease(rel):
+                continue
+            key = version_key(_text(rel.get("tag_name")))
+            if key is not None and (best_key is None or key > best_key):
+                best, best_key = rel, key
+        return best
 
     def _host(self):
         """The release server's base URL without a trailing slash, or "" when
@@ -419,54 +599,74 @@ class Updates(Plugin):
             headers["Authorization"] = "token %s" % token
         return headers
 
-    def _notes_from_releases(self, releases, installed, latest):
+    def _notes_from_releases(self, releases, installed, latest,
+                             include_prereleases=False):
         """Release notes for every published release strictly newer than the
         installed version, up to and including ``latest`` - newest first. Stored
         in the shared state so the dashboard's "What's new" link can show the
         combined changes without a round-trip (and even if the link is flaky when
-        it is opened). Returns [] when there is nothing to show."""
-        hi = parse_version(latest)
+        it is opened). Beta releases are only included when
+        ``include_prereleases`` (a beta target): a stable release's own notes
+        already cover the betas before it. Returns [] when there is nothing to
+        show."""
+        hi = version_key(latest)
         notes = []
         for rel in releases:
             if not isinstance(rel, dict) or rel.get("draft"):
                 continue
-            tag = (rel.get("tag_name") or "").strip()
+            if not include_prereleases and release_is_prerelease(rel):
+                continue
+            tag = _text(rel.get("tag_name"))
             if not is_newer(tag, installed):
                 continue
-            pv = parse_version(tag)
+            pv = version_key(tag)
             # Never show anything past the release being offered (defensive; a
             # newer draft/prerelease could otherwise sneak in).
             if hi is not None and pv is not None and pv > hi:
                 continue
             notes.append({
                 "version": tag,
-                "date": (rel.get("published_at") or "")[:10],
-                "body": (rel.get("body") or "").strip()[:20000],
+                "date": _text(rel.get("published_at"))[:10],
+                "body": _text(rel.get("body"))[:20000],
             })
-        notes.sort(key=lambda n: parse_version(n["version"]) or (), reverse=True)
+        notes.sort(key=lambda n: version_key(n["version"]), reverse=True)
         return notes[:50]
 
-    def _gap_requires_reflash(self, releases, installed, latest, timeout, token=""):
+    def _gap_requires_reflash(self, releases, installed, latest, timeout, token="",
+                              include_prereleases=False, complete=True):
         """Return a one-line reason when a published release strictly between the
         installed version and ``latest`` is reflash-only (or carries no manifest,
         which is treated as reflash), else "". Such a release in the gap means an
         app-layer ``latest`` cannot be applied in place: the device skipped a
-        build-layer change and must be flashed. Draft and pre-releases are
-        ignored (they are never on the stable update path). Best-effort - if a
-        gap release's manifest can't be read it is treated as reflash, which is
-        the safe direction."""
-        hi = parse_version(latest)
+        build-layer change and must be flashed. Drafts are ignored, and so are
+        betas unless ``include_prereleases`` (a beta target, whose manifest is
+        built only against the release just before it; a stable target's
+        manifest already covers the betas since the previous stable). When the
+        list is not ``complete`` (the page cap was hit) and does not reach back
+        to the installed version, the gap can't be checked, which also reads as
+        reflash - the safe direction."""
+        hi = version_key(latest)
+        lo = version_key(installed)
         gap = []
+        keys = []
         for rel in releases:
-            if not isinstance(rel, dict) or rel.get("draft") or rel.get("prerelease"):
+            if not isinstance(rel, dict) or rel.get("draft"):
                 continue
-            tag = (rel.get("tag_name") or "").strip()
-            pv = parse_version(tag)
-            if pv is None or not is_newer(tag, installed):
+            tag = _text(rel.get("tag_name"))
+            pv = version_key(tag)
+            if pv is None:
+                continue
+            keys.append(pv)
+            if not include_prereleases and release_is_prerelease(rel):
+                continue
+            if not is_newer(tag, installed):
                 continue
             if hi is not None and pv >= hi:   # at or past latest (incl. latest itself)
                 continue
             gap.append((pv, tag, rel))
+        if not complete and lo is not None and (not keys or min(keys) > lo):
+            return ("the installed %s is too far behind to check every release "
+                    "up to %s, so it needs a reflash" % (installed, latest))
         # Newest first, so the reported blocker is the most recent reflash in the
         # gap (the real floor the device must reach).
         gap.sort(key=lambda g: g[0], reverse=True)
@@ -475,7 +675,7 @@ class Updates(Plugin):
             if not manifest:
                 return ("release %s in between has no update manifest, so it "
                         "needs a reflash and can't be skipped" % tag)
-            if (manifest.get("kind") or "").strip().lower() != "app-layer":
+            if _text(manifest.get("kind")).lower() != "app-layer":
                 return ("release %s in between needs a reflash, so it can't be "
                         "skipped by an in-place update" % tag)
         return ""
@@ -485,9 +685,13 @@ class Updates(Plugin):
         """Build the shared state dict from the installed version, the latest
         release JSON (or None), its manifest (or None) and the merged release
         notes for the range (or None)."""
-        tag = (release.get("tag_name") if release else "") or ""
-        html_url = (release.get("html_url") if release else "") or ""
-        installed_is_dev = parse_version(installed) is None
+        release = release if isinstance(release, dict) else {}
+        manifest = manifest if isinstance(manifest, dict) else None
+        tag = _text(release.get("tag_name"))
+        html_url = _text(release.get("html_url"))
+        if not html_url.startswith("https://"):
+            html_url = ""     # only ever linked as https (never javascript:)
+        installed_is_dev = version_key(installed) is None
         available = is_newer(tag, installed)
 
         kind = "unknown"
@@ -496,8 +700,8 @@ class Updates(Plugin):
         offerable = False
         if available:
             if manifest:
-                kind = (manifest.get("kind") or "unknown").strip().lower()
-                commit = (manifest.get("commit") or "").strip()
+                kind = _text(manifest.get("kind")).lower() or "unknown"
+                commit = _text(manifest.get("commit"))
                 min_from = manifest.get("min_update_from")
                 if kind == "app-layer":
                     if gap_reason:
@@ -508,6 +712,10 @@ class Updates(Plugin):
                         # min_update_from).
                         kind = "reflash"
                         reason = gap_reason
+                    elif min_from and version_key(str(min_from)) is None:
+                        kind = "reflash"
+                        reason = ("the release's min_update_from (%s) is not a "
+                                  "version" % min_from)
                     elif min_from and is_newer(str(min_from), installed):
                         kind = "reflash"
                         reason = ("installed version predates the oldest this "
@@ -515,7 +723,7 @@ class Updates(Plugin):
                     else:
                         offerable = True
                 else:
-                    reason = (manifest.get("requires_reflash_reason")
+                    reason = (_text(manifest.get("requires_reflash_reason"))
                               or "release changed the base OS (needs reflash)")
             else:
                 reason = "no update manifest on the release (needs reflash)"
@@ -532,8 +740,12 @@ class Updates(Plugin):
             "notes_url": html_url,
             "notes": notes or [],
             "repo": (self.options.get("repo") or DEFAULT_REPO).strip(),
-            # The CLI's `update apply` clones from here (falls back to the
-            # [plugins.updates] host when an older state file lacks it).
+            # The channel this check ran on; an offer from the other channel is
+            # withdrawn at load (see _withdraw_stale_offer).
+            "channel": self._channel(),
+            "prerelease": is_prerelease(tag),
+            # Display only: `kestrel update apply` takes the host, repo and
+            # token from config.toml and re-verifies the release itself.
             "host": self._host(),
             "checked_at": time.time(),
         }
@@ -555,9 +767,10 @@ class Updates(Plugin):
     def _load_state(self):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as handle:
-                return json.load(handle)
+                state = json.load(handle)
         except (OSError, ValueError):
             return {}
+        return state if isinstance(state, dict) else {}
 
     @staticmethod
     def _health_note(state):
