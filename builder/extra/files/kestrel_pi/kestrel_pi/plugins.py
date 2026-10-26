@@ -2,7 +2,9 @@
 
 This mirrors legacy pwnagotchi's plugin API so community plugins port with
 light changes: a plugin is a module that defines a ``Plugin`` subclass with
-no-op ``on_*`` methods it overrides. The deviations from legacy are additive
+no-op ``on_*`` methods it overrides. The legacy ``@plugins.on`` decorator
+style is not supported, and declarations must be plain literals in the class
+body (:mod:`.declarations`): root reads them without importing the plugin. The deviations from legacy are additive
 declarations the loader reads (``__target_api__``, ``__capabilities__``,
 ``__options__``, ``__requires__``/``__provides__``) and a typed ``self.context``
 in place of a global singleton; the method bodies a ported plugin carries are
@@ -206,54 +208,3 @@ def normalize_actions(actions):
     cleaned.sort(key=lambda a: (a["order"] is None, a["order"] or 0, a["_seq"]))
     return [{k: a[k] for k in ("label", "path", "method", "order", "confirm")}
             for a in cleaned[:2]]
-
-
-# -- legacy @plugins.on decorator support --------------------------------
-# Some community plugins are plain modules that register hook functions with a
-# decorator instead of subclassing. The loader accepts those too: it collects
-# the decorated functions per module and builds a synthetic Plugin subclass.
-_DECORATED = {}   # module __name__ -> {hook_name: function}
-
-
-def on(hook_name):
-    """Register a module-level function as a hook (legacy drop-in style)::
-
-        from kestrel_pi import plugins
-
-        @plugins.on("handshake")
-        def handshake(event):
-            ...
-
-    The ``on_`` prefix is optional in the decorator argument.
-    """
-    full = hook_name if hook_name.startswith("on_") else "on_" + hook_name
-    if full not in ALL_HOOKS:
-        raise ValueError("unknown hook %r" % hook_name)
-
-    def decorator(func):
-        _DECORATED.setdefault(func.__module__, {})[full] = func
-        return func
-
-    return decorator
-
-
-def decorated_hooks(module_name):
-    """The hooks a module registered via :func:`on`, or an empty dict."""
-    return _DECORATED.get(module_name, {})
-
-
-def build_decorated_plugin(module_name):
-    """Build a synthetic ``Plugin`` subclass from a module's decorated hooks."""
-    hooks = _DECORATED.get(module_name, {})
-    namespace = {"__plugin_name__": module_name.split(".")[-1]}
-
-    def make(func):
-        # Decorated functions are module-level (no self); adapt to a method.
-        def method(self, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        return method
-
-    for hook_name, func in hooks.items():
-        namespace[hook_name] = make(func)
-    return type("DecoratedPlugin", (Plugin,), namespace)

@@ -17,7 +17,9 @@ conventions](web-ui-conventions.md).
 > hooks. A ported plugin's method bodies are unchanged; the differences are
 > additive declarations the loader reads, and a typed `self.context` in place of
 > a global singleton. The legacy `@plugins.on("handshake")` module-function style
-> is also accepted.
+> is **not** supported, and the class must subclass `Plugin` directly with its
+> declarations as plain literals (see [Declarations the loader
+> reads](#declarations-the-loader-reads)).
 
 ---
 
@@ -96,6 +98,18 @@ tested against.
 
 Set these as class attributes. All are optional except that you'll usually set
 at least `__capabilities__`.
+
+**Write them as plain literals in the class body of a class that subclasses
+`Plugin` directly** (strings, numbers, tuples, lists, dicts, `True`/`False`/
+`None`; no names, comprehensions or calls, and no reassigning them after the
+class). Root reads them without importing your plugin: the `kestrel plugins`
+CLI and the web page's settings helper run as root and parse the file with
+`ast`, so nothing a plugin (or the `pi`-writable venv) contains ever runs as
+root. The loader enforces the same rule, so a plugin root can't read fails to
+load with an `unreadable declarations` reason and shows as `invalid` in
+`kestrel plugins list`. This covers `__plugin_name__`, `__description__`,
+`__version__`, `__target_api__`, `__capabilities__`, `__options__`,
+`__provides__`, `__requires__` and `__optional_requires__`.
 
 | Attribute | Type | Purpose |
 | --- | --- | --- |
@@ -508,8 +522,9 @@ surfaced on the status page — never a daemon crash:
 - **`loaded`** — running.
 - **`disabled`** — not enabled, a bad/missing required option, a missing hard
   service, or an incompatible target API. The `reason` says which.
-- **`failed`** — an import error or a raising `on_loaded`/`on_ready`. The plugin
-  is quarantined; the rest run on.
+- **`failed`** — declarations root can't read statically (see above), an
+  import error, or a raising `on_loaded`/`on_ready`. The plugin is quarantined;
+  the rest run on.
 
 An exception in an *event* hook is logged and recorded as `last_error` but does
 not change your state. Overruns and the last hook/time are tracked per plugin.
@@ -558,7 +573,9 @@ make test        # the venv's pytest (needs flask/requests)
 
 ## Checklist
 
-- One `Plugin` subclass per file; the **filename** is the plugin name.
+- One `Plugin` subclass per file, subclassing `Plugin` directly; the
+  **filename** is the plugin name.
+- Write every declaration as a plain literal in the class body.
 - Set `__target_api__` to the version you tested against.
 - Declare `__capabilities__` honestly; call `require_capability` before a gated
   action; expect the `network` ack at enable time.

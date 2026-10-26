@@ -53,7 +53,7 @@ algo_valid() {
 
 # The algorithm from a sidecar (stdlib python3; the venv is not needed here).
 read_algo() {
-    PWN_META="$1" python3 - <<'PY' 2>/dev/null || true
+    PWN_META="$1" python3 -I - <<'PY' 2>/dev/null || true
 import json, os
 try:
     with open(os.environ["PWN_META"], encoding="utf-8") as fh:
@@ -67,7 +67,7 @@ PY
 # kestrel_pi.agent.model_slug exactly so the imported file name is the one
 # the agent loads.
 slugify() {
-    PWN_ALGO="$1" python3 - <<'PY'
+    PWN_ALGO="$1" python3 -I - <<'PY'
 import os
 a = os.environ.get("PWN_ALGO", "").strip().lower()
 s = "".join(c if (c.isalnum() or c == "-") else "-" for c in a).strip("-")

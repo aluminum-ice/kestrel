@@ -87,7 +87,7 @@ agent_override_mtime() {
 # missing or unreadable, so the caller falls back to the configured sweep.
 build_agent_args() {
     local parsed kind band channels transmit dwell
-    parsed=$(PWN_AGENT_OVERRIDE="$PWN_AGENT_OVERRIDE" python3 - <<'PY' 2>/dev/null
+    parsed=$(PWN_AGENT_OVERRIDE="$PWN_AGENT_OVERRIDE" python3 -I - <<'PY' 2>/dev/null
 import json, os
 try:
     with open(os.environ["PWN_AGENT_OVERRIDE"], encoding="utf-8") as fh:

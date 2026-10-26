@@ -1,9 +1,11 @@
 """Plugin discovery, validation, ordering, and lifecycle.
 
 The loader scans the two search paths (shipped reference plugins, then operator
-plugins which override a shipped plugin of the same name), imports each module,
-finds its ``Plugin`` subclass (or a module built from the legacy ``@plugins.on``
-decorator), and for each plugin whose ``[plugins.<name>] enabled`` is true:
+plugins which override a shipped plugin of the same name), reads each module's
+declarations statically, imports it, checks its ``Plugin`` subclasses match
+what was read (:mod:`.declarations`: root reads the same declarations without
+importing, so a plugin it can't read is refused here too), and for each plugin
+whose ``[plugins.<name>] enabled`` is true:
 
 1. checks ``__target_api__`` against the daemon's :data:`HOOK_API_VERSION`
    (improvement 4) - compatible loads, older warns, incompatible is refused;
@@ -30,14 +32,9 @@ import time
 from . import HOOK_API_VERSION
 from .applyclient import apply_change
 from .context import PluginContext
+from .declarations import DeclarationError, check_classes, read_declarations
 from .options import OptionsError, validate_options
-from .plugins import (
-    CAPABILITIES,
-    Plugin,
-    build_decorated_plugin,
-    decorated_hooks,
-    normalize_actions,
-)
+from .plugins import CAPABILITIES, Plugin, normalize_actions
 
 
 class PluginRecord:
@@ -111,10 +108,14 @@ class PluginRecord:
 def discover_plugin_classes(path):
     """Import ``path`` and return its plugin classes.
 
-    A module may define one or more ``Plugin`` subclasses, or use the legacy
-    ``@plugins.on`` decorator (in which case a synthetic subclass is built).
-    Returns a list of ``(name, cls)``; ``name`` is the class's declared
-    ``__name__`` lowercased, falling back to the module file name."""
+    A module defines one or more classes that subclass ``Plugin`` directly, with
+    their declarations as plain literals. Those are read statically first and
+    checked against the imported classes; a file that fails either raises
+    :class:`DeclarationError`. Returns a list of ``(name, cls)``; ``name`` is the
+    class's ``__plugin_name__``, falling back to the module file name."""
+    declared = read_declarations(path)
+    if not declared:
+        raise DeclarationError("%s: no class subclassing Plugin directly" % path)
     mod_name = "kestrel_pi_plugin_" + os.path.splitext(os.path.basename(path))[0].replace("-", "_")
     spec = importlib.util.spec_from_file_location(mod_name, path)
     if spec is None or spec.loader is None:
@@ -129,11 +130,10 @@ def discover_plugin_classes(path):
             if attr.__module__ == module.__name__:
                 classes.append(attr)
 
-    if not classes and decorated_hooks(module.__name__):
-        classes.append(build_decorated_plugin(module.__name__))
-
     file_default = os.path.splitext(os.path.basename(path))[0]
-    return [((getattr(c, "__plugin_name__", None) or file_default), c) for c in classes]
+    found = [((getattr(c, "__plugin_name__", None) or file_default), c) for c in classes]
+    check_classes(path, declared, found)
+    return found
 
 
 class Loader:
@@ -172,6 +172,13 @@ class Loader:
         for file_name, source in sources.items():
             try:
                 classes = discover_plugin_classes(source)
+            except DeclarationError as exc:
+                record = PluginRecord(file_name, source)
+                record.state = "failed"
+                record.reason = "unreadable declarations: %s" % exc
+                self.records[file_name] = record
+                self.log.error("plugin %s refused: %s", file_name, exc)
+                continue
             except Exception as exc:  # noqa: BLE001 - a bad module is quarantined
                 record = PluginRecord(file_name, source)
                 record.state = "failed"

@@ -68,14 +68,21 @@ giving the daemon root:
 
 Two rules make the root helper safe to expose this way, and both are load-bearing:
 
-1. **`plugins-ctl` never imports plugin code — nor the venv package.** It reads
-   plugin declarations with `ast` (static parse) instead of importing them,
-   because it runs as root and a plugin is third-party code. For the same reason
-   it never imports the `kestrel_pi` package: the venv is `pi`-writable, so a
-   root import would be an escalation path. Anything the helper needs from the
-   package (e.g. the `config-set` allow-list) is mirrored into `plugins-ctl` and
+1. **`plugins-ctl` never imports plugin code — nor the venv package — in any
+   subcommand.** It reads plugin declarations with `ast` (static parse) instead
+   of importing them, because it runs as root (the socket helpers, and the
+   `kestrel plugins` CLI under sudo) and a plugin is third-party code. For the
+   same reason it never imports the `kestrel_pi` package: the venv is
+   `pi`-writable, so a root import would be an escalation path. It always runs
+   as `/usr/bin/python3 -I`, never the venv's Python. Anything the helper needs
+   from the package (e.g. the `config-set` allow-list, the static declaration
+   reader in `kestrel_pi/declarations.py`) is mirrored into `plugins-ctl` and
    held in step by a drift test — see [Config writes from the page](#config-writes-from-the-page).
-   Keep it import-free.
+   The loader refuses any plugin that reader can't read, so root and the daemon
+   always see the same plugins. Keep it import-free. More generally, the CLI and
+   lib scripts run Python as root only as `python3 -I` with a reset `PATH`, and
+   the venv's Python only as `pi` (`run_as_pi`); `tests/test_root_python.py`
+   enforces both.
 2. **`spwd`/`crypt` are imported lazily** inside `plugins-ctl` (they were removed
    in Python 3.13; present on the 3.11 image) so the module still loads under a
    newer host Python. Keep them lazy.
@@ -137,7 +144,9 @@ write one, see [Writing a plugin](plugin-development.md); this section is the
 design overview.
 
 - **Source-compatible with legacy pwnagotchi**: a `Plugin` base class and `on_*`
-  hooks, so existing plugins port with minimal change.
+  hooks, so existing plugins port with minimal change. Declarations must be
+  plain literals on a direct `Plugin` subclass (root reads them statically), and
+  the legacy `@plugins.on` decorator style is not supported.
 - **Capabilities and permissions are declared, not implicit.** A plugin declares
   what it needs (e.g. the `network` capability). Enabling a plugin with the
   `network` capability requires the same authorized-use acknowledgment as
