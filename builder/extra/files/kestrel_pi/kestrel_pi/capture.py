@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -113,6 +114,9 @@ class CaptureInterface:
 
     def __init__(self, store_dir):
         self.store_dir = store_dir
+        # captured_networks() result, keyed on the store's file signature.
+        self._networks_cache = None
+        self._networks_lock = threading.Lock()
 
     def hashline_files(self):
         """Every ``*.hc22000`` file currently in the store (sorted)."""
@@ -170,9 +174,26 @@ class CaptureInterface:
         Returns a list of ``{"essid", "bssids", "handshakes"}`` sorted by ESSID
         (case-insensitive; an empty/hidden ESSID sorts last). This reads every
         hashline file, so a caller rendering it should search and paginate the
-        returned list rather than the store."""
+        returned list rather than the store.
+
+        The parse is cached and reused while every file's name, size and mtime
+        are unchanged (the store only grows by appends and new files), so the
+        networks page re-reads the store only after a capture changed it."""
+        paths = self.hashline_files()
+        signature = []
+        for path in paths:
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            signature.append((path, st.st_size, st.st_mtime_ns))
+        signature = tuple(signature)
+        with self._networks_lock:
+            cached = self._networks_cache
+        if cached is not None and cached[0] == signature:
+            return [dict(net) for net in cached[1]]
         nets = {}
-        for path in self.hashline_files():
+        for path in paths:
             for event in self.read_events(path):
                 slot = nets.get(event.essid)
                 if slot is None:
@@ -186,7 +207,9 @@ class CaptureInterface:
             for essid, data in nets.items()
         ]
         out.sort(key=lambda net: (net["essid"] == "", net["essid"].lower()))
-        return out
+        with self._networks_lock:
+            self._networks_cache = (signature, out)
+        return [dict(net) for net in out]
 
     def environment(self, stale_after=180):
         """The collector's in-range readout (``capture-status.json``), or ``None``.

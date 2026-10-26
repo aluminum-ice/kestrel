@@ -179,7 +179,10 @@ cmd_bt_pair() {
     done
     systemctl stop kestrel-bt-pan.service 2>/dev/null || true
     log "forgot the paired phone; opening the onboarding window"
-    systemctl restart kestrel-bt-onboard.service
+    # --no-block: the web re-pair reaches this through the root apply socket,
+    # whose helper is killed after 50s; a restart's stop phase can outlast that
+    # and the page would report a timeout for a re-pair that went through.
+    systemctl restart --no-block kestrel-bt-onboard.service
     log "pair your phone now (see 'journalctl -u kestrel-bt-onboard')"
 }
 
@@ -315,7 +318,7 @@ cmd_capture_enable() {
     # already happened (a missing dongle has surfaced as an error), so the
     # enablement is persisted and nothing more needs the start job to finish.
     # Waiting for it (the capture service's AngryOxide spin-up can be slow) is
-    # what pushed a web-page enable past the 20s plugin-apply socket timeout; the
+    # what pushed a web-page enable past the plugin-apply socket timeout; the
     # live capture card reads `systemctl is-active`, so it reflects the service
     # once it comes up (same idea as the agent restart's --no-block).
     systemctl start --no-block "$PWN_CAPTURE_SERVICE"
@@ -324,8 +327,14 @@ cmd_capture_enable() {
 
 cmd_capture_disable() {
     need_root
-    systemctl disable --now "$PWN_CAPTURE_SERVICE" 2>/dev/null || true
+    # Config first, then a non-blocking stop. The web toggle reaches this
+    # through the root apply socket, whose helper is killed at 50s: a blocking
+    # `disable --now` waiting out AngryOxide's stop could be killed before the
+    # config write, leaving capture stopped but still enabled (back on at the
+    # next boot, toggle pointing the wrong way). The dashboard re-probes the
+    # service until it reports stopped.
     capture_config_set enabled false
+    systemctl disable --now --no-block "$PWN_CAPTURE_SERVICE" 2>/dev/null || true
     log "capture disabled"
 }
 
@@ -1349,7 +1358,7 @@ agent_apply_set() {
     # the whole restart job, whose stop phase can sit for up to systemd's
     # TimeoutStopSec while a torch training child (kestrel-agent-train) in the
     # service cgroup winds down. The web /agent switch reaches this through the
-    # root apply socket, whose client gives up after 20s, so a slow stop made the
+    # root apply socket, whose client gives up well before that, so a slow stop made the
     # page report a spurious "could not reach the settings helper (timed out)"
     # even though the change had been written. Enqueue the restart and return at
     # once; the /agent page's "starting up" auto-refresh covers the agent coming
@@ -1384,8 +1393,12 @@ cmd_agent_enable() {
 
 cmd_agent_disable() {
     need_root
-    systemctl disable --now "$PWN_AGENT_SERVICE" 2>/dev/null || true
+    # Config first, then a non-blocking stop, for the same reason as the agent
+    # restart's --no-block (agent_apply_set): the stop can sit for up to
+    # TimeoutStopSec while a torch training child winds down, past the apply
+    # socket's budget, and the config write after it would then never happen.
     config_set agent enabled false
+    systemctl disable --now --no-block "$PWN_AGENT_SERVICE" 2>/dev/null || true
     log "learning agent disabled; capture returns to the configured sweep"
 }
 

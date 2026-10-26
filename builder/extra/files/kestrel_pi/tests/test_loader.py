@@ -1,4 +1,5 @@
 import logging
+import time
 
 from kestrel_pi.capture import CaptureInterface
 from kestrel_pi.connectivity import ConnectivityState
@@ -262,3 +263,42 @@ def test_health_actions_empty_for_a_disabled_plugin(tmp_path):
     loader.config["plugins"]["act"]["enabled"] = False
     loader.load_all()
     assert loader.records["act"].health()["actions"] == []
+
+
+def test_unload_all_bounds_a_hung_on_unload(tmp_path):
+    # One plugin's on_unload never returns in time (a wedged e-ink BUSY pin);
+    # unload_all gives up on it at the shared deadline instead of holding the
+    # daemon's stop, still unloads the others, and forgets every record.
+    (tmp_path / "hang.py").write_text(
+        "import time\n"
+        "from kestrel_pi import Plugin\n"
+        "class Hang(Plugin):\n"
+        "    def on_unload(self):\n"
+        "        time.sleep(5)\n"
+    )
+    (tmp_path / "quick.py").write_text(
+        "from kestrel_pi import Plugin\n"
+        "class Quick(Plugin):\n"
+        "    __provides__ = ('qsvc',)\n"
+        "    def provide_qsvc(self):\n"
+        "        return 1\n"
+        "    def on_unload(self):\n"
+        "        self.unloaded = True\n"
+    )
+    loader = Loader(
+        config={"plugins": {"hang": {"enabled": True}, "quick": {"enabled": True}}},
+        capture=CaptureInterface(str(tmp_path)),
+        connectivity=ConnectivityState(),
+        services=ServiceRegistry(),
+        search_paths=[str(tmp_path)],
+        logger=LOG,
+    )
+    loader.load_all()
+    quick = loader.records["quick"].instance
+    started = time.monotonic()
+    overran = loader.unload_all(0.3)
+    assert time.monotonic() - started < 2
+    assert overran == ["hang"]
+    assert quick.unloaded is True
+    assert all(r.state == "disabled" for r in loader.records.values())
+    assert not loader.services.has("qsvc")

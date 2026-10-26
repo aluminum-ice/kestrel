@@ -32,6 +32,11 @@ Environment=LG_WD=%t/kestrel
 ExecStart=/home/pi/.venv/bin/kestrel-daemon --config /etc/kestrel/config.toml
 Restart=on-failure
 RestartSec=10
+# Every plugin settings save restarts the daemon, and the web page waits that
+# out. The daemon bounds its own stop (all plugins' on_unload share 25s, then it
+# exits without joining stuck hook threads), so this is only the backstop: kill
+# it if the bounded stop somehow still hangs, rather than the 90s default.
+TimeoutStopSec=40
 
 # Favour the daemon for CPU when the optional agent training run is competing:
 # its CPUWeight (150) well above the agent's (20) keeps the web UI and the

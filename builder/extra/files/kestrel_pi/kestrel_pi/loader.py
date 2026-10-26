@@ -24,6 +24,8 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import threading
+import time
 
 from . import HOOK_API_VERSION
 from .applyclient import apply_change
@@ -361,11 +363,45 @@ class Loader:
     # -- teardown --------------------------------------------------------
     def unload(self, rec):
         """Unload one plugin: call on_unload, withdraw its services, forget it."""
+        self._call_on_unload(rec)
+        self._forget(rec)
+
+    def unload_all(self, timeout):
+        """Unload every loaded plugin, giving all their ``on_unload`` calls one
+        shared ``timeout`` (seconds) between them. They run concurrently, each
+        on its own daemon thread, so one slow plugin (the e-ink panel blanking,
+        a driver busy-wait on a wedged BUSY pin) can't hold up the rest or the
+        daemon's stop past systemd's stop timeout. Python can't kill a thread,
+        so an overrun is logged and left behind; the process is exiting anyway.
+        Returns the names of the plugins whose on_unload did not finish."""
+        records = self.loaded_records()
+        workers = []
+        for rec in records:
+            worker = threading.Thread(target=self._call_on_unload, args=(rec,),
+                                      name="pwn-unload-%s" % rec.name, daemon=True)
+            worker.start()
+            workers.append((rec, worker))
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        overran = []
+        for rec, worker in workers:
+            worker.join(max(0.0, deadline - time.monotonic()))
+            if worker.is_alive():
+                overran.append(rec.name)
+                self.log.warning("plugin %s on_unload still running after %.0fs; "
+                                 "not waiting for it", rec.name, timeout)
+        # Registry bookkeeping stays on this thread: ServiceRegistry is unlocked.
+        for rec in records:
+            self._forget(rec)
+        return overran
+
+    def _call_on_unload(self, rec):
         if rec.instance is not None:
             try:
                 rec.instance.on_unload()
             except Exception:  # noqa: BLE001
                 self.log.exception("plugin %s raised in on_unload", rec.name)
+
+    def _forget(self, rec):
         self.services.withdraw_owner(rec.name)
         rec.state = "disabled"
         rec.reason = "unloaded"

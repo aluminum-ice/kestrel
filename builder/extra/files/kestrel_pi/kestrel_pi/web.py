@@ -145,19 +145,48 @@ class _AuthFlight:
         self.ok = False
 
 
-def iface_ipv4(iface):
-    """The first IPv4 address on ``iface`` (no CIDR), or None."""
+# Interface addresses, cached briefly. The dashboard and every control POST
+# list the management addresses, and the connectivity loop re-resolves the bind
+# set every poll; each used to fork `ip` per interface. Concurrent misses for an
+# interface wait on one lookup (the per-interface lock) instead of each forking.
+_ADDR_TTL = 5.0
+_addr_cache = {}                 # iface -> (ip or None, expires)
+_addr_locks = {}                 # iface -> Lock held while probing it
+_addr_cache_lock = threading.Lock()
+
+
+def _probe_ipv4(iface):
+    """``(ip_or_None, ok)``: the first IPv4 address on ``iface``; ``ok`` is
+    False when ``ip`` itself failed (couldn't run or timed out), which says
+    nothing about whether the interface has an address."""
     try:
         out = subprocess.run(
             ["ip", "-4", "-o", "addr", "show", "dev", iface],
             capture_output=True, text=True, timeout=5, check=False,
         ).stdout
     except (OSError, subprocess.SubprocessError):
-        return None
+        return None, False
     for token in out.split():
         if "/" in token and token.split("/")[0].count(".") == 3:
-            return token.split("/")[0]
-    return None
+            return token.split("/")[0], True
+    return None, True
+
+
+def iface_ipv4(iface):
+    """The first IPv4 address on ``iface`` (no CIDR), or None."""
+    with _addr_cache_lock:
+        lock = _addr_locks.setdefault(iface, threading.Lock())
+    with lock:
+        with _addr_cache_lock:
+            cached = _addr_cache.get(iface)
+        if cached and cached[1] > time.monotonic():
+            return cached[0]
+        ip, ok = _probe_ipv4(iface)
+        if ok:
+            # A failed lookup is not cached, so the next caller retries it.
+            with _addr_cache_lock:
+                _addr_cache[iface] = (ip, time.monotonic() + _ADDR_TTL)
+        return ip
 
 
 def resolve_bind_hosts(bind_setting, interfaces=MANAGEMENT_INTERFACES):
@@ -213,13 +242,14 @@ def webhook_timeout_seconds(web_cfg):
     return n if n >= 1 else 0
 
 
-def _run_with_timeout(func, timeout):
+def _run_with_timeout(func, timeout, on_overrun=None):
     """Run ``func()`` in a daemon worker thread, waiting up to ``timeout``
     seconds. Returns ``(True, result)`` if it finished (re-raising any exception
     it raised) or ``(False, None)`` if it overran. Python can't kill the worker,
     so an overrun leaks that one thread rather than pinning the request thread
     forever; it is a per-call thread, never a shared pool, so a hang can't starve
-    other requests."""
+    other requests. ``on_overrun(worker)``, if given, is handed the still-running
+    thread so the caller can refuse new calls until it ends."""
     box = {}
 
     def run():
@@ -232,6 +262,8 @@ def _run_with_timeout(func, timeout):
     worker.start()
     worker.join(timeout)
     if worker.is_alive():
+        if on_overrun is not None:
+            on_overrun(worker)
         return False, None
     if "error" in box:
         raise box["error"]
@@ -460,6 +492,12 @@ def create_app(daemon):
     # browser resends the login by itself, so a form posted from some other
     # site must not be able to change settings. A daemon restart rotates it.
     csrf_token = secrets.token_urlsafe(32)
+    # Per plugin, the on_webhook worker that overran its timeout and is still
+    # running. While it is, new calls to that plugin get a 503 instead of a new
+    # thread, so a hung plugin leaks one thread rather than one per request (a
+    # self-reloading page against it would otherwise grow them without bound).
+    stuck_webhooks = {}
+    stuck_lock = threading.Lock()
 
     def control():
         token = request.args.get("token")
@@ -930,6 +968,21 @@ def create_app(daemon):
             ctx.form_csrf = csrf_token
             ctx.web_authed = control_ready(web_cfg)
         timeout = webhook_timeout_seconds(web_cfg)
+        if timeout > 0:
+            with stuck_lock:
+                previous = stuck_webhooks.get(name)
+                if previous is not None and not previous.is_alive():
+                    stuck_webhooks.pop(name, None)
+                    previous = None
+            if previous is not None:
+                resp = html(_render_webhook_timeout(name, control(), busy=True), 503)
+                resp.headers["Retry-After"] = str(int(timeout))
+                return resp
+
+        def remember_stuck(worker):
+            with stuck_lock:
+                stuck_webhooks[name] = worker
+
         try:
             if timeout > 0:
                 # Resolve the proxy to the concrete request and parse its body
@@ -938,7 +991,8 @@ def create_app(daemon):
                 req = request._get_current_object()
                 _ = (req.form, req.args)
                 finished, result = _run_with_timeout(
-                    lambda: record.instance.on_webhook(subpath, req), timeout)
+                    lambda: record.instance.on_webhook(subpath, req), timeout,
+                    on_overrun=remember_stuck)
                 if not finished:
                     daemon.log.warning(
                         "plugin %s on_webhook exceeded %ss; returned a timeout "
@@ -2657,11 +2711,19 @@ def _render_power_done(action, control=None, started=None):
     return _page("Kestrel - " + words["verb"], body)
 
 
-def _render_webhook_timeout(name, control):
+def _render_webhook_timeout(name, control, busy=False):
     """Shown when a plugin's on_webhook overruns the soft deadline: the page
     returns a 504 instead of the browser hanging on a stuck plugin. The plugin's
-    call is left running in the background; this just frees the request."""
+    call is left running in the background; this just frees the request. With
+    ``busy`` (a 503) the earlier overrun call is still running, so this request
+    was refused without calling the plugin at all."""
     plugins = _url("/plugins", control)
+    if busy:
+        body = ("<h1>Still busy…</h1>"
+                "<p>The <b>" + _esc(name) + "</b> plugin has not finished an earlier "
+                "request yet, so this one was not started. Try again in a little "
+                'while, or go back to <a href="' + _esc(plugins) + '">Plugins</a>.</p>')
+        return _page(name + " - Kestrel", body)
     body = ("<h1>Still working…</h1>"
             "<p>The <b>" + _esc(name) + "</b> plugin's page is taking longer than "
             "expected and did not finish in time. It is still running in the "
@@ -3010,26 +3072,42 @@ def _render_settings(cfg, control=None, message=None, error=False):
     return _page("Settings - Kestrel", "".join(parts))
 
 
-def _reconnect_script(target, probe, started, max_tries=40, start_ms=2000,
-                      delay_ms=1000, giveup=None):
+# A daemon restart (a settings save) can take the bounded plugin unload (25s)
+# plus a cold start that re-reads the capture store and probes the e-ink panel,
+# so the default window is about two minutes, not the old ~40s that gave up on
+# a restart that was still in progress.
+def _reconnect_script(target, probe, started, max_tries=120, start_ms=2000,
+                      delay_ms=1000, giveup=None, fetch_ms=5000):
     """Inline poll used by every page that waits out a service gap: hit ``probe``
     (/status.json) until a *fresh* daemon answers (its ``started`` differs from
     ``started`` at render time), then go to ``target``. A failed fetch (the
     device still down) just retries. Covers a daemon restart, a reboot and an
     in-place update - a reboot/update needs a longer window than a restart, so
     ``max_tries``/``delay_ms`` size it. On running out it drops a message into
-    the ``#wait`` element rather than redirecting."""
+    the ``#wait`` element rather than redirecting.
+
+    Each probe is aborted after ``fetch_ms``: a fetch stuck on a half-dead
+    connection (the device dropped off the link mid-reboot) otherwise never
+    settles, the try count stops advancing, and the page neither returns nor
+    gives up until the browser's own TCP timeout, minutes later. Browsers
+    without AbortController just fetch without the limit."""
     giveup = giveup or ("The dashboard has not come back yet; reload this page "
                         "to retry.")
     return (
         "<script>(function(){var target=" + _js(target)
         + ",probe=" + _js(probe) + ",started=" + _js(started)
         + ",max=" + str(int(max_tries)) + ",delay=" + str(int(delay_ms))
+        + ",limit=" + str(int(fetch_ms))
         + ",tries=0;function poll(){tries++;if(tries>max){"
         "document.getElementById('wait').textContent=" + _js(giveup) + ";return;}"
-        "fetch(probe,{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})"
-        ".then(function(s){if(s&&s.started!==started){location.href=target;}"
-        "else{setTimeout(poll,delay);}},function(){setTimeout(poll,delay);});}"
+        "var opts={cache:'no-store'},ctl=null,t=null;"
+        "if(window.AbortController){ctl=new AbortController();opts.signal=ctl.signal;"
+        "t=setTimeout(function(){ctl.abort();},limit);}"
+        "fetch(probe,opts).then(function(r){return r.ok?r.json():null;})"
+        ".then(function(s){if(t)clearTimeout(t);"
+        "if(s&&s.started!==started){location.href=target;}"
+        "else{setTimeout(poll,delay);}},"
+        "function(){if(t)clearTimeout(t);setTimeout(poll,delay);});}"
         "setTimeout(poll," + str(int(start_ms)) + ");})();</script>"
     )
 
@@ -3207,13 +3285,28 @@ def _default_make_server(host, port, app):
     """The production server factory: a threaded werkzeug server. Imported
     lazily (and injectable) so the package imports and unit-tests without
     werkzeug installed."""
-    from werkzeug.serving import make_server
+    from werkzeug.serving import WSGIRequestHandler, make_server
 
     # No per-request access log in the journal: it would record the token
     # (token auth rides in the query string) and a line a second while the
     # page waits for a restart. Warnings and errors still log.
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
-    return make_server(host, port, app, threaded=True)
+    return make_server(host, port, app, threaded=True,
+                       request_handler=_request_handler(WSGIRequestHandler))
+
+
+# Stall limit on each web connection's socket reads and writes. The threaded
+# server has no timeout by default, so a client that connects and then goes
+# silent before its request is complete - a phone dropping off BT PAN or Wi-Fi
+# mid-request with no FIN, a half-sent form POST - pinned its thread in recv()
+# forever, and those threads piled up. This bounds socket I/O only, not how
+# long a page takes to build.
+_CONNECTION_TIMEOUT = 15
+
+
+def _request_handler(base):
+    """``base`` (werkzeug's WSGIRequestHandler) with the connection timeout."""
+    return type("KestrelRequestHandler", (base,), {"timeout": _CONNECTION_TIMEOUT})
 
 
 class WebServer:
@@ -3224,15 +3317,22 @@ class WebServer:
     :meth:`reconcile` lets the daemon (re)bind as management interfaces gain or
     lose an IPv4 address after startup. This matters at boot: the daemon can
     come up before ``wlan0`` has a DHCP lease, in which case the first bind is
-    loopback-only and the page would be unreachable off-box until a restart."""
+    loopback-only and the page would be unreachable off-box until a restart.
 
-    def __init__(self, app, hosts, port, logger, server_factory=None):
+    A bound host is released only after ``unbind_after`` consecutive reconciles
+    without it: one missed address lookup (``ip`` timing out under load reads as
+    "no address") must not drop the page off the interface the operator is on."""
+
+    def __init__(self, app, hosts, port, logger, server_factory=None,
+                 unbind_after=2):
         self.app = app
         self.hosts = list(dict.fromkeys(hosts))
         self.port = int(port)
         self.log = logger
         self._make_server = server_factory or _default_make_server
+        self._unbind_after = max(1, int(unbind_after))
         self._bound = {}        # host -> (server, thread)
+        self._missing = {}      # bound host -> consecutive reconciles without it
         self._lock = threading.Lock()
 
     def start(self):
@@ -3247,10 +3347,15 @@ class WebServer:
         wanted = list(dict.fromkeys(hosts))
         with self._lock:
             for host in wanted:
+                self._missing.pop(host, None)
                 if host not in self._bound:
                     self._bind_locked(host)
             for host in [h for h in self._bound if h not in wanted]:
-                self._unbind_locked(host)
+                misses = self._missing.get(host, 0) + 1
+                if misses >= self._unbind_after:
+                    self._unbind_locked(host)
+                else:
+                    self._missing[host] = misses
             return bool(self._bound)
 
     def bound_hosts(self):
@@ -3278,6 +3383,7 @@ class WebServer:
         self.log.info("web: serving on %s:%s", host, self.port)
 
     def _unbind_locked(self, host):
+        self._missing.pop(host, None)
         server, _thread = self._bound.pop(host)
         try:
             server.shutdown()

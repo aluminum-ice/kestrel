@@ -323,3 +323,52 @@ def test_status_probes_each_service_at_most_once(tmp_path, monkeypatch):
     assert services                                   # it did probe
     assert len(services) == len(set(services))        # no service probed twice
     assert daemon_mod.CAPTURE_SERVICE in services
+
+
+def test_concurrent_service_probes_share_one_systemctl(tmp_path, monkeypatch):
+    # Several renders missing the cache at once must not each fork systemctl.
+    import threading
+    import time as _time
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[web]\nenabled = false\n")
+    d = daemon_mod.Daemon(config_path=str(cfg), capture_store=str(tmp_path))
+    calls = []
+
+    def slow_run(argv, **k):
+        calls.append(argv)
+        _time.sleep(0.3)
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(daemon_mod.subprocess, "run", slow_run)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(
+        d._service_state("x.service"))) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert results == ["running"] * 5
+    assert len(calls) == 1
+
+
+def test_fresh_config_reparses_only_when_the_file_changes(tmp_path, monkeypatch):
+    import os
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[capture]\nenabled = false\n")
+    d = daemon_mod.Daemon(config_path=str(cfg), capture_store=str(tmp_path))
+    parses = []
+    real = daemon_mod.load_config
+    monkeypatch.setattr(daemon_mod, "load_config",
+                        lambda path, log=None: parses.append(path) or real(path, log))
+    first = d._fresh_config()
+    first["capture"]["enabled"] = "mutated"        # a caller can't corrupt the cache
+    assert d._fresh_config()["capture"]["enabled"] is False
+    assert len(parses) == 1
+    # An atomic replace (how config-set writes) is seen on the next read.
+    tmp = tmp_path / "new.toml"
+    tmp.write_text("[capture]\nenabled = true\n")
+    os.replace(tmp, cfg)
+    assert d._fresh_config()["capture"]["enabled"] is True
+    assert len(parses) == 2
