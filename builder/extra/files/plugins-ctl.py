@@ -660,22 +660,30 @@ def apply_power(change):
     return {"ok": True, "power": action}
 
 
+# The release tags the Release workflow cuts (X.Y.Z or X.Y.Z-beta.N).
+_UPDATE_TAG_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?")
+
+
 def apply_update(change):
     """Apply an in-place app-layer update from the web page:
 
-      {"target": "update", "action": "apply"}
+      {"target": "update", "action": "apply", "tag": "0.7.0"}
 
     The daemon runs as `pi`; the real work (clone the release, overwrite the
     installed scripts/package/units, restart services) needs root and is the
     shipped CLI's `update apply`, so it is deferred to a transient timer a
     moment after the reply (see run_update), letting the browser get its answer
-    before the daemon restarts under it. The web route re-checks that an update
-    is actually offerable before asking, and the CLI re-verifies the release
-    commit against the saved state, so this just hands off."""
+    before the daemon restarts under it. ``tag`` is the release the operator
+    confirmed; the CLI refuses unless that is still the one it would install,
+    and re-verifies the release with the server as root, so nothing here
+    trusts the daemon's view."""
     if change.get("action") != "apply":
         return {"ok": False, "error": "bad request"}
-    sys.stderr.write("plugins-ctl apply: update apply via web\n")
-    return {"ok": True, "update": "apply"}
+    tag = change.get("tag")
+    if not isinstance(tag, str) or not _UPDATE_TAG_RE.fullmatch(tag):
+        return {"ok": False, "error": "bad request"}
+    sys.stderr.write("plugins-ctl apply: update apply %s via web\n" % tag)
+    return {"ok": True, "update": "apply", "update_tag": tag}
 
 
 def apply_update_check(change, config):
@@ -1097,14 +1105,18 @@ def run_power(action):
         sys.stderr.write("plugins-ctl apply: could not %s: %s\n" % (action, exc))
 
 
-def run_update():
+def run_update(tag):
     # Deferred past the reply (same as run_power) so the browser gets its answer
     # before the daemon restarts under the in-place update. The shipped CLI does
-    # the privileged work: clone the release, exec the clone's apply engine so
-    # overwriting the installed CLI/package is safe, restart services.
+    # the privileged work: verify and clone the release, exec the clone's apply
+    # engine so overwriting the installed CLI/package is safe, restart services.
+    # A fixed unit name means a second request while one is pending or running
+    # is refused by systemd rather than started alongside (the engine also
+    # takes a lock).
     try:
         subprocess.run(["systemd-run", "--quiet", "--collect", "--on-active=2",
-                        PWN_TOOL, "update", "apply", "--yes"],
+                        "--unit=kestrel-update",
+                        PWN_TOOL, "update", "apply", "--yes", "--expect", tag],
                        check=False, timeout=15,
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -1161,7 +1173,7 @@ def cmd_apply():
     if reply.get("power"):
         run_power(reply["power"])
     if reply.get("update"):
-        run_update()
+        run_update(reply["update_tag"])
     if reply.get("backup_restore"):
         run_backup_restore()
     if reply.get("backup_now"):

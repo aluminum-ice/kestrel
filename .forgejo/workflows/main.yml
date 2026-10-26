@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
         release_version:
-          description: 'Release version'
+          description: 'Release version: X.Y.Z (stable) or X.Y.Z-beta.N (beta)'
           required: true
           type: string
         update_kind:
@@ -58,6 +58,25 @@ jobs:
     - name: Show Version
       run: |
         echo "Using VERSION: $MY_VERSION"
+
+    # The version is the release tag, and its form picks the update channel:
+    # X.Y.Z is a stable release, X.Y.Z-beta.N a beta, published as a Forgejo
+    # pre-release that only devices with the updates plugin's beta option on
+    # are offered. Anything else is refused, since the plugin can't order it.
+    # PRERELEASE is derived here, once, so the tag and the flag always agree.
+    - name: Check the release version
+      run: |
+        set -eu
+        if ! printf '%s\n' "$MY_VERSION" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?'; then
+          echo "release_version must be X.Y.Z or X.Y.Z-beta.N (got '$MY_VERSION')" >&2
+          exit 1
+        fi
+        case "$MY_VERSION" in
+          *-beta.*) prerelease=true ;;
+          *) prerelease=false ;;
+        esac
+        echo "PRERELEASE=$prerelease" >> "$GITHUB_ENV"
+        echo "pre-release: $prerelease"
 
     - name: Set _version.py correctly using the env variable
       run: |
@@ -120,15 +139,20 @@ jobs:
     # workflows); otherwise it is an app-layer update. Override with the
     # update_kind input when you know better (e.g. a config.yml change that only
     # added a copy task for a file the in-place engine already ships).
-    # See docs/developer/updates-setup.md.
+    # The previous release is picked by version, not date: a stable release is
+    # compared with the previous stable one, so the betas in between can't hide
+    # a build change from a device that never ran them; a beta is compared with
+    # the release just below it, beta or stable (the plugin checks every beta
+    # in a beta device's gap). See docs/developer/updates-setup.md.
     - name: Build the update manifest
       run: |
         set -eu
         api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY"
         prev=$(curl -fsS -H "Authorization: token $TOKEN" \
-          "$api/releases?limit=1&draft=false" 2>/dev/null \
-          | python3 -c 'import json, sys; r = json.load(sys.stdin); print(r[0]["tag_name"] if r else "")' \
+          "$api/releases?limit=50&draft=false" 2>/dev/null \
+          | python3 -c "$PREV_RELEASE_PY" "$MY_VERSION" "$PRERELEASE" \
           2>/dev/null || echo "")
+        echo "previous release: ${prev:-none}"
         kind="$UPDATE_KIND"
         reason=""
         if [ "$kind" = auto ]; then
@@ -163,14 +187,41 @@ jobs:
       env:
         TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
         UPDATE_KIND: ${{ inputs.update_kind }}
+        # Print the highest release below argv[1] (skipping betas when argv[2]
+        # is "false"), read from the Forgejo release list on stdin.
+        PREV_RELEASE_PY: |
+          import json, re, sys
+          def key(tag):
+              m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?", tag or "")
+              if not m:
+                  return None
+              nums = tuple(int(g) for g in m.groups()[:3])
+              return nums + ((1, 0) if m.group(4) is None else (0, int(m.group(4))))
+          here, stable = key(sys.argv[1]), sys.argv[2] == "false"
+          best = None
+          for rel in json.load(sys.stdin):
+              k = key(rel.get("tag_name"))
+              if rel.get("draft") or k is None or k >= here:
+                  continue
+              if stable and (rel.get("prerelease") or k[3] == 0):
+                  continue
+              if best is None or k > best[0]:
+                  best = (k, rel["tag_name"])
+          print(best[1] if best else "")
 
     # Build grouped release notes (New / Improvements / Fixes) from the commits
     # unique to this release, with an install-type line from the manifest.
+    # A stable release's notes cover everything since the previous stable
+    # release (only stable tags are excluded), so they include the betas before
+    # it; a beta's cover only what is new since any earlier release.
     # Falls back to a provenance-only note if generation fails, so a notes
     # problem never blocks the release.
     - name: Generate release notes
       run: |
-        if python3 .forgejo/gen-release-notes.py update-manifest.json > release-notes.md; then
+        if [ "$PRERELEASE" = false ]; then
+          set -- --prev-tags "$(git tag | grep -v -- - | grep -vxF "$MY_VERSION" | tr '\n' ' ')"
+        fi
+        if python3 .forgejo/gen-release-notes.py "$@" update-manifest.json > release-notes.md; then
           echo "release-notes.md:"; cat release-notes.md
         else
           echo "note generation failed; using a provenance-only note" >&2
@@ -192,6 +243,7 @@ jobs:
             "target_commitish": os.environ["GITHUB_SHA"],
             "name": "Release " + os.environ["MY_VERSION"],
             "body": open("release-notes.md").read(),
+            "prerelease": os.environ["PRERELEASE"] == "true",
         }))
         PY
         id=$(curl -fsS -X POST -H "Authorization: token $TOKEN" \
@@ -213,10 +265,14 @@ jobs:
     # API token in the PYPI_API_TOKEN secret; if the secret is not set the step
     # is a no-op, so the release never fails for want of it. --skip-existing
     # makes a re-cut of the same version safe (the already-published files are
-    # left untouched rather than erroring).
+    # left untouched rather than erroring). Beta releases are not published.
     - name: Publish kestrel-pi to PyPI
       run: |
         set -eu
+        if [ "$PRERELEASE" = true ]; then
+          echo "beta release; skipping PyPI publish." >&2
+          exit 0
+        fi
         if [ -z "${TWINE_PASSWORD:-}" ]; then
           echo "PYPI_API_TOKEN not set; skipping PyPI publish." >&2
           exit 0

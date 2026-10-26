@@ -37,8 +37,31 @@ published release between the installed version and the latest: if any of them i
 reflash-only (or carries no manifest), it withholds the in-place offer and tells
 you to reflash. For example, a device on 0.6.3 offered 0.6.5 (app-layer) is still
 told to reflash when 0.6.4 in between was reflash-only — the device can't skip the
-base-OS change 0.6.4 carried. (Draft and pre-releases are ignored; they are never
-on the stable update path.)
+base-OS change 0.6.4 carried. (Drafts are ignored. Betas are checked only when
+the offered release is itself a beta: a stable release's manifest is built
+against the previous stable release, so it already accounts for any betas in
+between.)
+
+## Stable and beta releases
+
+Releases come in two channels, told apart by the tag: a stable release is
+`X.Y.Z`, a beta is `X.Y.Z-beta.N` and is published as a Forgejo pre-release
+(see [Cutting a release](releasing.md#beta-releases)). By default the plugin
+only offers stable releases. Turn on the `beta` option (a checkbox on the
+plugin's settings page, or `sudo kestrel plugins enable updates --set
+beta=true`) to also be offered betas:
+
+- versions compare by SemVer precedence, so `0.7.0-beta.1` < `0.7.0-beta.2` <
+  `0.7.0`: a device on a beta is offered the final release once it is out;
+- the beta channel offers the **highest version** published, beta or stable;
+- turning `beta` off while on a beta never downgrades: the device stays where it
+  is until a stable release newer than its beta is out. An offer the beta
+  channel found is withdrawn as soon as the option changes, so the Upgrade
+  button can't install a beta after you opted out;
+- a version with any other suffix (`-rc.1`, `-dirty`) is never offered, and a
+  device stamped with one reads as a dev build.
+
+`kestrel update status` shows which channel the last check ran on.
 
 ## Turn it on
 
@@ -154,48 +177,104 @@ dashboard drops briefly. Confirming starts the update in the background as root.
 
 The device then, in order:
 
-1. **fetches** the release's source at its exact commit and verifies it. This is
-   the one step that needs the network up front; it is retried with backoff over
-   a flaky link, and if it can't complete, nothing on the device has changed yet.
-2. **pauses** the capture service, the learning agent (so training stops cleanly
+1. **verifies the release as root.** Before anything is fetched, the installed
+   update engine (`update-apply --verify`) asks the release server itself -
+   using only the `host`, `repo` and `token` in the root-owned `config.toml` and
+   the version stamped in `/etc/kestrel/version` - whether the release may be
+   installed in place: it must be a published, non-draft release newer than the
+   installed one, on your channel (a beta only with `beta` on), with an
+   `app-layer` manifest that pins a commit, and with no reflash-only release in
+   between. The plugin's shared state only says *which* release to look at; it
+   is never trusted (see [Security model](#security-model)). From the web, the
+   release must also still be the one you confirmed.
+2. **fetches** that release's source and checks it is at exactly the verified
+   commit. This is the one step that needs the network up front; it is retried
+   with backoff over a flaky link, and if it can't complete, nothing on the
+   device has changed yet.
+3. **pauses** the capture service, the learning agent (so training stops cleanly
    on a checkpoint) and the plugin daemon, remembering which were running.
-3. **backs up first, if the backup plugin is set up** — it mirrors the latest
+4. **backs up first, if the backup plugin is set up** — it mirrors the latest
    capture data and the agent model to your remote before anything is replaced,
    so a current copy is safe. If that backup can't finish, the update is
    **cancelled** and the paused services are restarted; nothing is installed.
-4. **backs up the current application files**, lays the new files down and
-   reinstalls the `kestrel_pi` package **offline** (an app-layer release never
-   adds a dependency, so nothing is fetched and a dropped link can't stall it).
-5. **validates** the new code imports before committing to it, else restores the
-   previous files and abandons the update.
-6. **stamps** the new version and **restarts whatever was running** — the daemon,
-   then capture and the agent (a service you had stopped by hand stays stopped).
+5. **backs up the current application files and snapshots the installed
+   package**, then records an in-progress marker naming that backup.
+6. **lays the new files down** — each written beside its target and renamed into
+   place, so a power cut leaves the old or the new file, never a truncated one —
+   removes shipped files the release dropped (a retired reference plugin, say),
+   and reinstalls the `kestrel_pi` package **offline** (an app-layer release
+   never adds a dependency, so nothing is fetched and a dropped link can't stall
+   it). The new package must import, else everything is rolled back.
+7. **stamps** the new version and **restarts whatever was running** — the
+   daemon, then capture and the agent (a service you had stopped by hand stays
+   stopped).
+8. **checks the daemon stays up.** It must come up within 90 seconds and then
+   run for 20 seconds without restarting; if it doesn't, the update is **rolled
+   back** — files, package and version stamp — and the previous version is
+   started again.
 
 Your `config.toml` is **not** overwritten — new keys fall back to their built-in
 defaults, and your existing settings, enabled plugins, captured data and the
 trained agent model are left untouched.
 
-> **Flaky connections are expected.** Only the fetch (step 1) and the optional
-> backup (step 3) use the network, and both happen *before* any installed file
-> is touched and are retried. So an internet drop mid-update can only cancel it
-> cleanly — leaving the device on the current version, running — never leave it
-> half-upgraded. The install itself (steps 4–6) is entirely local.
+> **Flaky connections are expected.** Only the verify and fetch (steps 1–2) and
+> the optional backup (step 4) use the network, and all happen *before* any
+> installed file is touched and are retried. So an internet drop mid-update can
+> only cancel it cleanly — leaving the device on the current version, running —
+> never leave it half-upgraded. The install itself (steps 5–8) is entirely local.
 
 The same thing from the terminal, which prints the same step-by-step summary and
 asks to confirm:
 
 ```bash
-kestrel update status    # show what the last check found
+kestrel update status    # show what the last check found, and the last run
 kestrel update check     # re-check now, ignoring the 6h interval
-sudo kestrel update apply # fetch + apply the latest app-layer release
+sudo kestrel update apply # verify, fetch + apply the latest app-layer release
 ```
 
-> **Scope of rollback.** The backup covers the file layer (scripts, plugins,
-> units, the CLI). The Python package is installed forward; the pre-restart
-> import check makes a broken boot very unlikely, but a package that still
-> misbehaves is recovered by re-running `update apply` on a good release or by
-> reflashing. The update never touches the base OS, so the system stays
-> bootable regardless.
+`sudo kestrel update apply --ref TAG` installs a named release instead of the
+one the plugin found. It goes through the same verification (it may be a beta
+even with `beta` off, since you named it). `--force` overrides the *safety*
+checks — a reflash-only or older release, a skipped reflash, a dev build, a ref
+that isn't a published release (whose commit then can't be pinned) — and prints
+each one it overrode. It never overrides a draft, a malformed commit, or a
+release that changed since you confirmed it.
+
+Only one update runs at a time: a second one (another browser tab, or the CLI
+while the web update runs) is refused.
+
+### If an update is interrupted
+
+A power cut or crash mid-update leaves the in-progress marker behind. At the
+next boot `kestrel-update-recover.service` runs before the daemon, capture and
+the agent, and restores the previous files, package and version stamp from the
+backup the marker names; `kestrel update status` then shows the update was
+rolled back. Until it has run, a new update is refused. The update never touches
+the base OS, so the system stays bootable regardless.
+
+### Security model
+
+The in-place update runs as root, so the inputs that decide *what* it installs
+must be ones only root controls:
+
+- The release server, repo and token come only from `config.toml` (root-owned).
+  The plugin's shared state (`/var/lib/kestrel/update/state.json`) is written
+  by the `pi` daemon - any plugin can write it - so root reads it only as a hint
+  for which release to look at, then re-verifies that release with the server.
+  A tampered state file can at most point at a different *legitimate* release,
+  which must still pass every check.
+- Root never writes into the `pi`-owned state directory (a symlink planted
+  there could redirect a root write). The CLI creates the "check now" trigger only
+  fresh and never through a symlink, and chowns nothing; the engine keeps its run status, lock, in-progress marker and backups
+  in the root-owned `/var/lib/kestrel/update-run`. The package is staged in a
+  fresh root-created directory and snapshotted/restored as `pi` (it is `pi`'s
+  own venv).
+- The token is sent only to `host`, over https. The clone gets it through
+  git's `GIT_CONFIG_*` environment, so it never appears in a process command
+  line other local users can read.
+- Release authenticity rests on TLS to `host` and the Forgejo account that
+  publishes releases; releases are not yet signed (tracked in
+  [Deferred improvements](deferred.md)).
 
 ## Limitations
 
@@ -229,6 +308,11 @@ it:
 - **Needs a management link online.** The check and the fetch need the
   release server reachable over a management path (BT-PAN or Wi-Fi); a private repo also needs a
   token (above).
+- **Removed systemd units are left in place.** A release that drops a shipped
+  plugin or lib script removes it from updated devices, but a dropped unit file
+  stays until a reflash (removing one safely means disabling it first).
+- **Too far behind needs a reflash.** The skipped-reflash check reads the newest
+  100 releases; a device older than all of them is told to reflash.
 
 ## The update manifest (for maintainers)
 
@@ -257,7 +341,7 @@ to apply it:
   `kind` is `"reflash"`.
 
 The workflow marks a release `"reflash"` when the diff since the previous
-release touched build-layer inputs (apt package lists, the base image, boot
+release (by version; for a stable release, the previous *stable* one) touched build-layer inputs (apt package lists, the base image, boot
 config, or the playbook's non-application tasks); otherwise `"app-layer"`.
 
 ## Configuration reference
@@ -272,6 +356,7 @@ All keys live under `[plugins.updates]` in `/etc/kestrel/config.toml`.
 | `token` | `""` | Optional Forgejo access token for a **private** repo/fork (masked secret, device-only). Empty = unauthenticated, public releases only. See [Updating from a private repo](#updating-from-a-private-repo). |
 | `check_interval_seconds` | `21600` | At most this often, re-check while online. |
 | `timeout` | `30` | Per-request network timeout. |
+| `beta` | `false` | Also offer beta (`X.Y.Z-beta.N`) releases. See [Stable and beta releases](#stable-and-beta-releases). |
 
 ## How the device knows its own version
 

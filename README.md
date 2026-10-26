@@ -218,7 +218,7 @@ Run the **Release** workflow (Actions, then Release, then *Run workflow*). It ru
 
 | Input | Purpose |
 | --- | --- |
-| `release_version` | Version written to `_version.py`. Also the release tag and part of the asset names. |
+| `release_version` | Version written to `_version.py`: `X.Y.Z`, or `X.Y.Z-beta.N` for a beta (published as a pre-release). Also the release tag and part of the asset names. |
 | `update_kind` | `auto` (default), `app-layer` or `reflash`: whether devices can take the release in place. |
 
 The workflow builds the image and publishes a Forgejo release tagged at the built commit, with `kestrel-<version>.7z` and `kestrel-<version>.7z.sha256` attached. The image's own `.sha256` is inside the archive.

@@ -531,14 +531,21 @@ When an update is available the Updates card also shows a discreet **What's new 
 
 ### Upgrading in place
 
-From the dashboard (with `[web] auth` on): the Updates card shows an Upgrade button when an app-layer update is available. Tapping it opens a confirmation page that spells out every step first — it pauses capture, the learning agent and the daemon, backs up first if the backup plugin is set up, and briefly drops the dashboard — then runs in the background as root. In order it: fetches the release at its exact commit and verifies it (retried over a flaky link); pauses the capture service, the learning agent (training stops on a checkpoint) and the plugin daemon, remembering which were running; if the backup plugin is set up, mirrors the latest capture data and the agent model to your remote first and cancels the update if that backup fails; backs up the current application files, lays the new ones down and reinstalls the device package offline; validates the new code imports before committing; then restarts whatever was running. The same from the terminal, which prints the same summary and asks to confirm:
+From the dashboard (with `[web] auth` on): the Updates card shows an Upgrade button when an app-layer update is available. Tapping it opens a confirmation page that spells out every step first — it pauses capture, the learning agent and the daemon, backs up first if the backup plugin is set up, and briefly drops the dashboard — then runs in the background as root. In order it: checks with the release server that the release can be installed in place (newer than yours, on your channel, not reflash-only, no reflash release skipped in between, and still the one you confirmed); fetches the release at its exact commit and verifies it (retried over a flaky link); pauses the capture service, the learning agent (training stops on a checkpoint) and the plugin daemon, remembering which were running; if the backup plugin is set up, mirrors the latest capture data and the agent model to your remote first and cancels the update if that backup fails; backs up the current application files, lays the new ones down and reinstalls the device package offline; validates the new code imports before committing; then restarts whatever was running, and rolls everything back if the daemon does not stay up on the new version. The same from the terminal, which prints the same summary and asks to confirm:
 
 ```bash
-kestrel update status     # show what the last check found
-sudo kestrel update apply # fetch and apply the latest app-layer release
+kestrel update status     # show what the last check found, and the last run
+sudo kestrel update apply # verify, fetch and apply the latest app-layer release
+sudo kestrel update apply --ref 1.2.3   # install a named release instead
 ```
 
-Your `config.toml` is not overwritten. New keys fall back to their built-in defaults, and your settings, enabled plugins, captured data and trained model are left untouched. Only the fetch and the optional backup use the network, both before any installed file is touched and both retried, so a dropped connection cancels the update cleanly — the device stays on the current version, running — and never leaves it half-upgraded. If a later step fails, the files are restored from the backup and the update is abandoned. The update never touches the base OS, so the system stays bootable regardless.
+`--force` overrides the safety checks (a reflash-only or older release, a skipped reflash release) and lists each one it overrode; use it only when you know the release is safe to apply in place. Only one update runs at a time.
+
+Your `config.toml` is not overwritten. New keys fall back to their built-in defaults, and your settings, enabled plugins, captured data and trained model are left untouched. Only the fetch and the optional backup use the network, both before any installed file is touched and both retried, so a dropped connection cancels the update cleanly — the device stays on the current version, running — and never leaves it half-upgraded. If a later step fails, the files, the device package and the version are restored and the update is abandoned. If the power goes or the device crashes mid-update, the next boot rolls the update back the same way before anything starts, and `kestrel update status` says so. The update never touches the base OS, so the system stays bootable regardless.
+
+### Beta updates
+
+Releases are stable (`1.2.3`) or beta (`1.3.0-beta.1`). Only stable releases are offered unless you turn on the `beta` option: tick **beta** on the `updates` plugin's config page (with the login on), or from the terminal `sudo kestrel plugins enable updates --set beta=true`. With it on you are offered the newest release of either kind, and a beta device is offered the final release once it is out. Turning it off never downgrades you: you stay on your beta until a newer stable release arrives. `kestrel update status` shows the channel.
 
 ### Updating from a private repo
 
@@ -556,7 +563,7 @@ sudo kestrel plugins enable updates --set host=https://forgejo.example.org
 sudo kestrel plugins enable updates --set token=
 ```
 
-Keys under `[plugins.updates]`: `enabled` (default `false`), `repo` (the project's public repo by default; override for a fork), `host` (the Forgejo or Gitea server hosting `repo`, `https://` only; the project's server by default), `token` (default empty; masked secret), `check_interval_seconds` (default `21600`), `timeout` (default `30`). A wrong or expired token shows as an HTTP 401/403 from the server in the daemon log.
+Keys under `[plugins.updates]`: `enabled` (default `false`), `repo` (the project's public repo by default; override for a fork), `host` (the Forgejo or Gitea server hosting `repo`, `https://` only; the project's server by default), `token` (default empty; masked secret), `check_interval_seconds` (default `21600`), `timeout` (default `30`), `beta` (default `false`; also offer beta releases). A wrong or expired token shows as an HTTP 401/403 from the server in the daemon log.
 
 ### If you get locked out after an update
 
@@ -639,7 +646,7 @@ This is the same mechanism as the first-boot Wi-Fi staging, and it works at any 
 | `kestrel remote-train setup\|now\|status` | Set up and drive remote training on a desktop host. |
 | `kestrel update status` | Show what the last update check found. |
 | `kestrel update check` | Re-check for a new release now, ignoring the interval. |
-| `kestrel update apply` | Fetch and apply the latest app-layer release. |
+| `kestrel update apply` | Verify, fetch and apply the latest app-layer release (`--ref TAG` for a named one, `--force` to override the safety checks). |
 
 ---
 

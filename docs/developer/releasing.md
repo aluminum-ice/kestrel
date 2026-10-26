@@ -17,7 +17,7 @@ two inputs:
 
 | input | required | default | meaning |
 | --- | --- | --- | --- |
-| `release_version` | yes | — | the version tag, e.g. `1.2.3`. Written into `_version.py` and used as the release tag/title. |
+| `release_version` | yes | — | the version tag: `X.Y.Z` for a stable release (e.g. `1.2.3`) or `X.Y.Z-beta.N` for a beta (e.g. `1.3.0-beta.1`); anything else is refused. Written into `_version.py` and used as the release tag/title. |
 | `update_kind` | no | `auto` | `auto` \| `app-layer` \| `reflash` — how in-place-updatable this release is (see below). |
 
 The workflow sets `_version.py` from `release_version`, builds the image with
@@ -64,6 +64,24 @@ it from `release_version`). A build with no `MY_VERSION` stamps `master`, which
 a device reads as a **dev build** and is never offered updates — so only a
 proper Release run produces an updatable image.
 
+### Beta releases
+
+A beta is a release whose version is `X.Y.Z-beta.N` (`N` counting from 1, with
+the dot, so `beta.10` sorts after `beta.2`). The workflow derives everything
+else from that suffix, so the tag and the release type can't disagree:
+
+- the release is published as a Forgejo **pre-release**, so the `updates`
+  plugin offers it only to devices with its `beta` option on, and Forgejo's
+  "latest release" keeps pointing at the newest stable one;
+- versions order by SemVer precedence: `1.3.0-beta.1` < `1.3.0-beta.2` <
+  `1.3.0`, so a beta device moves on to the final release when it is cut;
+- it is **not** published to PyPI;
+- its manifest and notes are built against the release just below it (beta or
+  stable), while a **stable** release's are built against the previous
+  *stable* release, so they cover every beta in between (see below).
+
+There is no `rc` or `alpha` form: only `-beta.N` is accepted.
+
 ## The update manifest
 
 The workflow writes `update-manifest.json` and attaches it to the release:
@@ -82,6 +100,13 @@ The workflow writes `update-manifest.json` and attaches it to the release:
 human string, set only for a reflash. A release with **no** manifest is treated
 by the plugin as reflash.
 
+In `auto` mode, `kind` comes from the diff against the **previous release by
+version**: for a stable release, the highest stable release below it; for a
+beta, the highest release of either kind below it. A stable release is never
+compared with a beta, because a device on the stable channel never ran the
+betas: if `1.3.0-beta.1` changed the playbook, `1.3.0` must still come out
+reflash for a device on `1.2.x`.
+
 ## Release notes
 
 The release body is generated automatically by
@@ -90,7 +115,9 @@ rather than being a bare "Built from `<sha>`". The generator:
 
 - collects the commits **unique to this release** — reachable from the built
   commit but not from any earlier tag (so a release cut off a side branch does
-  not re-list everything already shipped);
+  not re-list everything already shipped). For a stable release only stable
+  tags count, so its notes cover everything since the previous stable release,
+  including what its betas shipped;
 - groups their subjects into **New** (subjects starting `Add` / `Introduce` /
   `Create` / `Ship`), **Fixes** (`Fix` / `Correct` / `Prevent` / `Stop`), and
   **Improvements** (everything else);
@@ -126,6 +153,7 @@ image is involved.
   secret is never exposed to pull-request runs from forks — safe on a public
   repo. If the secret is unset the publish step is a **no-op**, so a release
   never fails for want of it.
+- **Betas are skipped:** a `X.Y.Z-beta.N` release is not published to PyPI.
 - **Re-cuts are safe:** the upload uses `--skip-existing`, so re-running the
   workflow for a version already on PyPI leaves the published files untouched
   rather than erroring. PyPI versions are immutable, so a *content* fix still

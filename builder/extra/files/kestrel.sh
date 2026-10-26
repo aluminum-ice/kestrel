@@ -97,9 +97,11 @@ Usage: $PROG <command>
   update             Update menu (check for and apply a new release)
   update status      Show the installed version and any available release
   update check       Check for a new release now (don't wait out the interval)
-  update apply [--ref TAG] [--yes]   Install the latest app-layer release in
-                     place (needs the 'updates' plugin's check first); a release
-                     that changed the base OS is flagged reflash-only
+  update apply [--ref TAG] [--yes] [--force]   Install the latest app-layer
+                     release in place (needs the 'updates' plugin's check
+                     first). The release is re-verified with the server first;
+                     a reflash-only, older or skipped-reflash release is
+                     refused unless --force
   help               Show this help
 USAGE
 }
@@ -1708,7 +1710,16 @@ cmd_remote_train() {
 }
 
 ## update (in-place app-layer update) #####################################
+# The updates plugin's shared state. The pi daemon writes it, so root only ever
+# READS it, as a hint (which release to offer): `update apply` re-verifies the
+# release against the server itself, and nothing here writes into that
+# pi-owned directory as root (a planted symlink could redirect the write).
 PWN_UPDATE_STATE=/var/lib/kestrel/update/state.json
+# Root-owned: the update engine's (and this tool's) record of the last apply.
+PWN_UPDATE_RUN_DIR=/var/lib/kestrel/update-run
+PWN_UPDATE_RUN_STATE=$PWN_UPDATE_RUN_DIR/status.json
+# The installed engine; `update apply --verify`s with it before fetching.
+PWN_UPDATE_ENGINE=$PWN_LIB_DIR/update-apply
 
 # Read one field from the updates plugin's state file ("" if missing). A JSON
 # bool is normalised to the strings True/False so callers can test it.
@@ -1720,26 +1731,61 @@ v=d.get(k, "")
 print(("True" if v else "False") if isinstance(v, bool) else v)' "$1" "$2" 2>/dev/null || true
 }
 
-update_state_set() {
-    python3 -c 'import json,os,sys
+# Read one field from a JSON object given as a string ("" if missing); a bool
+# prints True/False and a list one item per line.
+update_json_get() {
+    python3 -I -c 'import json,sys
+try:
+    d=json.loads(sys.argv[1])
+except ValueError:
+    d={}
+v=d.get(sys.argv[2], "") if isinstance(d, dict) else ""
+if isinstance(v, bool):
+    v="True" if v else "False"
+elif isinstance(v, list):
+    v="\n".join(str(i) for i in v)
+print(v)' "$1" "$2" 2>/dev/null || true
+}
+
+# Record an apply outcome in the root-owned run status (as root only).
+update_run_set() {
+    [ "$(id -u)" = 0 ] || return 0
+    install -d -m 0755 "$PWN_UPDATE_RUN_DIR" 2>/dev/null || return 0
+    python3 -I -c 'import json,os,sys,time
 p=sys.argv[1]
-d=json.load(open(p)) if os.path.exists(p) else {}
-d["status"]=sys.argv[2]; d["detail"]=sys.argv[3]
-os.makedirs(os.path.dirname(p), exist_ok=True)
-open(p,"w").write(json.dumps(d))' "$1" "$2" "$3" 2>/dev/null || true
+try:
+    d=json.load(open(p))
+except (OSError, ValueError):
+    d={}
+d.update(status=sys.argv[2], detail=sys.argv[3], finished_at=time.time())
+t=p+".tmp"
+with open(t, "w") as f:
+    f.write(json.dumps(d))
+os.replace(t, p)' "$PWN_UPDATE_RUN_STATE" "$1" "$2" 2>/dev/null || true
 }
 
 update_require_pi_or_root() { [ "$(id -un)" = pi ] || need_root; }
 
 # Drop the "check now" trigger the updates plugin watches, so a running plugin
 # re-checks on its next epoch instead of waiting out the interval (same idea as
-# remote-train's trigger). Written as pi so the pi daemon can remove it after
-# consuming it.
+# remote-train's trigger). The directory is pi's, so this may run as root in a
+# path pi controls: the file is only ever created fresh (O_EXCL) and never
+# through a symlink (O_NOFOLLOW), and nothing is chowned - the pi daemon can
+# remove it because it owns the directory. A trigger already there is a request
+# already pending.
 update_touch_check() {
     local dir; dir=$(dirname "$PWN_UPDATE_STATE")
-    mkdir -p "$dir"
-    : > "$dir/.check-now"
-    chown pi:pi "$dir/.check-now" 2>/dev/null || true
+    if [ ! -d "$dir" ]; then
+        [ "$(id -u)" = 0 ] || die "$dir is missing; run this with sudo to recreate it"
+        install -d -o pi -g pi -m 0755 "$dir"
+    fi
+    python3 -I -c 'import errno,os,sys
+try:
+    os.close(os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644))
+except OSError as exc:
+    if exc.errno != errno.EEXIST:
+        sys.exit("could not request a check: %s" % exc)' "$dir/.check-now" \
+        || die "could not drop the update check trigger in $dir"
 }
 
 cmd_update_check() {
@@ -1753,63 +1799,98 @@ cmd_update_check() {
 }
 
 cmd_update_status() {
-    if [ ! -f "$PWN_UPDATE_STATE" ]; then
+    if [ ! -f "$PWN_UPDATE_STATE" ] && [ ! -f "$PWN_UPDATE_RUN_STATE" ]; then
         echo "No update check has run yet. Enable the updates plugin:"
         echo "  sudo $PROG plugins enable updates"
         return 0
     fi
-    python3 -c 'import json,sys
-d=json.load(open(sys.argv[1]))
-print("installed:", d.get("installed") or "unknown")
+    python3 -I -c 'import json,sys
+def load(p):
+    try:
+        d=json.load(open(p))
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+d=load(sys.argv[1]); run=load(sys.argv[2])
+try:
+    now=open(sys.argv[3]).read().strip()
+except OSError:
+    now=""
+print("installed:", now or d.get("installed") or "unknown")
 print("latest:   ", d.get("latest") or "-")
+print("channel:  ", d.get("channel") or "stable")
 if d.get("installed_is_dev"):
     st="dev build (not checked)"
+elif now and d.get("installed") and d.get("installed") != now:
+    st="not checked since the last update"
 elif d.get("update_available"):
     st="update available" + ("" if d.get("offerable") else " (needs reflash)")
-else:
+elif d:
     st="up to date"
+else:
+    st="not checked yet"
 print("status:   ", st)
 if d.get("update_available") and not d.get("offerable") and d.get("reason"):
     print("reason:   ", d.get("reason"))
-if d.get("detail"):
-    print("last run: ", d.get("detail"))' "$PWN_UPDATE_STATE"
+if run.get("detail"):
+    print("last run: ", run.get("detail"))' "$PWN_UPDATE_STATE" "$PWN_UPDATE_RUN_STATE" /etc/kestrel/version
 }
 
-# Apply an in-place app-layer update. Clones the target release, verifies its
-# commit, then hands off (exec) to the clone's update-apply helper as root.
+# Apply an in-place app-layer update. Verifies the target release as root from
+# root-owned inputs (config.toml's host/repo/token, the stamped version), clones
+# it, checks the verified commit, then hands off (exec) to the clone's
+# update-apply engine.
 cmd_update_apply() {
     need_root
-    local yes=no ref= force=no
+    local yes=no ref= force=no expect=
     while [ $# -gt 0 ]; do
         case "$1" in
             --yes|-y) yes=yes; shift ;;
             --ref) ref=$2; shift 2 ;;
             --force) force=yes; shift ;;
+            --expect) expect=$2; shift 2 ;;
             *) die "unknown option for 'update apply': $1" ;;
         esac
     done
     command -v git >/dev/null 2>&1 || die "git is required for in-place updates"
-    local repo host tag commit offerable
-    repo=$(update_state_get "$PWN_UPDATE_STATE" repo)
-    host=$(update_state_get "$PWN_UPDATE_STATE" host)
-    tag=$(update_state_get "$PWN_UPDATE_STATE" latest)
-    commit=$(update_state_get "$PWN_UPDATE_STATE" commit)
-    offerable=$(update_state_get "$PWN_UPDATE_STATE" offerable)
-    [ -n "$repo" ] || repo=$(cfg plugins.updates.repo aluminum-ice/kestrel)
-    [ -n "$host" ] || host=$(cfg plugins.updates.host https://git.3ntropy.io)
-    host=${host%/}
-    # The token below is sent to this host, so never over clear text.
-    case "$host" in
-        https://?*) ;;
-        *) die "[plugins.updates] host must be an https:// URL (got '$host')" ;;
-    esac
-    local token; token=$(cfg plugins.updates.token "")
+    [ -f "$PWN_UPDATE_ENGINE" ] || die "$PWN_UPDATE_ENGINE is missing; reflash"
+    # Which release: --ref names one; otherwise the one the updates plugin found
+    # (a hint from pi-owned state - it is verified below before anything runs).
+    local tag
     if [ -n "$ref" ]; then
-        tag=$ref; commit=
-    elif [ "$force" != yes ]; then
-        [ "$offerable" = True ] || die "no in-place update is available (status: $(update_state_get "$PWN_UPDATE_STATE" status); latest: ${tag:-unknown}). Let the updates plugin check, or pass --ref TAG."
+        tag=$ref
+    else
+        tag=$(update_state_get "$PWN_UPDATE_STATE" latest)
+        [ -n "$tag" ] || die "no release to install is known; let the updates plugin check ($PROG update check) or pass --ref TAG"
+        if [ "$force" != yes ] && [ "$(update_state_get "$PWN_UPDATE_STATE" offerable)" != True ]; then
+            die "no in-place update is available (latest: $tag). Let the updates plugin check, or pass --ref TAG."
+        fi
     fi
-    [ -n "$tag" ] || die "no target release known; enable the updates plugin or pass --ref TAG"
+    # Ask the release server, as root, whether this release may be installed in
+    # place: it exists, is newer, is on the configured channel (unless named
+    # with --ref), is app-layer, and no reflash release sits in between. --force
+    # overrides those safety checks, never the release's identity.
+    local -a vargs=(--verify --tag "$tag")
+    [ -n "$ref" ] && vargs+=(--explicit)
+    [ "$force" = yes ] && vargs+=(--force)
+    [ -n "$expect" ] && vargs+=(--expect "$expect")
+    local verdict why
+    verdict=$(python3 -I "$PWN_UPDATE_ENGINE" "${vargs[@]}" 2>/dev/null) || true
+    if [ "$(update_json_get "$verdict" ok)" != True ]; then
+        why=$(update_json_get "$verdict" error)
+        why=${why:-could not verify the release}
+        update_run_set error "not installing $tag: $why"
+        die "not installing $tag: $why"
+    fi
+    local repo host commit warn
+    tag=$(update_json_get "$verdict" tag)
+    repo=$(update_json_get "$verdict" repo)
+    host=$(update_json_get "$verdict" host)
+    commit=$(update_json_get "$verdict" commit)
+    while IFS= read -r warn; do
+        [ -n "$warn" ] && echo "warning (--force): $warn" >&2
+    done <<< "$(update_json_get "$verdict" warnings)"
+    local token; token=$(cfg plugins.updates.token "")
     if [ "$yes" != yes ]; then
         # Spell out exactly what the update does (the web confirm page matches).
         local bk_line="" bk_en bk_host bk_user bk_path bk_key
@@ -1862,14 +1943,15 @@ cmd_update_apply() {
     trap 'rm -rf "$tmp"' EXIT INT TERM
     log "fetching $repo @ $tag from $host ..."
     # For a private repo, a token (from [plugins.updates] token) authenticates
-    # the clone. Pass it as a per-invocation Basic auth header (Forgejo takes
-    # the token as the password) scoped to $host, rather than in the URL, so it
-    # never lands in the clone's .git/config; the temp dir is deleted either
-    # way. No token => an ordinary anonymous clone of a public repo.
-    local -a gitauth=()
+    # the clone, as a Basic auth header (Forgejo takes the token as the
+    # password) scoped to $host. It goes in through git's GIT_CONFIG_* environment
+    # rather than a -c argument, so it is never in a process command line other
+    # local users can read, nor in the clone's .git/config. No token => an
+    # ordinary anonymous clone of a public repo.
     if [ -n "$token" ]; then
         local b64; b64=$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')
-        gitauth=(-c "http.$host/.extraheader=Authorization: Basic $b64")
+        export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$host/.extraheader" \
+            GIT_CONFIG_VALUE_0="Authorization: Basic $b64"
     fi
     # Clone with a few retries and backoff: the device is often on a flaky
     # BT-PAN/Wi-Fi tether, and a dropped clone must not abort the update. The
@@ -1879,7 +1961,7 @@ cmd_update_apply() {
     local attempt=1 delay=2 cloned=no
     while [ "$attempt" -le 4 ]; do
         rm -rf "$tmp/src"
-        if git "${gitauth[@]}" clone --depth 1 --branch "$tag" "$host/$repo.git" "$tmp/src" >/dev/null 2>&1; then
+        if git clone --depth 1 --branch "$tag" "$host/$repo.git" "$tmp/src" >/dev/null 2>&1; then
             cloned=yes
             break
         fi
@@ -1890,26 +1972,30 @@ cmd_update_apply() {
         fi
         attempt=$((attempt + 1))
     done
+    unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
     if [ "$cloned" != yes ]; then
-        update_state_set "$PWN_UPDATE_STATE" error "could not fetch release $tag"
+        update_run_set error "could not fetch release $tag"
         die "could not fetch release $tag from $repo (check connectivity; a private repo needs a valid [plugins.updates] token)"
     fi
+    local got; got=$(git -C "$tmp/src" rev-parse HEAD 2>/dev/null || echo "")
     if [ -n "$commit" ]; then
-        local got; got=$(git -C "$tmp/src" rev-parse HEAD 2>/dev/null || echo "")
         if [ "$got" != "$commit" ]; then
-            update_state_set "$PWN_UPDATE_STATE" error "commit mismatch for $tag"
+            update_run_set error "commit mismatch for $tag"
             die "release $tag commit mismatch (expected $commit, got ${got:-none}); aborting"
         fi
+    else
+        echo "warning (--force): $tag's commit is not pinned by a manifest; installing ${got:-an unknown commit}" >&2
     fi
     local helper="$tmp/src/builder/extra/files/update-apply.py"
     [ -f "$helper" ] || die "the fetched release has no update helper; it predates in-place updates (reflash instead)"
     log "applying $tag; the daemon will restart shortly ..."
     # Hand off FROM THE CLONE so overwriting the installed files (this CLI
     # included) is safe; exec replaces this shell so nothing keeps reading the
-    # file we are about to overwrite. The helper removes $tmp when done.
+    # file we are about to overwrite. The helper takes the update lock, records
+    # its progress under $PWN_UPDATE_RUN_DIR and removes $tmp when done.
     trap - EXIT INT TERM
     exec python3 -I "$helper" --src "$tmp/src" --tag "$tag" --repo "$repo" \
-        --state "$PWN_UPDATE_STATE" --cleanup "$tmp"
+        --cleanup "$tmp"
 }
 
 cmd_update() {
