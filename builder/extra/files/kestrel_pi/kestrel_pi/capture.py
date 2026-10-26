@@ -114,7 +114,8 @@ class CaptureInterface:
 
     def __init__(self, store_dir):
         self.store_dir = store_dir
-        # captured_networks() result, keyed on the store's file signature.
+        # _parse_store() result (shared by the by-network and by-AP views),
+        # keyed on the store's file signature.
         self._networks_cache = None
         self._networks_lock = threading.Lock()
 
@@ -168,17 +169,17 @@ class CaptureInterface:
             return []
         return events
 
-    def captured_networks(self):
-        """Unique captured APs across the whole store, keyed by ESSID.
+    def _parse_store(self):
+        """Parse the whole store once into
+        ``{essid: {"bssids": {bssid: count}, "no_bssid": int, "handshakes": int}}``.
 
-        Returns a list of ``{"essid", "bssids", "handshakes"}`` sorted by ESSID
-        (case-insensitive; an empty/hidden ESSID sorts last). This reads every
-        hashline file, so a caller rendering it should search and paginate the
-        returned list rather than the store.
-
-        The parse is cached and reused while every file's name, size and mtime
-        are unchanged (the store only grows by appends and new files), so the
-        networks page re-reads the store only after a capture changed it."""
+        Cached and reused while every file's name, size and mtime are unchanged
+        (the store only grows by appends and new files), so the store is read at
+        most once per change no matter which view asks. Both the by-network view
+        (:meth:`captured_networks`) and the by-access-point view
+        (:meth:`captured_access_points`) are derived from this single parse,
+        because the file layout on disk (``[capture.output] mode``) does not
+        affect it -- every hashline carries its own ESSID and BSSID."""
         paths = self.hashline_files()
         signature = []
         for path in paths:
@@ -191,25 +192,76 @@ class CaptureInterface:
         with self._networks_lock:
             cached = self._networks_cache
         if cached is not None and cached[0] == signature:
-            return [dict(net) for net in cached[1]]
+            return cached[1]
         nets = {}
         for path in paths:
             for event in self.read_events(path):
                 slot = nets.get(event.essid)
                 if slot is None:
-                    slot = nets[event.essid] = {"bssids": set(), "handshakes": 0}
+                    slot = nets[event.essid] = {
+                        "bssids": {}, "no_bssid": 0, "handshakes": 0}
                 slot["handshakes"] += 1
                 if event.bssid:
-                    slot["bssids"].add(event.bssid)
+                    slot["bssids"][event.bssid] = (
+                        slot["bssids"].get(event.bssid, 0) + 1)
+                else:
+                    slot["no_bssid"] += 1
+        with self._networks_lock:
+            self._networks_cache = (signature, nets)
+        return nets
+
+    def captured_networks(self):
+        """Unique captured networks across the whole store, keyed by ESSID.
+
+        Returns a list of ``{"essid", "bssids", "handshakes"}`` (``bssids`` is
+        the count of distinct APs seen under that ESSID) sorted by ESSID
+        (case-insensitive; an empty/hidden ESSID sorts last). A caller rendering
+        it should search and paginate the returned list rather than the store.
+        This is the by-network view; :meth:`captured_access_points` is the
+        by-access-point view over the same cached parse."""
+        nets = self._parse_store()
         out = [
             {"essid": essid, "bssids": len(data["bssids"]),
              "handshakes": data["handshakes"]}
             for essid, data in nets.items()
         ]
         out.sort(key=lambda net: (net["essid"] == "", net["essid"].lower()))
-        with self._networks_lock:
-            self._networks_cache = (signature, out)
-        return [dict(net) for net in out]
+        return out
+
+    def captured_access_points(self):
+        """One entry per distinct access point (ESSID+BSSID) across the store.
+
+        Returns a list of ``{"essid", "bssid", "handshakes"}`` sorted by ESSID
+        (case-insensitive; empty/hidden last) then BSSID, where ``handshakes``
+        is that AP's own count. A hidden/empty ESSID still yields one entry per
+        BSSID -- the APs stay distinct, which is the whole point of keying on the
+        BSSID. Handshakes whose BSSID could not be parsed (a corrupt line) are
+        folded into a single trailing entry with an empty ``bssid`` (the page
+        renders it as the "(unknown BSSID)" row). This is the by-access-point
+        view; :meth:`captured_networks` is the by-network view."""
+        nets = self._parse_store()
+        out = []
+        unknown = 0
+        for essid, data in nets.items():
+            for bssid, count in data["bssids"].items():
+                out.append({"essid": essid, "bssid": bssid, "handshakes": count})
+            unknown += data["no_bssid"]
+        out.sort(key=lambda ap: (ap["essid"] == "", ap["essid"].lower(),
+                                 ap["bssid"]))
+        if unknown:
+            out.append({"essid": "", "bssid": "", "handshakes": unknown})
+        return out
+
+    def capture_counts(self):
+        """``{"networks", "access_points"}`` from the cached parse: the number
+        of distinct ESSIDs and of distinct ESSID+BSSID APs (the row counts of
+        the two /networks views, so the dashboard navcard and the page agree).
+        The "(unknown BSSID)" fold is not counted as an access point."""
+        nets = self._parse_store()
+        return {
+            "networks": len(nets),
+            "access_points": sum(len(d["bssids"]) for d in nets.values()),
+        }
 
     def environment(self, stale_after=180):
         """The collector's in-range readout (``capture-status.json``), or ``None``.

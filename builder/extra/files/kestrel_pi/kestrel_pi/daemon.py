@@ -631,6 +631,11 @@ class Daemon:
             "capture": {
                 "store": self.capture.store_dir,
                 "hashline_files": len(self.capture.hashline_files()),
+                # Distinct captured networks (by ESSID) and access points (by
+                # ESSID+BSSID) -- the two /networks views' row counts, shown
+                # together on the dashboard navcard. Derived from one cached
+                # store parse.
+                **self.capture.capture_counts(),
                 "state": capture_state,
                 # config intent (``[capture] enabled``), separate from the live
                 # service state above; the web toggle reads this to know which

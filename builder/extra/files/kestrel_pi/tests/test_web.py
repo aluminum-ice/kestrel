@@ -22,7 +22,8 @@ def _status(plugins):
         "version": "0.3.0",
         "epoch": 2,
         "connectivity": {"online": False, "paths": ["wlan0"]},
-        "capture": {"store": "/var/lib/kestrel/capture", "hashline_files": 47},
+        "capture": {"store": "/var/lib/kestrel/capture", "hashline_files": 47,
+                    "networks": 12, "access_points": 19},
         "plugins": plugins,
     }
 
@@ -696,15 +697,20 @@ class _FakeLoader:
 
 
 class _FakeCapture:
-    def __init__(self, networks):
+    def __init__(self, networks, access_points=None):
         self._networks = networks
+        self._access_points = access_points or []
 
     def captured_networks(self):
         return self._networks
 
+    def captured_access_points(self):
+        return self._access_points
+
 
 class _FakeDaemon:
-    def __init__(self, web_cfg, plugin_table, networks=None):
+    def __init__(self, web_cfg, plugin_table, networks=None,
+                 access_points=None, output_mode=None):
         import logging
         from kestrel_pi.loader import PluginRecord
 
@@ -715,7 +721,9 @@ class _FakeDaemon:
         rec.state, rec.reason = "disabled", "not enabled in config"
         self.loader = _FakeLoader({"wpa-sec": rec})
         self.config = {"web": web_cfg, "plugins": {"wpa-sec": plugin_table}}
-        self.capture = _FakeCapture(networks or [])
+        if output_mode is not None:
+            self.config["capture"] = {"output": {"mode": output_mode}}
+        self.capture = _FakeCapture(networks or [], access_points)
 
     def _fresh_config(self):
         return self.config
@@ -735,7 +743,8 @@ def _basic(user="pi", password="hunter2"):
     return {"Authorization": "Basic " + raw}
 
 
-def _client(monkeypatch, tmp_path, web_cfg, table=None, replies=None, networks=None):
+def _client(monkeypatch, tmp_path, web_cfg, table=None, replies=None, networks=None,
+            access_points=None, output_mode=None):
     pytest.importorskip("flask")
     sent = []
 
@@ -749,7 +758,8 @@ def _client(monkeypatch, tmp_path, web_cfg, table=None, replies=None, networks=N
     # on its own in test_dashboard_shows_management_addresses.
     monkeypatch.setattr(web, "iface_ipv4", lambda iface: None)
     daemon = _FakeDaemon(web_cfg, table if table is not None else {"enabled": False},
-                         networks=networks)
+                         networks=networks, access_points=access_points,
+                         output_mode=output_mode)
     return web.create_app(daemon).test_client(), sent
 
 
@@ -1501,6 +1511,86 @@ def test_networks_search_form_carries_the_token(monkeypatch, tmp_path):
     # The search form and pager must keep the token so the authed page can
     # submit a search / page without dropping auth.
     assert 'name="token" value="s3cr3t"' in body
+
+
+def _aps(*pairs):
+    return [{"essid": e, "bssid": b, "handshakes": 1} for e, b in pairs]
+
+
+def test_networks_default_view_follows_per_ap_mode(monkeypatch, tmp_path):
+    # With the capture layout set to per-ap, the page opens on the by-AP view.
+    client, _ = _client(
+        monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ap",
+        access_points=_aps(("poswifi", "AA:BB:CC:00:00:01"),
+                           ("poswifi", "AA:BB:CC:00:00:02")))
+    body = client.get("/networks").get_data(as_text=True)
+    assert "Captured access points" in body
+    assert "<th>BSSID</th>" in body
+    assert "AA:BB:CC:00:00:01" in body and "AA:BB:CC:00:00:02" in body
+    # The reused name shows once per BSSID, never merged.
+    assert "2 access point(s) captured" in body
+
+
+def test_networks_default_view_follows_per_ssid_mode(monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"},
+                        output_mode="per-ssid", networks=_nets("HomeWiFi"))
+    body = client.get("/networks").get_data(as_text=True)
+    assert "Captured networks" in body
+    assert "<th>bssids</th>" in body
+
+
+def test_networks_view_toggle_overrides_mode(monkeypatch, tmp_path):
+    # ?view=ap wins even when the mode would default to the by-network view.
+    client, _ = _client(
+        monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ssid",
+        networks=_nets("HomeWiFi"),
+        access_points=_aps(("HomeWiFi", "AA:BB:CC:00:00:09")))
+    body = client.get("/networks?view=ap").get_data(as_text=True)
+    assert "Captured access points" in body
+    assert "AA:BB:CC:00:00:09" in body
+    # Both toggle links are present, the active one marked.
+    assert 'class="viewtabs"' in body
+    assert "By network" in body and "By access point" in body
+
+
+def test_networks_ap_search_matches_bssid(monkeypatch, tmp_path):
+    client, _ = _client(
+        monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ap",
+        access_points=_aps(("alpha", "AA:BB:CC:00:00:01"),
+                           ("beta", "11:22:33:44:55:66")))
+    # A pasted MAC matches regardless of punctuation/case.
+    body = client.get("/networks?q=112233").get_data(as_text=True)
+    assert "11:22:33:44:55:66" in body
+    assert "AA:BB:CC:00:00:01" not in body
+    assert "1 of 2 access points match" in body
+
+
+def test_networks_non_default_view_is_preserved_in_links(monkeypatch, tmp_path):
+    # Mode defaults to by-AP, but the operator is viewing by-network: the search
+    # form and toggle must carry view=ssid so a search/page doesn't revert them.
+    many = _nets(*["net-%03d" % i for i in range(150)])
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"},
+                        output_mode="per-ap", networks=many)
+    body = client.get("/networks?view=ssid").get_data(as_text=True)
+    assert "Captured networks" in body
+    assert '<input type="hidden" name="view" value="ssid">' in body
+    assert "view=ssid" in body            # pager links keep the view too
+    # Following a search keeps the by-network view instead of snapping to by-AP.
+    searched = client.get("/networks?view=ssid&q=net-001").get_data(as_text=True)
+    assert "Captured networks" in searched
+
+
+def test_networks_ap_unknown_bssid_row(monkeypatch, tmp_path):
+    client, _ = _client(
+        monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ap",
+        access_points=[{"essid": "", "bssid": "", "handshakes": 4}])
+    body = client.get("/networks").get_data(as_text=True)
+    assert "(unknown BSSID)" in body
+
+
+def test_dashboard_navcard_shows_network_and_ap_counts(monkeypatch, tmp_path):
+    html = web._render_status(_status([]))
+    assert "12 network(s)" in html and "19 AP(s)" in html
 
 
 # -- release-update card + /update route (updates plugin) --------------------

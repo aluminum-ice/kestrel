@@ -554,9 +554,25 @@ def create_app(daemon):
 
     @app.get("/networks")
     def networks_page():  # noqa: ANN202
+        # The view (by network / by access point) defaults to match the capture
+        # file layout -- per-ap mode opens the by-AP view -- but the operator can
+        # flip it freely, because the data supports both regardless of how the
+        # store was captured (see _render_networks / captured_access_points).
+        cfg = daemon._fresh_config()
+        mode = ((cfg.get("capture") or {}).get("output") or {}).get(
+            "mode", "per-ssid")
+        requested = request.args.get("view")
+        if requested in ("ssid", "ap"):
+            view = requested
+        else:
+            view = "ap" if mode == "per-ap" else "ssid"
+        if view == "ap":
+            data = daemon.capture.captured_access_points()
+        else:
+            data = daemon.capture.captured_networks()
         return html(_render_networks(
-            daemon.capture.captured_networks(), control(),
-            query=request.args.get("q", ""), page=request.args.get("page", 1)))
+            data, control(), query=request.args.get("q", ""),
+            page=request.args.get("page", 1), view=view))
 
     @app.get("/agent")
     def agent_page():  # noqa: ANN202
@@ -1214,7 +1230,11 @@ _STATUS_CSS = (
     "padding:.6em .85em;box-shadow:var(--shadow);}"
     ".addrs dt{color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}"
     ".addrs dd{margin:0;text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}"
-    # captured-networks page: a search form and a pager around the reused table
+    # captured-networks page: a view toggle, a search form and a pager
+    ".viewtabs{display:flex;gap:.5em;margin:.3em 0 .6em;flex-wrap:wrap;}"
+    ".viewtabs a{padding:.4em .9em;border:1px solid var(--border);border-radius:8px;"
+    "text-decoration:none;color:var(--link);background:var(--card);font-size:.9rem;}"
+    ".viewtabs a.on{font-weight:700;box-shadow:inset 0 -2px 0 var(--link);}"
     ".search,.wladd{display:flex;gap:.5em;margin:.3em 0 .8em;}"
     ".search input[type=text],.wladd input[type=text]{flex:1 1 auto;max-width:none;}"
     ".search button,.wladd button{margin:0;}"
@@ -2297,7 +2317,10 @@ def _render_status(status, control=None, message=None, error=False, addresses=No
         + _agent_nav(status.get("agent"), cap, control)
         + '<a class="navcard" href="' + _esc(_url("/networks", control)) + '">'
         '<div class="scol"><span class="skey">Captured networks</span>'
-        '<span class="smeta">Search the captured AP names</span></div>'
+        '<span class="sval">' + _esc(cap.get("networks", 0))
+        + " network(s) &middot; " + _esc(cap.get("access_points", 0))
+        + ' AP(s)</span>'
+        '<span class="smeta">Browse by network or access point</span></div>'
         '<span class="arrow" aria-hidden="true">&rarr;</span></a>'
         + _whitelist_nav(cap, control)
     )
@@ -2424,20 +2447,44 @@ def _render_plugins(status, control=None, message=None, error=False):
 NETWORKS_PER_PAGE = 100
 
 
-def _render_networks(networks, control=None, query="", page=1,
-                     per_page=NETWORKS_PER_PAGE):
-    """The captured-networks page: the unique captured AP names (from
-    ``CaptureInterface.captured_networks``), filtered by ``query`` (a
-    case-insensitive substring of the ESSID) and paginated, so the page stays
-    light no matter how many networks the store holds. A search box and a pager
-    bracket a table of ESSID / BSSID count / handshake count."""
-    networks = networks or []
-    total = len(networks)
+def _mac_norm(value):
+    """A BSSID reduced to its hex digits, lowercased, so a search matches no
+    matter how the operator punctuates it (``AA:BB``, ``aabb``, ``aa-bb``)."""
+    return "".join(ch for ch in (value or "").lower() if ch in "0123456789abcdef")
+
+
+def _render_networks(rows_in, control=None, query="", page=1,
+                     per_page=NETWORKS_PER_PAGE, view="ssid"):
+    """The captured-networks page, in one of two views over the same store:
+
+    - ``view="ssid"`` (by network): one row per ESSID, with its distinct-BSSID
+      count and handshake count. This is the default under ``per-ssid`` capture.
+    - ``view="ap"`` (by access point): one row per ESSID+BSSID, with that AP's
+      BSSID and handshake count (no BSSID-count column). The default under
+      ``per-ap`` capture. Search also matches a pasted BSSID.
+
+    The view is a presentation choice -- both are built from the same parsed
+    store (``captured_networks`` / ``captured_access_points``) regardless of the
+    capture file layout -- so the operator can flip it anytime via the toggle.
+    ``query`` filters (case-insensitive) and the list is paginated so the page
+    stays light no matter how much the store holds."""
+    rows_in = rows_in or []
+    ap_view = view == "ap"
+    total = len(rows_in)
     needle = (query or "").strip().lower()
     if needle:
-        shown = [n for n in networks if needle in (n.get("essid") or "").lower()]
+        mac_needle = _mac_norm(query)
+
+        def _matches(r):
+            if needle in (r.get("essid") or "").lower():
+                return True
+            if ap_view and mac_needle and mac_needle in _mac_norm(r.get("bssid")):
+                return True
+            return False
+
+        shown = [r for r in rows_in if _matches(r)]
     else:
-        shown = networks
+        shown = rows_in
     matched = len(shown)
 
     per_page = max(1, int(per_page))
@@ -2450,49 +2497,85 @@ def _render_networks(networks, control=None, query="", page=1,
     start = (page - 1) * per_page
     window = shown[start:start + per_page]
 
+    noun = "access point" if ap_view else "network"
     rows = []
-    for net in window:
-        essid = net.get("essid") or ""
+    for r in window:
+        essid = r.get("essid") or ""
         name = _esc(essid) if essid else '<span class="smeta">(hidden)</span>'
-        rows.append(
-            "<tr><td data-label=\"network\">" + name + "</td>"
-            "<td data-label=\"bssids\">" + _esc(net.get("bssids", 0)) + "</td>"
-            "<td data-label=\"handshakes\">" + _esc(net.get("handshakes", 0))
-            + "</td></tr>"
-        )
+        if ap_view:
+            bssid = r.get("bssid") or ""
+            cell = (_esc(bssid) if bssid
+                    else '<span class="smeta">(unknown BSSID)</span>')
+            rows.append(
+                "<tr><td data-label=\"network\">" + name + "</td>"
+                "<td data-label=\"bssid\">" + cell + "</td>"
+                "<td data-label=\"handshakes\">" + _esc(r.get("handshakes", 0))
+                + "</td></tr>"
+            )
+        else:
+            rows.append(
+                "<tr><td data-label=\"network\">" + name + "</td>"
+                "<td data-label=\"bssids\">" + _esc(r.get("bssids", 0)) + "</td>"
+                "<td data-label=\"handshakes\">" + _esc(r.get("handshakes", 0))
+                + "</td></tr>"
+            )
+    cols = 3
     body_rows = "".join(rows) or (
-        "<tr><td colspan='3'>" + ("no networks match that search" if needle
-                                  else "no networks captured yet") + "</td></tr>"
+        "<tr><td colspan='" + str(cols) + "'>"
+        + (("no %ss match that search" % noun) if needle
+           else ("no %ss captured yet" % noun)) + "</td></tr>"
     )
 
     token = (control or {}).get("token") or ""
 
-    def page_link(target):
+    def link(**over):
+        # Always carry the explicit view so paging/searching never silently
+        # reverts to the mode-default view (which only seeds the first visit).
         params = {}
-        if query:
-            params["q"] = query
-        if target != 1:
-            params["page"] = target
+        q = over.get("q", query)
+        if q:
+            params["q"] = q
+        params["view"] = over.get("view", view)
+        p = over.get("page", 1)
+        if p != 1:
+            params["page"] = p
         if token:
             params["token"] = token
-        return "/networks" + ("?" + urlencode(params) if params else "")
+        return "/networks?" + urlencode(params)
 
     if matched:
         if needle:
-            count = ("%d of %d networks match &ldquo;%s&rdquo;"
-                     % (matched, total, _esc(query)))
+            count = ("%d of %d %ss match &ldquo;%s&rdquo;"
+                     % (matched, total, noun, _esc(query)))
         else:
-            count = "%d network(s) captured" % total
+            count = "%d %s(s) captured" % (total, noun)
     else:
-        count = ("no match in %d network(s)" % total) if total else "nothing captured yet"
+        count = (("no match in %d %s(s)" % (total, noun)) if total
+                 else "nothing captured yet")
 
-    hidden_token = ('<input type="hidden" name="token" value="' + _esc(token) + '">'
-                    if token else "")
+    # By-network / by-access-point toggle. Switching views resets to page 1 but
+    # keeps the search term.
+    def tab(label, target):
+        return ('<a' + (' class="on"' if target == view else "")
+                + ' href="' + _esc(link(view=target, page=1)) + '">'
+                + label + "</a>")
+
+    tabs = ('<div class="viewtabs">' + tab("By network", "ssid")
+            + tab("By access point", "ap") + "</div>")
+
+    # Carry the current view through a search submit (always, so a search on the
+    # non-default view keeps that view instead of reverting to the mode-default).
+    hidden_fields = (
+        ('<input type="hidden" name="token" value="' + _esc(token) + '">'
+         if token else "")
+        + '<input type="hidden" name="view" value="' + view + '">'
+    )
+    placeholder = "Search name or BSSID" if ap_view else "Search AP name"
     search = (
         '<form class="search" method="get" action="/networks">'
-        + hidden_token
+        + hidden_fields
         + '<input type="text" name="q" value="' + _esc(query)
-        + '" placeholder="Search AP name" aria-label="Search AP name">'
+        + '" placeholder="' + placeholder + '" aria-label="' + placeholder + '">'
         + '<button type="submit">Search</button></form>'
     )
 
@@ -2502,19 +2585,26 @@ def _render_networks(networks, control=None, query="", page=1,
         next_cls = ' class="off"' if page >= pages else ""
         pager = (
             '<div class="pager"><a' + prev_cls + ' href="'
-            + _esc(page_link(max(1, page - 1))) + '">&larr; Prev</a>'
+            + _esc(link(page=max(1, page - 1))) + '">&larr; Prev</a>'
             + '<span class="sub">page ' + str(page) + " of " + str(pages) + "</span>"
-            + '<a' + next_cls + ' href="' + _esc(page_link(min(pages, page + 1)))
+            + '<a' + next_cls + ' href="' + _esc(link(page=min(pages, page + 1)))
             + '">Next &rarr;</a></div>'
         )
 
+    if ap_view:
+        heading = "Captured access points"
+        head_cells = "<th>network</th><th>BSSID</th><th>handshakes</th>"
+    else:
+        heading = "Captured networks"
+        head_cells = "<th>network</th><th>bssids</th><th>handshakes</th>"
+
     back = '<p><a href="' + _esc(_url("/", control)) + '">&larr; Dashboard</a></p>'
     return _page(
-        "captured networks - Kestrel",
-        back + "<h1>Captured networks</h1>" + search
+        "captured " + noun + "s - Kestrel",
+        back + "<h1>" + heading + "</h1>" + tabs + search
         + '<p class="count">' + count + "</p>"
-        + "<div class='wrap'><table><thead><tr><th>network</th><th>bssids</th>"
-        "<th>handshakes</th></tr></thead><tbody>" + body_rows
+        + "<div class='wrap'><table><thead><tr>" + head_cells
+        + "</tr></thead><tbody>" + body_rows
         + "</tbody></table></div>" + pager,
     )
 
