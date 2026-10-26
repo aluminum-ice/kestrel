@@ -66,3 +66,26 @@ How to use this file:
 - **What to do:** move the shared logic into such a module (installed as a lib
   script), have both sides use it, and drop the duplicate.
 - **Pick up when:** either side's decision logic next changes.
+
+## Capture output
+
+### Make `per-ap` the default output mode
+
+- **What:** `[capture.output] mode` ships `per-ssid` but supports `per-ap`, which
+  keys each `.hc22000` file on the AP BSSID so unrelated APs that reuse a network
+  name (every `AndroidAP`, POS/printer/router default) are never merged into one
+  file. `per-ap` is the more correct default; it is only opt-in today to avoid
+  forcing a reflash.
+- **Why deferred:** the default lives in `builder/extra/files/config.toml`, which
+  the in-place update engine skips (operator config), so changing it would reach
+  only freshly flashed devices and silently diverge from app-layer-updated ones.
+  That makes the default-flip reflash-class on its own — too much to justify for
+  this change alone.
+- **What to do:** set `mode = "per-ap"` in `config.toml`, bump
+  `contract_version` 3→4 in `docs/developer/capture-interface.md` (the filenames
+  every consumer sees change), and update the mode's "default" wording in
+  `config_catalog.py`, the user guides and `GUIDE_MD`. Force `update_kind=reflash`
+  for that release — `auto` does not watch `config.toml`, so it would mislabel it
+  app-layer.
+- **Pick up when:** the next release that is already reflash-class for a larger
+  reason, so this rides along at no extra reflash cost.

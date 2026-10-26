@@ -222,7 +222,7 @@ Capture tuning has no web form, so it is a terminal/config task. Settings live u
 | `[capture.scan] mode` | `sweep` (default), `autohunt` (scan once then lock onto channels with targets, good for a stationary device), or `fixed` (an explicit channel list). |
 | `[capture.scan] dwell_seconds` | Seconds on each channel (default 5). Lower revisits faster for a moving device; higher gives more time per channel. |
 | `[capture.scan] bands` | `auto` (all supported), `"2"` or `"5"` for one band, or a channel list like `"1,6,11,36,149"`. |
-| `[capture.output] mode` | `per-ssid` (one file per network, default) or `single` (one combined file). |
+| `[capture.output] mode` | `per-ssid` (one file per network, default), `per-ap` (one file per access point, keyed on BSSID so unrelated APs that share a name never merge), or `single` (one combined file). |
 
 After editing, restart capture:
 
@@ -252,7 +252,7 @@ Restart capture after a change (`sudo systemctl restart kestrel-capture.service`
 
 ### Where captures go, and housekeeping
 
-The persistent store is `/var/lib/kestrel/capture/`, with one `<ssid>.hc22000` file per network (or one combined file in `single` mode). It is append-and-dedup, never truncated: reboots and attack restarts add new unique handshakes to the existing files rather than replacing them. AngryOxide's raw working files live in a size-capped scratch `.run/` subdirectory (`max_run_mb`, default 512 MB) so they cannot fill the card; only that scratch is pruned, never your handshakes.
+The persistent store is `/var/lib/kestrel/capture/`, with one `<ssid>.hc22000` file per network (or one `<ssid>_<bssid>.hc22000` file per access point in `per-ap` mode, or one combined file in `single` mode). It is append-and-dedup, never truncated: reboots and attack restarts add new unique handshakes to the existing files rather than replacing them. AngryOxide's raw working files live in a size-capped scratch `.run/` subdirectory (`max_run_mb`, default 512 MB) so they cannot fill the card; only that scratch is pruned, never your handshakes.
 
 Check status any time:
 

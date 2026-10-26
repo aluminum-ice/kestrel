@@ -33,9 +33,11 @@ dwell_seconds = 5
 bands = "auto"
 
 [capture.output]
-# "per-ssid" writes one <ssid>.hc22000 per network (default); "single" writes
-# one combined file. Both are only ever appended to and de-duplicated across
-# reboots and attack restarts, never truncated.
+# "per-ssid" writes one <ssid>.hc22000 per network (default); "per-ap" writes
+# one <ssid>_<bssid>.hc22000 per access point, keyed on the BSSID so unrelated
+# APs that happen to share a network name are never merged into one file;
+# "single" writes one combined file. All are only ever appended to and
+# de-duplicated across reboots and attack restarts, never truncated.
 mode = "per-ssid"
 single_file = "all.hc22000"
 

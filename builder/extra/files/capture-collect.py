@@ -4,8 +4,10 @@
 The capture launcher runs this alongside AngryOxide. AngryOxide writes its
 per-run artifacts (pcapng, hashlines, logs) into the run directory; this watches
 for *.hc22000 files there and appends each unique hashline to the persistent
-store, routing by SSID in "per-ssid" mode (one <ssid>.hc22000 per network) or to
-one combined file in "single" mode.
+store, routing by SSID in "per-ssid" mode (one <ssid>.hc22000 per network), by
+access point in "per-ap" mode (one <ssid>_<bssid>.hc22000 per AP, keyed on the
+BSSID so unrelated APs that share a name never merge), or to one combined file
+in "single" mode.
 
 The store is only ever appended to and de-duplicated, never truncated, so
 handshakes survive reboots and attack restarts. Dedup is exact-line and seeded
@@ -83,16 +85,55 @@ def sanitize(name):
     return name[:64] or "unknown"
 
 
+def decode_essid(essid_hex):
+    """Decode a hex ESSID field to text: UTF-8 first, then latin-1 as a fallback
+    so a non-UTF-8 name still yields a stable label instead of replacement
+    characters. Empty or non-hex input yields ``""``."""
+    try:
+        raw = bytes.fromhex(essid_hex)
+    except ValueError:
+        return ""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1")
+
+
 def target_for(line, mode, single):
     """Store filename for one hc22000 line.
 
-    hc22000 layout: WPA*TYPE*PMKID_or_MIC*MAC_AP*MAC_STA*ESSID_hex*...
-    Route by ESSID; fall back to the AP BSSID when the ESSID is unknown
-    (PMKID-only / hidden network).
+    hc22000 layout: WPA*TYPE*PMKID_or_MIC*MAC_AP*MAC_STA*ESSID_hex*... The
+    grouping key is always read from the record's own fields, never from a
+    filename (capture filenames are not a trustworthy key):
+
+    - ``single``: everything into one combined file.
+    - ``per-ap``: one file per physical AP, keyed on the BSSID (field 4) -- the
+      only field that uniquely identifies one AP radio, since SSIDs are heavily
+      reused across unrelated APs. The composite BSSID+ESSID is encoded in the
+      name ``<ssid>_<bssid>.hc22000`` so a BSSID advertising multiple SSIDs
+      splits naturally; an empty/hidden ESSID routes to
+      ``__hidden_<bssid>.hc22000``. The BSSID in the name keeps unrelated APs
+      that share a name (e.g. "poswifi") in separate files, and both PMKID (01)
+      and EAPOL (02) records for an AP land in its one file.
+    - ``per-ssid`` (default): route by ESSID, falling back to the AP BSSID when
+      the ESSID is unknown (PMKID-only / hidden network).
     """
     if mode == "single":
         return single
+
     parts = line.split("*")
+
+    if mode == "per-ap":
+        bssid = parts[3] if len(parts) >= 4 else ""
+        if not bssid:
+            return "unknown.hc22000"
+        essid = decode_essid(parts[5]) if len(parts) >= 6 else ""
+        if essid.strip():
+            return sanitize(essid) + "_" + sanitize(bssid) + ".hc22000"
+        return "__hidden_" + sanitize(bssid) + ".hc22000"
+
+    # per-ssid (default): route by ESSID, fall back to the AP BSSID when the
+    # ESSID is unknown (PMKID-only / hidden network).
     essid, bssid = "", ""
     if len(parts) >= 6:
         bssid = parts[3]

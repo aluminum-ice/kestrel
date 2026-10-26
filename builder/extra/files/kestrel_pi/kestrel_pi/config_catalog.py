@@ -103,8 +103,10 @@ SECTIONS = [
                   "a channel list like 1,6,11,36 narrows it. Used when mode=fixed.",
                   RESTART_CAPTURE, maxlen=64),
             _edit("capture.output", "mode", "enum", "per-ssid",
-                  "One hc22000 file per network, or one combined file. Both "
-                  "append-only.", RESTART_CAPTURE, choices=["per-ssid", "single"]),
+                  "One hc22000 file per network (per-ssid), one file per access "
+                  "point keyed on BSSID (per-ap), or one combined file (single). "
+                  "All append-only.", RESTART_CAPTURE,
+                  choices=["per-ssid", "per-ap", "single"]),
             _edit("capture.output", "single_file", "str", "all.hc22000",
                   "Name of the combined file when mode=single.", RESTART_CAPTURE,
                   maxlen=128),
