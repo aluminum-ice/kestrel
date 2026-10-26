@@ -7,6 +7,7 @@ the bind/rebind logic is tested without opening real sockets)."""
 
 import logging
 import threading
+import time
 import types
 
 import pytest
@@ -629,7 +630,10 @@ def test_webserver_reconcile_binds_new_and_releases_gone():
     ws.reconcile(["127.0.0.1", "192.168.1.50"])
     assert len(created) == before
 
-    # wlan0 drops: its server is shut down and forgotten; loopback stays.
+    # wlan0 drops: one missed reconcile keeps it (a single failed address
+    # lookup must not drop the page); the second in a row releases it.
+    ws.reconcile(["127.0.0.1"])
+    assert ws.bound_hosts() == ["127.0.0.1", "192.168.1.50"]
     ws.reconcile(["127.0.0.1"])
     assert ws.bound_hosts() == ["127.0.0.1"]
     assert any(s.host == "192.168.1.50" and s.shut for s in created)
@@ -1023,6 +1027,41 @@ def test_system_login_user_defaults_to_the_running_account(monkeypatch):
     assert web.system_login_user({"username": "alice"}) == "alice"
     name = web.system_login_user({})
     assert isinstance(name, str) and name
+
+
+def test_webserver_miss_count_resets_when_the_host_comes_back():
+    created = []
+    ws = web.WebServer(app=object(), hosts=["127.0.0.1", "192.168.1.50"],
+                       port=8080, logger=LOG, server_factory=_factory(created))
+    ws.start()
+    ws.reconcile(["127.0.0.1"])                    # one miss
+    ws.reconcile(["127.0.0.1", "192.168.1.50"])    # back: the count resets
+    ws.reconcile(["127.0.0.1"])                    # one miss again, still bound
+    assert ws.bound_hosts() == ["127.0.0.1", "192.168.1.50"]
+    assert len(created) == 2                       # never rebound in between
+    ws.stop()
+    assert ws.bound_hosts() == []                  # stop() releases at once
+
+
+def test_iface_ipv4_caches_lookups_but_not_failures(monkeypatch):
+    monkeypatch.setattr(web, "_addr_cache", {})
+    results = [(None, False), ("10.0.0.5", True)]
+    calls = []
+
+    def probe(iface):
+        calls.append(iface)
+        return results.pop(0) if results else ("10.0.0.9", True)
+
+    monkeypatch.setattr(web, "_probe_ipv4", probe)
+    assert web.iface_ipv4("wlan0") is None          # ip failed: not cached
+    assert web.iface_ipv4("wlan0") == "10.0.0.5"    # retried at once
+    assert web.iface_ipv4("wlan0") == "10.0.0.5"    # served from the cache
+    assert len(calls) == 2
+
+
+def test_reconnect_script_aborts_a_stuck_probe():
+    script = web._reconnect_script("/", "/status.json", 1000.0)
+    assert "AbortController" in script and "limit=5000," in script
 
 
 def test_webserver_skips_unbindable_host():
@@ -2067,6 +2106,38 @@ def test_slow_on_webhook_returns_a_timeout_page(monkeypatch, tmp_path):
     assert "Still working" in resp.get_data(as_text=True)
 
 
+def test_a_stuck_on_webhook_refuses_new_calls_until_it_ends(monkeypatch, tmp_path):
+    # A hung plugin must leak one worker thread, not one per request: while the
+    # overrun call is still running, later calls get a 503 without starting
+    # another; once it ends, the plugin is called normally again.
+    monkeypatch.setattr(web, "webhook_timeout_seconds", lambda cfg: 0.2)
+    release = threading.Event()
+    calls = []
+
+    def handler(path, request):
+        calls.append(path)
+        if len(calls) == 1:
+            release.wait(5)
+        return "ok"
+
+    client, _ = _action_client(
+        monkeypatch, tmp_path,
+        actions=[{"label": "Go", "path": "view", "method": "get"}], handler=handler)
+    assert client.get("/plugins/demo/view", headers=_basic()).status_code == 504
+    busy = client.get("/plugins/demo/view", headers=_basic())
+    assert busy.status_code == 503 and "Still busy" in busy.get_data(as_text=True)
+    assert busy.headers.get("Retry-After")
+    assert len(calls) == 1                       # refused without calling it
+    release.set()
+    deadline = time.monotonic() + 5
+    while threading.active_count() and time.monotonic() < deadline:
+        resp = client.get("/plugins/demo/view", headers=_basic())
+        if resp.status_code != 503:
+            break
+        time.sleep(0.05)
+    assert resp.status_code == 200 and len(calls) == 2
+
+
 def test_on_webhook_runs_with_the_concrete_request(monkeypatch, tmp_path):
     # The handler runs in a worker thread; passing the resolved request (not the
     # Flask proxy) keeps its method/args readable there.
@@ -2156,3 +2227,37 @@ def test_reconnect_script_waits_for_a_fresh_daemon():
     # Redirects only when a different (fresh) daemon answers.
     assert "s.started!==started" in script
     assert "location.href=target" in script
+
+
+def test_reconnect_script_waits_about_two_minutes_by_default():
+    # A restart's bounded plugin unload (25s) plus a cold start must fit the
+    # default window, so the page doesn't give up on a restart in progress.
+    assert "max=120," in web._reconnect_script("/", "/status.json", 1000.0)
+
+
+def test_web_connections_time_out_on_a_stalled_request(monkeypatch):
+    # A client that goes silent mid-request (a phone that left range, no FIN)
+    # must not pin its server thread forever: the server closes it.
+    import socket
+
+    pytest.importorskip("werkzeug")
+    from flask import Flask
+
+    monkeypatch.setattr(web, "_CONNECTION_TIMEOUT", 0.5)
+    app = Flask("t")
+    app.add_url_rule("/", "i", lambda: "ok")
+    server = web._default_make_server("127.0.0.1", 0, app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        conn = socket.create_connection(("127.0.0.1", server.server_port), timeout=5)
+        with conn:
+            # Headers never finished: without the timeout the server thread
+            # waits in recv() for the rest, and this recv() times out instead.
+            conn.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n")
+            started = time.monotonic()
+            while conn.recv(4096):
+                pass
+            assert time.monotonic() - started < 3
+    finally:
+        server.shutdown()

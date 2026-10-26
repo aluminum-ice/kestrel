@@ -467,6 +467,18 @@ def _silent_cli_error(what, rc):
             "command by hand to see why" % (what, rc))
 
 
+# The apply timeouts nest so each layer answers before the one waiting on it
+# gives up: this CLI run (40s) < the helper unit's RuntimeMaxSec (50s) < the
+# daemon's socket client (applyclient, 55s). A CLI run that overruns comes back
+# as an error the page can show, instead of the client timing out on a change
+# that then lands anyway. The CLI keeps at least the ~30s it effectively had
+# before (the old RuntimeMaxSec), since killing it can leave a change half
+# done. The slow targets (capture, agent, config) come from core web routes,
+# which have no on_webhook timeout; the plugin-button targets are quick
+# fire-and-forget CLI calls well inside a plugin page's 30s on_webhook timeout.
+CLI_TIMEOUT = 40
+
+
 def _run_capture_cli(args):
     """Run the shipped CLI to change capture, capturing its output. The CLI is
     root-owned and trusted (not plugin code), the same trust level as the
@@ -474,7 +486,7 @@ def _run_capture_cli(args):
     try:
         proc = subprocess.run(
             [PWN_TOOL] + list(args), capture_output=True, text=True,
-            timeout=60, check=False, stdin=subprocess.DEVNULL)
+            timeout=CLI_TIMEOUT, check=False, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, str(exc)
     return proc.returncode, ((proc.stderr or "") + (proc.stdout or "")).strip()

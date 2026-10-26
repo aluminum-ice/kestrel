@@ -193,3 +193,42 @@ def test_add_str_refuses_empty_and_control_chars(config):
     assert _run_cli(config, "--add-str", "capture", "whitelist",
                     stdin="bad\tval").returncode == 1
     assert cs.current_string_array(config, "capture", "whitelist") == []
+
+
+# -- write lock (concurrent writers must not lose each other's change) -------
+def test_concurrent_add_str_loses_nothing(config):
+    # Parallel writers (two tabs, web + CLI) each read-modify-write the file;
+    # the lock serializes them so every entry lands.
+    env = dict(os.environ, PWN_CONFIG=config)
+    procs = [subprocess.Popen(
+        [sys.executable, CONFIG_SET, "--add-str", "capture", "whitelist"],
+        env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True) for _ in range(12)]
+    for i, proc in enumerate(procs):
+        proc.stdin.write("Net-%d" % i)
+        proc.stdin.close()
+    assert all(proc.wait(30) == 0 for proc in procs)
+    whitelist = _read(config)["capture"]["whitelist"]
+    assert {"Net-%d" % i for i in range(12)} <= set(whitelist)
+
+
+def test_a_held_lock_makes_a_write_refuse_not_hang(config, monkeypatch):
+    import fcntl
+
+    monkeypatch.setattr(cs, "_LOCK_WAIT", 0.2)
+    lock_path = os.path.join(os.path.dirname(config), ".config.toml.lock")
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        with pytest.raises(cs.ConfigSetError, match="busy"):
+            cs.set_value(config, "capture", "enabled", "true")
+    finally:
+        os.close(fd)
+    cs.set_value(config, "capture", "enabled", "true")       # free again
+    assert _read(config)["capture"]["enabled"] is True
+
+
+def test_config_lock_is_reentrant(config):
+    with cs.config_lock(config):
+        cs.set_value(config, "capture", "enabled", "true")   # nested: no deadlock
+    assert _read(config)["capture"]["enabled"] is True

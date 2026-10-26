@@ -10,6 +10,7 @@ captures or the network until a plugin is explicitly enabled.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import os
@@ -61,6 +62,16 @@ _SERVICE_STATE_TTL = 2.0
 # that made the start non-blocking.
 _SERVICE_SETTLE_TIMEOUT = 5.0
 _SERVICE_SETTLE_POLL = 0.25
+# Concurrent status() renders that miss the cache share one `systemctl
+# is-active` per service instead of each forking its own; a follower waits this
+# long for the leader (just over the probe's 5s subprocess timeout).
+_SERVICE_PROBE_WAIT = 6.0
+# How long stop() gives all the plugins' on_unload calls, together. A restart
+# from a settings save waits on it, and it must stay well inside the unit's
+# TimeoutStopSec (40s), or systemd SIGKILLs a daemon that is still blanking the
+# e-ink panel and the restart drags out past the page's reconnect window. The
+# e-ink unload (a worker join of up to 20s, then a panel clear) is the longest.
+_UNLOAD_TIMEOUT = 25.0
 # The onboarding writes the paired phone's MAC here (see common.sh
 # PWN_BT_PHONE_FILE); the daemon (pi) can read it to tell whether a phone is
 # paired, so the web shows a re-pair control only when none is.
@@ -147,6 +158,10 @@ class Daemon:
         # threads (the server is threaded).
         self._svc_state_cache = {}
         self._svc_state_lock = threading.Lock()
+        self._svc_inflight = {}       # service -> Event, the probe in progress
+        # config.toml parsed once per on-disk version (see _fresh_config).
+        self._cfg_cache = None        # (stat key, parsed dict)
+        self._cfg_cache_lock = threading.Lock()
         self.services = ServiceRegistry(self.log)
         # Expose the learning agent's published readout as a service so a UI
         # plugin (the e-ink face) can react to agent state without importing the
@@ -441,8 +456,7 @@ class Daemon:
         self._stop.set()
         if self._web:
             self._web.stop()
-        for record in self.loader.loaded_records():
-            self.loader.unload(record)
+        self.loader.unload_all(_UNLOAD_TIMEOUT)
         self.dispatcher.shutdown(wait=False)
 
     def run_forever(self):
@@ -488,19 +502,35 @@ class Daemon:
             cached = self._svc_state_cache.get(service)
             if cached and cached[1] > now:
                 return cached[0]
+            flight = self._svc_inflight.get(service)
+            leader = flight is None
+            if leader:
+                flight = self._svc_inflight[service] = threading.Event()
+        if not leader:
+            # Another request is already probing this service: use its answer
+            # (whatever it cached, even if that has since aged past the TTL).
+            flight.wait(_SERVICE_PROBE_WAIT)
+            with self._svc_state_lock:
+                cached = self._svc_state_cache.get(service)
+            return cached[0] if cached else "unknown"
         try:
-            rc = subprocess.run(
-                ["systemctl", "is-active", "--quiet", service],
-                timeout=5, check=False,
-            ).returncode
-        except (OSError, subprocess.SubprocessError):
-            # Don't cache an error: retry on the next read rather than pin
-            # "unknown" for the whole TTL.
-            return "unknown"
-        state = "running" if rc == 0 else "stopped"
-        with self._svc_state_lock:
-            self._svc_state_cache[service] = (state, now + _SERVICE_STATE_TTL)
-        return state
+            try:
+                rc = subprocess.run(
+                    ["systemctl", "is-active", "--quiet", service],
+                    timeout=5, check=False,
+                ).returncode
+            except (OSError, subprocess.SubprocessError):
+                # Don't cache an error: retry on the next read rather than pin
+                # "unknown" for the whole TTL.
+                return "unknown"
+            state = "running" if rc == 0 else "stopped"
+            with self._svc_state_lock:
+                self._svc_state_cache[service] = (state, now + _SERVICE_STATE_TTL)
+            return state
+        finally:
+            with self._svc_state_lock:
+                self._svc_inflight.pop(service, None)
+            flight.set()
 
     def _bt_paired(self):
         """Whether a phone is paired for the Bluetooth PAN link, read from the
@@ -522,7 +552,26 @@ class Daemon:
         start-up config on any read or parse error, so a bad read never breaks
         status()."""
         try:
-            return load_config(self.config_path, self.log)
+            try:
+                st = os.stat(self.config_path)
+                key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns,
+                       st.st_ctime_ns)
+            except OSError:
+                key = None
+            with self._cfg_cache_lock:
+                cached = self._cfg_cache
+            if key is not None and cached is not None and cached[0] == key:
+                parsed = cached[1]
+            else:
+                # Every page render used to re-parse the file. It changes only
+                # through an atomic replace (new inode) or an in-place edit (new
+                # mtime), so a parse is reused until the file's stat changes.
+                parsed = load_config(self.config_path, self.log)
+                if key is not None:
+                    with self._cfg_cache_lock:
+                        self._cfg_cache = (key, parsed)
+            # A copy, so no caller can alter the cached parse for the next one.
+            return copy.deepcopy(parsed)
         except Exception:  # noqa: BLE001 - never let a bad read break status()
             return self.config
 
@@ -636,7 +685,13 @@ def main(argv=None):
     signal.signal(signal.SIGINT, _handle_signal)
 
     daemon.run_forever()
-    return 0
+    # Exit now, without the interpreter's shutdown joins: concurrent.futures
+    # joins every hook-pool worker at exit (even after shutdown(wait=False)), so
+    # one hook stuck on a dead network call would keep the process alive until
+    # systemd's stop timeout SIGKILLs it, and every restart would take that long.
+    # stop() has already unloaded the plugins; flush the logs and go.
+    logging.shutdown()
+    os._exit(0)
 
 
 if __name__ == "__main__":

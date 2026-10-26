@@ -30,13 +30,16 @@ is no window where the new content is world-readable.
 
 Also imported by plugins-ctl, so the CLI and the web control share one writer.
 """
+import contextlib
 import copy
+import fcntl
 import json
 import os
 import re
 import stat
 import sys
 import tempfile
+import time
 
 try:
     import tomllib
@@ -163,6 +166,58 @@ def edit_text(text, table, key, literal):
     return new_text
 
 
+# Every config.toml writer (the CLI's config_set, plugins-ctl for the web page)
+# goes through this module, and each change is a read-modify-write of the whole
+# file. Two at once - two browser tabs, the web page and the CLI, or concurrent
+# apply helpers - could each read the old text and the second replace would
+# silently drop the first change. An exclusive flock on a lock file beside the
+# config serializes them. It is a separate file because the config itself is
+# replaced (new inode) on every write, so a lock on it would not carry over.
+_LOCK_WAIT = 10.0
+_held_locks = {}       # abspath -> depth, so nested calls don't self-deadlock
+
+
+@contextlib.contextmanager
+def config_lock(path):
+    """Hold the config's write lock for a read-modify-write of ``path``.
+    Re-entrant within this process. Waits up to ``_LOCK_WAIT`` seconds, then
+    refuses (another writer holds it far longer than any edit takes). If the
+    lock file can't be opened at all it proceeds unlocked, as before."""
+    key = os.path.abspath(path)
+    if _held_locks.get(key):
+        _held_locks[key] += 1
+        try:
+            yield
+        finally:
+            _held_locks[key] -= 1
+        return
+    lock_path = os.path.join(os.path.dirname(key), ".%s.lock" % os.path.basename(key))
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        fd = None
+    try:
+        if fd is not None:
+            deadline = time.monotonic() + _LOCK_WAIT
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise ConfigSetError("%s is busy (another change is "
+                                             "being written); try again" % path)
+                    time.sleep(0.05)
+        _held_locks[key] = 1
+        try:
+            yield
+        finally:
+            _held_locks.pop(key, None)
+    finally:
+        if fd is not None:
+            os.close(fd)           # also releases the flock
+
+
 def write_atomic(path, text):
     """Replace ``path`` with ``text``, keeping its mode and owner, with no
     window where the new content is more readable than the original."""
@@ -224,11 +279,12 @@ def set_string_array(path, table, key, items):
 def set_many(path, table, items):
     """Set each ``(key, toml_literal)`` in ``items`` inside ``[table]`` with one
     atomic write. Every edit is validated; nothing is written on any error."""
-    with open(path, "r", encoding="utf-8") as handle:
-        text = handle.read()
-    for key, literal in items:
-        text = edit_text(text, table, key, literal)
-    write_atomic(path, text)
+    with config_lock(path):
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        for key, literal in items:
+            text = edit_text(text, table, key, literal)
+        write_atomic(path, text)
 
 
 def set_value(path, table, key, literal):
@@ -258,17 +314,20 @@ def main(argv):
             raw = _stdin_value()
             if not raw:
                 raise ConfigSetError("empty value")
-            current = current_string_array(CONFIG, table, key)
-            if mode == "--add-str":
-                if raw in current:
-                    return 0                      # already present: a no-op
-                toml_string(raw)                  # reject control chars early
-                set_string_array(CONFIG, table, key, current + [raw])
-            else:
-                if raw not in current:
-                    return 0                      # not there: a no-op
-                set_string_array(CONFIG, table, key,
-                                 [v for v in current if v != raw])
+            # One lock across the array read and its rewrite, so a concurrent
+            # add/remove can't be lost between them.
+            with config_lock(CONFIG):
+                current = current_string_array(CONFIG, table, key)
+                if mode == "--add-str":
+                    if raw in current:
+                        return 0                  # already present: a no-op
+                    toml_string(raw)              # reject control chars early
+                    set_string_array(CONFIG, table, key, current + [raw])
+                else:
+                    if raw not in current:
+                        return 0                  # not there: a no-op
+                    set_string_array(CONFIG, table, key,
+                                     [v for v in current if v != raw])
             return 0
         if mode == "--string":
             literal = toml_string(_stdin_value())

@@ -87,6 +87,27 @@ def test_captured_networks_dedupes_by_essid_and_counts(tmp_path):
     assert [n["essid"] for n in nets] == ["Cafe", "Home", ""]
 
 
+def test_captured_networks_cache_follows_store_changes(tmp_path, monkeypatch):
+    # The parse is reused while the store is unchanged, and redone after a
+    # capture appends to a file or adds a new one.
+    (tmp_path / "Home.hc22000").write_text(EAPOL + "\n")
+    iface = CaptureInterface(str(tmp_path))
+    reads = []
+    real = iface.read_events
+    monkeypatch.setattr(iface, "read_events", lambda p: reads.append(p) or real(p))
+    first = iface.captured_networks()
+    first[0]["handshakes"] = 99                   # a caller can't corrupt the cache
+    assert iface.captured_networks()[0]["handshakes"] == 1
+    assert len(reads) == 1
+    with open(tmp_path / "Home.hc22000", "a") as handle:
+        handle.write(HOME_B + "\n")
+    st = os.stat(tmp_path / "Home.hc22000")
+    os.utime(tmp_path / "Home.hc22000", ns=(st.st_atime_ns, st.st_mtime_ns + 1000))
+    assert iface.captured_networks()[0]["handshakes"] == 2
+    (tmp_path / "Other.hc22000").write_text(CAFE + "\n")
+    assert {n["essid"] for n in iface.captured_networks()} == {"Home", "Cafe"}
+
+
 def test_captured_networks_empty_store(tmp_path):
     assert CaptureInterface(str(tmp_path)).captured_networks() == []
 

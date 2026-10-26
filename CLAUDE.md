@@ -75,7 +75,7 @@ The on-device `kestrel_pi` package also has unit tests: `make test` runs them (v
 - **Nothing generated under `builder/extra/`:** every file there is copied into the image and is a rebuild prerequisite. Don't leave build or test artifacts (e.g. `__pycache__`) in it.
 - **yamllint config:** formatting nits are disabled in `.yamllint`, but duplicate keys are errors.
 - **Hostname isolation:** the Makefile wraps Packer in `unshare --uts` so the playbook's hostname change does not leak to the build host. Keep that wrapper.
-- **Commits:** history uses short imperative messages ("Update compose.yaml", "added deployment information for inventree"). No PR template; the Lint workflow should be green.
+- **Commits:** history uses short imperative messages ("Update compose.yaml", "added deployment information for inventree"). PRs use the template at `.forgejo/pull_request_template.md` (what the PR does, the lint/tests/no-secrets/docs/commit checklist, App-layer-safe vs Reflash-class release impact, notes for review); fill it in rather than writing a free-form description. The Lint and Test workflows should be green.
 
 ## No secrets in this repo
 

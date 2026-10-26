@@ -171,7 +171,7 @@ the loader, in dependency order) and **events** (dispatched off the loop — see
 | --- | --- | --- |
 | `on_loaded(self)` | once, after instantiation and configuration | Do setup here; `self.context`/`self.options` are set. A raise here quarantines the plugin (`failed`). |
 | `on_ready(self)` | once, after **all** enabled plugins have loaded | Use it when you need another plugin's service to already be registered. |
-| `on_unload(self)` | on disable or daemon stop | Release anything **you** acquired (threads, sockets). Services you registered are withdrawn for you. |
+| `on_unload(self)` | on disable or daemon stop | Release anything **you** acquired (threads, sockets). Services you registered are withdrawn for you. On daemon stop all plugins' `on_unload` calls run concurrently and share a 25 s budget; one still running then is abandoned (logged) so it can't stall a restart, so keep it short and bound any join or device wait. |
 | `on_config_changed(self, config)` | your `[plugins.<name>]` table changed live | `config` is your new validated options. Return `True` if you applied it in place; a falsy return tells the loader a daemon restart is needed to apply it. |
 
 ### Events
