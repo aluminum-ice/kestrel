@@ -5,7 +5,8 @@ so a .pth file pi drops into its site-packages would run as root; and a bare
 ``python3 -``/``-c`` puts the cwd first on sys.path, so a module pi leaves in
 the directory sudo was run from would be imported as root. These scan the shell
 sources: every ``python3`` call passes ``-I``, and ``$PWN_VENV_PYTHON`` only
-ever runs through ``run_as_pi``."""
+ever runs through ``run_as_pi``, also with ``-I`` (as pi it is no escalation,
+but a stray ``json.py`` in the cwd would still shadow the stdlib)."""
 
 import os
 import re
@@ -43,6 +44,6 @@ def test_python3_always_isolated(path):
 def test_venv_python_only_as_pi(path):
     bad = [(n, line.strip()) for n, line in _code_lines(path)
            if "PWN_VENV_PYTHON" in line
-           and not re.search(r"\brun_as_pi\s+\"\$PWN_VENV_PYTHON\"", line)
+           and not re.search(r"\brun_as_pi\s+\"\$PWN_VENV_PYTHON\"\s+-I\b", line)
            and not re.match(r"\s*PWN_VENV_PYTHON=", line)]
     assert not bad, bad

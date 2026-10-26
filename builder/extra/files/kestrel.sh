@@ -1316,7 +1316,7 @@ agent_running() { systemctl is-active --quiet "$PWN_AGENT_SERVICE"; }
 agent_has_model() {
     local algo=$1
     [ -n "$algo" ] || return 1
-    run_as_pi "$PWN_VENV_PYTHON" -c '
+    run_as_pi "$PWN_VENV_PYTHON" -I -c '
 import sys
 from kestrel_pi.agent import policies
 sys.exit(0 if policies.has_model_for(sys.argv[1], sys.argv[2]) else 1)
@@ -1451,10 +1451,10 @@ cmd_agent_import() {
     # Install under the algorithm's own model name so it coexists with models
     # for other algorithms; write_meta writes the matching per-algorithm sidecar.
     local model_file
-    model_file=$(run_as_pi "$PWN_VENV_PYTHON" -c 'import sys; from kestrel_pi.agent import model_name_for; print(model_name_for(sys.argv[1]))' "$algo") \
+    model_file=$(run_as_pi "$PWN_VENV_PYTHON" -I -c 'import sys; from kestrel_pi.agent import model_name_for; print(model_name_for(sys.argv[1]))' "$algo") \
         || die "could not resolve the model filename for $algo"
     install -o pi -g pi -m 0644 "$model" "$PWN_AGENT_DIR/$model_file"
-    run_as_pi "$PWN_VENV_PYTHON" -c 'import sys; from kestrel_pi.agent import policies; policies.write_meta(sys.argv[1], sys.argv[2])' "$PWN_AGENT_DIR" "$algo"
+    run_as_pi "$PWN_VENV_PYTHON" -I -c 'import sys; from kestrel_pi.agent import policies; policies.write_meta(sys.argv[1], sys.argv[2])' "$PWN_AGENT_DIR" "$algo"
     config_set agent algorithm "\"$algo\""
     config_set agent policy '"learned"'
     agent_running && systemctl restart "$PWN_AGENT_SERVICE" || true
@@ -1472,7 +1472,7 @@ cmd_agent_train() {
     done
     backup_require_pi_or_root
     log "training from the logged episodes (this can take a while on-device)"
-    run_as_pi "$PWN_VENV_PYTHON" -m kestrel_pi.agent.train \
+    run_as_pi "$PWN_VENV_PYTHON" -I -m kestrel_pi.agent.train \
         --agent-dir "$PWN_AGENT_DIR" --config "$PWN_CONFIG" "${args[@]}"
 }
 
@@ -1490,7 +1490,7 @@ cmd_agent_train_now() {
 cmd_agent_metrics() {
     local status="$PWN_AGENT_DIR/status.json"
     # As pi: it imports kestrel_pi from the venv, which root never runs.
-    run_as_pi "$PWN_VENV_PYTHON" - "$PWN_AGENT_DIR" <<'PY' || true
+    run_as_pi "$PWN_VENV_PYTHON" -I - "$PWN_AGENT_DIR" <<'PY' || true
 import os
 import sys
 from kestrel_pi.agent import metrics
