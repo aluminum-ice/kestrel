@@ -87,6 +87,35 @@ the receiver actually locks, which needs a reasonably clear view of the sky; a
 cold start can take a few minutes. Indoors it may never lock even though data is
 flowing — the raw `cat` above is the proof the data path is good.
 
+## How captures get location-tagged
+
+When the plugin has a fix, each **new** handshake writes a location sidecar next
+to its hashline file in the capture store (`<capture>.hc22000.gps.json`). The
+sidecar is a map keyed by the access point's **BSSID**, so one sidecar can hold
+fixes for several APs (e.g. in `per-ssid` layout, where one file can hold
+several APs) and each AP's location stays attached to its own BSSID. Two points
+are worth knowing:
+
+- **Tagging is opportunistic — a later capture can geocode an AP an earlier one
+  missed.** If an AP's first handshake is captured while GPS has no fix (or is
+  off), nothing is tagged then; but the next time a **new** handshake for that
+  same AP is captured with a fix, the sidecar is written at that point. You don't
+  have to recapture everything with GPS on from the start — future captures fill
+  in the location for APs seen earlier without one.
+- **The location is where you were for that capture, and the newest one wins.**
+  The fix recorded is your position when that handshake landed, not where the AP
+  physically is or where you first encountered it — the same thing while
+  stationary, but for a fixed AP re-captured elsewhere (wardriving), it tags the
+  spot of the capture. Each new fix for a BSSID **overwrites** the previous one,
+  so the sidecar holds the most recent capture location for that AP.
+
+Tagging rides on a genuinely **new, de-duplicated** handshake (the same signal
+the capture store and the networks page's "last seen" use). An AP merely re-seen
+producing an *identical* hashline adds nothing to the store, so it neither
+advances "last seen" nor refreshes the location. A fresh WPA EAPOL handshake
+normally is a new line and will re-tag; a stable PMKID that de-duplicates away
+will not.
+
 ## Troubleshooting "no fix"
 
 1. `source` is `gpsd` but `gpsd` is not installed/running → switch to `auto` or

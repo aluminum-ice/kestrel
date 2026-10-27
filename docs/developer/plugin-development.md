@@ -192,7 +192,7 @@ the loader, in dependency order) and **events** (dispatched off the loop — see
 
 | Hook | Signature | Fired when |
 | --- | --- | --- |
-| `on_handshake` | `(self, event)` | A new hashline landed in the store. `event` is a `HandshakeEvent`. |
+| `on_handshake` | `(self, event)` | A new, de-duplicated hashline landed in the store (the store file grew). `event` is a `HandshakeEvent`. It does **not** fire for an AP merely re-seen producing an *identical* hashline — exact-line dedup means no store growth — so per-handshake side effects (e.g. the `gps` plugin's location sidecar, keyed by `event.bssid`) happen only on genuinely new material. The fix a later handshake tags is current at that moment, so a new handshake can geocode an AP an earlier fix-less one missed, overwriting any prior fix for that BSSID. |
 | `on_internet_available` | `(self)` | A management path just reached real upstream (the offline→online edge). |
 | `on_epoch` | `(self, epoch, info)` | Each timer tick. `epoch` is a monotonically increasing count; `info` is `{"epoch", "online", "paths"}`. |
 | `on_webhook` | `(self, path, request)` | An HTTP request to `/plugins/<name>/<path>` (see [Web pages](#web-pages-on_webhook)). |
