@@ -29,7 +29,11 @@ PWN_CONFIG=${PWN_CONFIG:-/etc/kestrel/config.toml}
 PWN_CONFIG_GET=${PWN_CONFIG_GET:-$PWN_LIB_DIR/config-get}
 PWN_CONFIG_SET=${PWN_CONFIG_SET:-$PWN_LIB_DIR/config-set}
 PWN_CAPTURE_DIR=${PWN_CAPTURE_DIR:-$PWN_STATE_DIR/capture}
-PWN_CAPTURE_RUN_DIR=${PWN_CAPTURE_RUN_DIR:-$PWN_CAPTURE_DIR/.run}
+# AngryOxide (root) writes its raw output here, so it sits in the root-owned
+# state dir, not in the pi-owned capture store: pi can't plant a symlink in it
+# for root to write through. The store's own .run/ is pi's scratch (restore
+# state) and a legacy location the collector still drains.
+PWN_CAPTURE_RUN_DIR=${PWN_CAPTURE_RUN_DIR:-$PWN_STATE_DIR/capture-run}
 PWN_CAPTURE_ARCHIVE_DEFAULT=$PWN_CAPTURE_DIR/archive
 PWN_WHITELIST_FILE=${PWN_WHITELIST_FILE:-$PWN_STATE_DIR/whitelist}
 PWN_CAPTURE_SERVICE=kestrel-capture.service

@@ -98,12 +98,14 @@ CONFIG_SETTABLE = {
     "capture.scan.bands": {"type": "str", "maxlen": 64},
     "capture.output.mode": {
         "type": "enum", "choices": ["per-ssid", "per-ap", "single"]},
-    "capture.output.single_file": {"type": "str", "maxlen": 128},
+    "capture.output.single_file": {"type": "str", "maxlen": 128,
+                                   "pattern": "[A-Za-z0-9_-][A-Za-z0-9._-]*"},
     "capture.angryoxide.headless": {"type": "bool"},
     "capture.housekeeping.action": {"type": "enum", "choices": ["off", "rotate", "archive"]},
     "capture.housekeeping.max_store_mb": {"type": "int", "min": 0},
     "capture.housekeeping.max_age_days": {"type": "int", "min": 0},
-    "capture.housekeeping.archive_dir": {"type": "str", "maxlen": 256},
+    "capture.housekeeping.archive_dir": {"type": "str", "maxlen": 256,
+                                         "under": "/var/lib/kestrel/capture"},
     "capture.housekeeping.keep_archives": {"type": "int", "min": 0},
     "capture.max_run_mb": {"type": "int", "min": 0},
     "capture.environment.enabled": {"type": "bool"},
@@ -267,6 +269,8 @@ def cmd_info(name):
             flags = []
             if spec.get("required"):
                 flags.append("required")
+            if spec.get("root_only"):
+                flags.append("terminal only")
             if "default" in spec:
                 flags.append("default=%r" % spec["default"])
             cur = table.get(opt)
@@ -863,6 +867,16 @@ def apply_remote_train(change, config):
     return {"ok": True, "remote_train": True, "restart": False}
 
 
+def _path_under(value, base):
+    """True if ``value`` is an absolute path strictly inside ``base``, with no
+    '.' or '..' component. Checked on the text, never resolved: a symlink in a
+    pi-owned tree is pi's to plant, and the CLI re-checks before using it."""
+    if not value.startswith(base.rstrip("/") + "/"):
+        return False
+    parts = value.rstrip("/").split("/")
+    return "." not in parts and ".." not in parts and len(parts) > len(base.rstrip("/").split("/"))
+
+
 def _config_literal(spec, value):
     """Validate a submitted config value against its CONFIG_SETTABLE spec and
     render it as a TOML literal. Raises ValueError with an operator-facing
@@ -900,6 +914,11 @@ def _config_literal(spec, value):
             raise ValueError("must be text")
         if len(value) > spec.get("maxlen", MAX_STRING):
             raise ValueError("is too long")
+        if "pattern" in spec and not re.fullmatch(spec["pattern"], value):
+            raise ValueError("must be a plain file name (letters, digits, '.', '_', "
+                             "'-'; no '/' and no leading '.')")
+        if "under" in spec and not _path_under(value, spec["under"]):
+            raise ValueError("must be a folder inside %s" % spec["under"])
         cs = config_set_module()
         try:
             return cs.toml_string(value)
@@ -1028,6 +1047,12 @@ def apply_change(change):
         if opt not in options:
             return {"ok": False, "error": "unknown option: %s" % opt}
         spec = options[opt] or {}
+        # A root_only option is one root acts on (e.g. where updates come
+        # from). Anything that can reach this socket runs as pi, so it may
+        # never set one; only the CLI (`plugins-ctl set`, run by sudo) can.
+        if spec.get("root_only"):
+            return {"ok": False, "error": "%s can only be set from the terminal: "
+                    "sudo kestrel plugins enable %s --set %s=..." % (opt, name, opt)}
         if value == "" and spec.get("type", "str") == "str":
             continue
         try:

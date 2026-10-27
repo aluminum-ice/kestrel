@@ -28,7 +28,7 @@ Everything is under the capture store, **`/var/lib/kestrel/capture/`**:
 | `cracked/wpa-sec.potfile` | Passwords recovered for your key, downloaded by the `wpa-sec` plugin. |
 | `geo/wigle-cache.json` | WiGLE geolocation lookups (display-only; never uploaded). |
 | `archive/` | Snapshots made by housekeeping (archive/rotate). |
-| `.run/` | Transient raw packet capture — **not** your handshakes, and cleared automatically. Ignore it. |
+| `.run/` | Small working state (backup restore status, and raw capture files from older releases) — **not** your handshakes. Ignore it. Raw packet capture now lives outside the store, in `/var/lib/kestrel/capture-run/`. |
 
 The store files are **append-only**: a reboot or a capture restart adds new
 unique lines, never truncates. Nothing is deleted except by the housekeeping you

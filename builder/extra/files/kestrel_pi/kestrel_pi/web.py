@@ -438,6 +438,8 @@ def build_change(daemon, record, form):
     updates = {}
     for opt, spec in schema.items():
         spec = spec or {}
+        if spec.get("root_only"):
+            continue  # terminal only; the root helper refuses it from here
         type_name = spec.get("type", "str")
         field = "opt-" + opt
         current = table.get(opt, spec.get("default"))
@@ -3384,9 +3386,11 @@ def _render_settings_applied(control, reply, started):
     )
 
 
-def _option_field(opt, spec, table, missing, disabled):
+def _option_field(opt, spec, table, missing, disabled, plugin=""):
     """The form field for one declared option. Secrets are a password field
-    that is never prefilled; leaving it empty keeps the stored value."""
+    that is never prefilled; leaving it empty keeps the stored value. A
+    root_only option is shown read-only with the terminal command that sets it
+    (the root helper refuses it from the page)."""
     spec = spec or {}
     type_name = spec.get("type", "str")
     field = "opt-" + opt
@@ -3404,6 +3408,17 @@ def _option_field(opt, spec, table, missing, disabled):
         hint += '<div class="hint">' + _esc(spec["help"]) + "</div>"
     if "default" in spec and not spec.get("secret"):
         hint += '<div class="hint">default: ' + _esc(_shown(spec["default"])) + "</div>"
+
+    if spec.get("root_only"):
+        if spec.get("secret"):
+            shown = "set" if table.get(opt) else "not set"
+        else:
+            shown = _shown(current) or "not set"
+        return (
+            '<div class="ro-option"><b>' + _esc(opt) + "</b>: " + _esc(shown) + "</div>"
+            '<div class="hint">Set from the terminal only: <code>sudo kestrel plugins '
+            "enable " + _esc(plugin) + " --set " + _esc(opt) + "=...</code></div>" + hint
+        )
 
     if type_name == "bool":
         return (
@@ -3482,7 +3497,7 @@ def _render_manage(daemon, record, control, message=None, error=False,
     )
     schema = getattr(record.cls, "__options__", {}) or {}
     for opt, spec in schema.items():
-        form.append(_option_field(opt, spec, table, missing, not ready))
+        form.append(_option_field(opt, spec, table, missing, not ready, plugin=name))
     if "network" in caps:
         if control.get("acked"):
             form.append('<p class="hint">Authorized-use confirmation: given.</p>')

@@ -8,8 +8,8 @@ reflashed SD card doesn't take them with it. This is the operator guide.
 
 Two things: your capture data, and the learning agent's trained model.
 
-**The capture store** (`/var/lib/kestrel/capture/`), except the transient
-`.run/` raw-packet dir:
+**The capture store** (`/var/lib/kestrel/capture/`), except its transient
+`.run/` working dir:
 
 - the hashline files (`*.hc22000`),
 - the GPS sidecars (`*.gps.json`, whether captured on-device or looked up),

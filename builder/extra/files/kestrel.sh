@@ -382,12 +382,54 @@ cmd_capture_status() {
 # `status` command.
 cmd_status_all() { cmd_status; echo; cmd_capture_status; }
 
+# The capture store and its archives are pi-owned, so the steps that move and
+# delete files there run as pi: as root, a symlink pi planted in the store could
+# turn an mv or rm -rf into a write or delete anywhere on the system. Root (the
+# housekeeping timer, sudo) re-runs those steps as pi through `capture _store`.
+KESTREL_SELF=$(readlink -f "$0")
+capture_store_as_pi() { run_as_pi "$KESTREL_SELF" capture _store "$@"; }
+
+# Internal: the store steps, run only as pi (see capture_store_as_pi).
+capture_store_cmd() {
+    [ "$(id -un)" = pi ] || die "internal: 'capture _store' runs only as pi"
+    case "${1:-}" in
+        archive) capture_store_archive ;;
+        clear) capture_store_clear "${2:-no}" ;;
+        *) die "internal: unknown 'capture _store' step '${1:-}'" ;;
+    esac
+}
+
+# The configured archive dir, printed only if it is inside the capture store
+# (housekeeping never writes or deletes anywhere else); otherwise says why and
+# fails.
+capture_archive_dir() {
+    local adir
+    adir=$(cfg capture.housekeeping.archive_dir "$PWN_CAPTURE_ARCHIVE_DEFAULT")
+    adir=${adir%/}
+    case "/$adir/" in
+        */../*|*/./*) ;;
+        *) case "$adir" in
+               "$PWN_CAPTURE_DIR"/?*) printf '%s\n' "$adir"; return 0 ;;
+           esac ;;
+    esac
+    log "capture.housekeeping.archive_dir must be inside $PWN_CAPTURE_DIR (it is '$adir'); skipping"
+    return 1
+}
+
 # Move the store's hashlines into a timestamped archive set, leaving a fresh
 # store. Capture, if running, keeps appending (the collector recreates files).
 capture_archive_now() {
-    need_root
+    if [ "$(id -u)" = 0 ]; then
+        capture_store_as_pi archive
+        return
+    fi
+    [ "$(id -un)" = pi ] || die "this needs root; re-run with sudo"
+    capture_store_archive
+}
+
+capture_store_archive() {
     local adir ts dest files
-    adir=$(cfg capture.housekeeping.archive_dir "$PWN_CAPTURE_ARCHIVE_DEFAULT")
+    adir=$(capture_archive_dir) || return 1
     shopt -s nullglob
     files=("$PWN_CAPTURE_DIR"/*.hc22000)
     shopt -u nullglob
@@ -404,7 +446,7 @@ capture_prune_archives() {
     local keep adir sets excess i
     keep=$(cfg capture.housekeeping.keep_archives 0)
     [[ $keep =~ ^[0-9]+$ ]] && [ "$keep" -gt 0 ] || return 0
-    adir=$(cfg capture.housekeeping.archive_dir "$PWN_CAPTURE_ARCHIVE_DEFAULT")
+    adir=$(capture_archive_dir) || return 1
     [ -d "$adir" ] || return 0
     mapfile -t sets < <(find "$adir" -mindepth 1 -maxdepth 1 -type d | sort)
     excess=$(( ${#sets[@]} - keep ))
@@ -425,15 +467,21 @@ capture_clear() {
         esac
     done
     [ "$yes" = yes ] || die "capture clear deletes the live store; re-run with --yes"
+    capture_store_as_pi clear "$purge"
+}
+
+# As pi: delete the live store's hashlines, and with purge=yes the archives too.
+capture_store_clear() {
     shopt -s nullglob
     rm -f "$PWN_CAPTURE_DIR"/*.hc22000
     shopt -u nullglob
     log "cleared the live capture store"
-    if [ "$purge" = yes ]; then
+    if [ "$1" = yes ]; then
         local adir
-        adir=$(cfg capture.housekeeping.archive_dir "$PWN_CAPTURE_ARCHIVE_DEFAULT")
-        [ -n "$adir" ] && [ -d "$adir" ] && rm -rf "${adir:?}"/* && log "purged archives"
+        adir=$(capture_archive_dir) || return 1
+        [ -d "$adir" ] && rm -rf "${adir:?}"/* && log "purged archives"
     fi
+    return 0
 }
 
 capture_over_limit() {
@@ -541,6 +589,7 @@ cmd_capture() {
         rotate) capture_rotate ;;
         clear) capture_clear "$@" ;;
         whitelist) cmd_capture_whitelist "$@" ;;
+        _store) capture_store_cmd "$@" ;;
         *) die "unknown 'capture' subcommand: $sub" ;;
     esac
 }

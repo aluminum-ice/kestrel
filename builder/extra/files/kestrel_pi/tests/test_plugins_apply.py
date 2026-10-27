@@ -1025,3 +1025,67 @@ def test_config_set_capture_change_does_not_restart(env):
     reply = ctl.apply_change(_set_config("capture", "max_run_mb", 256))
     assert reply["ok"] and reply["restart"] is False
     assert "capture" in reply["restart_hint"].lower()
+
+
+# -- what root acts on stays root's to set -----------------------------------
+
+@pytest.mark.parametrize("opt, value", [
+    ("host", "https://forge.example.org"),
+    ("repo", "someone/fork"),
+    ("token", "not-a-real-token"),
+])
+def test_root_only_update_options_refused_from_the_socket(env, opt, value):
+    # Root's `update apply` installs code from where these point, so a pi
+    # process that can reach the socket must not be able to change them.
+    _auth_on(env)
+    before = dict(_config(env)["plugins"]["updates"])
+    reply = ctl.apply_change({"plugin": "updates", "set": {opt: value}})
+    assert reply["ok"] is False and "terminal" in reply["error"]
+    assert _config(env)["plugins"]["updates"] == before
+
+
+def test_root_only_does_not_block_the_plugins_other_options(env):
+    _auth_on(env)
+    reply = ctl.apply_change({"plugin": "updates", "set": {"beta": True}})
+    assert reply["ok"] is True and reply["changed"] == ["beta"]
+    assert _config(env)["plugins"]["updates"]["beta"] is True
+
+
+def test_root_only_options_are_still_settable_from_the_cli(env, capsys):
+    # `sudo kestrel plugins ... --set` goes through cmd_set, not the socket.
+    assert ctl.cmd_set("updates", "host", "https://forge.example.org") == 0
+    assert _config(env)["plugins"]["updates"]["host"] == "https://forge.example.org"
+
+
+@pytest.mark.parametrize("value", [
+    "/", "/etc", "/var/lib/kestrel", "/var/lib/kestrel/capture",
+    "/var/lib/kestrel/capture/../../..", "/var/lib/kestrel/capture/./a",
+    "/var/lib/kestrel/captureX", "var/lib/kestrel/capture/archive", "",
+])
+def test_archive_dir_must_be_inside_the_capture_store(env, value):
+    _auth_on(env)
+    reply = ctl.apply_change(_set_config("capture.housekeeping", "archive_dir", value))
+    assert reply["ok"] is False and "inside" in reply["error"], value
+    assert _config(env)["capture"]["housekeeping"]["archive_dir"] == \
+        "/var/lib/kestrel/capture/archive"
+
+
+def test_archive_dir_inside_the_store_is_accepted(env):
+    _auth_on(env)
+    for value in ("/var/lib/kestrel/capture/archive", "/var/lib/kestrel/capture/old/sets"):
+        assert ctl.apply_change(_set_config("capture.housekeeping", "archive_dir", value))["ok"]
+
+
+@pytest.mark.parametrize("value", [
+    "../../etc/passwd", "/etc/passwd", "sub/all.hc22000", "..", ".hidden", "",
+])
+def test_single_file_must_be_a_plain_file_name(env, value):
+    _auth_on(env)
+    reply = ctl.apply_change(_set_config("capture.output", "single_file", value))
+    assert reply["ok"] is False and "file name" in reply["error"], value
+
+
+def test_single_file_plain_name_is_accepted(env):
+    _auth_on(env)
+    assert ctl.apply_change(_set_config("capture.output", "single_file", "all-2.hc22000"))["ok"]
+    assert _config(env)["capture"]["output"]["single_file"] == "all-2.hc22000"
