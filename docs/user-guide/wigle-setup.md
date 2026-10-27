@@ -52,7 +52,10 @@ sudo kestrel plugins enable wigle \
 
 Optional `--set` keys: `geolocate` (default `false`),
 `geolocate_max_lookups` (default `5`), `retry_seconds` (default `300`),
-`timeout` (default `30`), `endpoint` (default `https://api.wigle.net`).
+`timeout` (default `30`), `endpoint` (default `https://api.wigle.net`). The
+`endpoint` must be an `https://` URL: your API name and token are never sent in
+clear text, and never sent on to wherever a redirect points (the card shows the
+redirect as an error instead).
 
 ## Modes: what it will and won't upload
 

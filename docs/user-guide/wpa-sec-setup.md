@@ -26,7 +26,8 @@ cracked results.
   passwords recovered under your key — **every** network cracked under that key,
   from any device, not just this one — at startup, on each reconnect, and about
   hourly. They are saved on-device at
-  `/var/lib/kestrel/capture/cracked/wpa-sec.potfile`. Recovered passwords
+  `/var/lib/kestrel/capture/cracked/wpa-sec.potfile`, readable by the `pi`
+  account only (the folder is `0700`, the file `0600`). Recovered passwords
   are sensitive and stay on the device; set `download_results = false` to upload
   only.
 
@@ -47,7 +48,9 @@ sudo kestrel plugins enable wpa-sec --set api_key='YOUR_WPA_SEC_KEY'
 
 Optional `--set` keys: `endpoint` (default `https://wpa-sec.stanev.org`),
 `download_results` (default `true`), `results_interval_seconds` (default `3600`),
-`timeout` (default `30`).
+`timeout` (default `30`). The `endpoint` must be an `https://` URL: your key
+is never sent in clear text, and never sent on to wherever a redirect points
+(a redirect is reported as an error instead).
 
 ## The dashboard card
 

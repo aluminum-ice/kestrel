@@ -19,6 +19,22 @@ from kestrel_pi.loader import Loader
 from kestrel_pi.plugins import CAPABILITIES
 from kestrel_pi.ui import StubUI, UIState
 
+
+class _Streamable:
+    """What the uploader plugins read from a response (kestrel_pi.httpsafe):
+    headers and a streamed body, built here from a fake's json()."""
+
+    headers = {}
+
+    def iter_content(self, chunk_size=1):
+        data = json.dumps(self.json()).encode()
+        for start in range(0, len(data), chunk_size):
+            yield data[start:start + chunk_size]
+
+    def close(self):
+        pass
+
+
 LOG = logging.getLogger("test.reference")
 PLUGIN_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..", "plugins")
@@ -296,7 +312,7 @@ def test_wigle_upload_honors_response_success(tmp_path, monkeypatch):
                                               essid="a"))
     assert len(plugin._observations) == 1
 
-    class _Resp:
+    class _Resp(_Streamable):
         def __init__(self, code, body):
             self.status_code = code
             self._body = body
@@ -329,7 +345,7 @@ def test_wigle_401_latches_and_stops_retrying(tmp_path, monkeypatch):
     plugin.on_handshake(types.SimpleNamespace(bssid="AA:BB:CC:DD:EE:91", essid="x"))
     assert len(plugin._observations) == 1
 
-    class _Resp:
+    class _Resp(_Streamable):
         status_code = 401
 
         def json(self):
@@ -366,7 +382,7 @@ def test_wigle_429_backs_off_and_keeps_queue(tmp_path, monkeypatch):
     assert len(plugin._observations) == 1
     plugin.context.connectivity.online = True
 
-    class _Resp:
+    class _Resp(_Streamable):
         def __init__(self, code, body=None, headers=None):
             self.status_code = code
             self._body = body or {}
@@ -433,7 +449,7 @@ def test_wigle_persists_queue_across_reload_and_clears_on_upload(tmp_path, monke
     p2.on_handshake(types.SimpleNamespace(bssid="AA:BB:CC:DD:EE:01", essid="x"))
     assert len(p2._observations) == 1                 # not re-queued
 
-    class _Resp:
+    class _Resp(_Streamable):
         status_code = 200
 
         def json(self):
@@ -458,7 +474,7 @@ def test_wigle_worker_retries_a_queued_upload(tmp_path, monkeypatch):
     plugin.on_handshake(types.SimpleNamespace(bssid="AA:BB:CC:DD:EE:A3", essid="x"))
     assert len(plugin._observations) == 1
 
-    class _Resp:
+    class _Resp(_Streamable):
         status_code = 200
 
         def json(self):
@@ -480,7 +496,7 @@ def test_wigle_worker_throttles_retries(tmp_path, monkeypatch):
     plugin = _make_wigle(tmp_path, position=fix, online=False)
     plugin.on_handshake(types.SimpleNamespace(bssid="AA:BB:CC:DD:EE:A4", essid="x"))
 
-    class _Resp:
+    class _Resp(_Streamable):
         status_code = 200
 
         def json(self):
@@ -529,7 +545,7 @@ def test_wigle_card_shows_upload_status_and_offline(tmp_path, monkeypatch):
     # A rejection must be visible on the card (not a silent, growing queue).
     plugin = _make_wigle(tmp_path, position=fix, online=True)
 
-    class _Rejected:
+    class _Rejected(_Streamable):
         status_code = 200
 
         def json(self):
@@ -1034,7 +1050,7 @@ def test_wigle_readout_counts_uploads_queue_and_networks(tmp_path, monkeypatch):
     assert card["uploaded"]["value"] == "0"
     assert card["mode"]["value"] == "gps" and card["mode"]["kind"] == "text"
 
-    class _Resp:
+    class _Resp(_Streamable):
         status_code = 200
 
         def json(self):
@@ -2343,3 +2359,103 @@ def test_ssh_never_trusts_an_unseen_host_key():
         assert "StrictHostKeyChecking=accept-new" not in text, relpath
         assert "StrictHostKeyChecking=no" not in text, relpath
         assert "StrictHostKeyChecking=yes" in text, relpath
+
+
+# -- uploaders: https only, no redirects, capped reads, private potfile ------
+
+class _Http(_Streamable):
+    def __init__(self, status=200, payload=None, raw=None, headers=None):
+        self.status_code = status
+        self._payload = payload if payload is not None else {}
+        self._raw = raw
+        self.headers = headers or {}
+
+    def json(self):
+        return self._payload
+
+    def iter_content(self, chunk_size=1):
+        if self._raw is None:
+            yield from super().iter_content(chunk_size)
+            return
+        for start in range(0, len(self._raw), chunk_size):
+            yield self._raw[start:start + chunk_size]
+
+
+def _record_calls(monkeypatch, method, response):
+    import requests
+
+    calls = []
+
+    def fake(*args, **kwargs):
+        calls.append(kwargs)
+        return response
+
+    monkeypatch.setattr(requests, method, fake)
+    return calls
+
+
+def test_wpa_sec_refuses_a_plain_http_endpoint(tmp_path, monkeypatch):
+    plugin = _make_wpa_sec(tmp_path)
+    plugin.options["endpoint"] = "http://wpa-sec.example"
+    calls = _record_calls(monkeypatch, "post", _Http())
+    assert plugin._upload(b"cap") is False
+    assert calls == []        # the key never left the device
+
+
+def test_wpa_sec_sends_the_key_without_following_redirects(tmp_path, monkeypatch):
+    plugin = _make_wpa_sec(tmp_path)
+    calls = _record_calls(monkeypatch, "post", _Http(
+        302, headers={"Location": "https://elsewhere.example/"}))
+    assert plugin._upload(b"cap") is False
+    assert calls and calls[0]["allow_redirects"] is False and calls[0]["stream"] is True
+
+
+def test_wpa_sec_download_writes_a_private_potfile(tmp_path, monkeypatch):
+    plugin = _make_wpa_sec(tmp_path)
+    _record_calls(monkeypatch, "get", _Http(
+        raw=b"001122334455:66778899aabb:Home:placeholder-pass\n"))
+    plugin._download_results()
+    potfile = plugin._potfile_path()
+    assert open(potfile).read().startswith("001122334455:")
+    assert os.stat(potfile).st_mode & 0o777 == 0o600
+    assert os.stat(os.path.dirname(potfile)).st_mode & 0o777 == 0o700
+
+
+def test_wpa_sec_download_tightens_an_existing_potfile(tmp_path, monkeypatch):
+    plugin = _make_wpa_sec(tmp_path)
+    potfile = plugin._potfile_path()
+    os.makedirs(os.path.dirname(potfile), mode=0o755)
+    with open(potfile + ".tmp", "w") as handle:      # a leftover, world-readable
+        handle.write("old\n")
+    os.chmod(potfile + ".tmp", 0o644)
+    _record_calls(monkeypatch, "get", _Http(raw=b"a:b:c:d\n"))
+    plugin._download_results()
+    assert os.stat(potfile).st_mode & 0o777 == 0o600
+    assert os.stat(os.path.dirname(potfile)).st_mode & 0o777 == 0o700
+
+
+def test_wpa_sec_download_refuses_an_oversized_body(tmp_path, monkeypatch):
+    plugin = _make_wpa_sec(tmp_path)
+    _record_calls(monkeypatch, "get", _Http(raw=b"", headers={"Content-Length": str(10 ** 9)}))
+    plugin._download_results()
+    assert not os.path.exists(plugin._potfile_path())
+
+
+def test_wigle_refuses_a_plain_http_endpoint(tmp_path, monkeypatch):
+    plugin = _make_wigle(tmp_path, position={"lat": 12.3, "lon": -45.6, "alt": None})
+    plugin.options["endpoint"] = "http://wigle.example"
+    plugin.on_handshake(types.SimpleNamespace(bssid="AA:BB:CC:DD:EE:A6", essid="x"))
+    calls = _record_calls(monkeypatch, "post", _Http(payload={"success": True}))
+    plugin._upload()
+    assert calls == [] and len(plugin._observations) == 1
+    assert "https://" in plugin._last_status
+
+
+def test_wigle_does_not_follow_a_redirect_with_credentials(tmp_path, monkeypatch):
+    plugin = _make_wigle(tmp_path, position={"lat": 12.3, "lon": -45.6, "alt": None})
+    plugin.on_handshake(types.SimpleNamespace(bssid="AA:BB:CC:DD:EE:A6", essid="x"))
+    calls = _record_calls(monkeypatch, "post", _Http(
+        307, headers={"Location": "https://elsewhere.example/upload"}))
+    plugin._upload()
+    assert calls[0]["allow_redirects"] is False
+    assert len(plugin._observations) == 1 and "redirect" in plugin._last_status

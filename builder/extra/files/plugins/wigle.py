@@ -41,7 +41,7 @@ import os
 import threading
 import time
 
-from kestrel_pi import Plugin
+from kestrel_pi import Plugin, httpsafe
 
 
 class Wigle(Plugin):
@@ -315,15 +315,20 @@ class Wigle(Plugin):
         self._last_attempt = time.monotonic()
         import requests
 
-        endpoint = self.options.get("endpoint") or "https://api.wigle.net"
         try:
+            # https only, no redirects, and a capped read (kestrel_pi.httpsafe):
+            # the api_name/api_token pair goes with every request.
+            endpoint = httpsafe.https_endpoint(self.options.get("endpoint"),
+                                               "https://api.wigle.net")
             resp = requests.post(
                 endpoint + "/api/v2/file/upload",
                 auth=(self.options.get("api_name") or "",
                       self.options.get("api_token") or ""),
                 files={"file": ("observations.csv", _to_wigle_csv(batch))},
                 timeout=int(self.options.get("timeout", 30)),
+                allow_redirects=False, stream=True,
             )
+            httpsafe.check_response(resp)
             if resp.status_code >= 400:
                 if resp.status_code == 401:
                     # Authentication, not a transient error: latch so the retry
@@ -354,7 +359,7 @@ class Wigle(Plugin):
             # body, not the status code (the wpa-sec lesson). Stay queued on a
             # rejection so a fix/retry can still land.
             try:
-                payload = resp.json()
+                payload = httpsafe.read_json(resp)
             except ValueError:
                 payload = {}
             if payload.get("success") is False:
@@ -389,19 +394,22 @@ class Wigle(Plugin):
             return
         import requests
 
-        endpoint = self.options.get("endpoint") or "https://api.wigle.net"
         try:
+            endpoint = httpsafe.https_endpoint(self.options.get("endpoint"),
+                                               "https://api.wigle.net")
             resp = requests.get(
                 endpoint + "/api/v2/network/search",
                 params={"netid": bssid},
                 auth=(self.options.get("api_name") or "",
                       self.options.get("api_token") or ""),
                 timeout=int(self.options.get("timeout", 30)),
+                allow_redirects=False, stream=True,
             )
+            httpsafe.check_response(resp)
             if resp.status_code >= 400:
                 self.log.debug("wigle search HTTP %s", resp.status_code)
                 return
-            payload = resp.json()
+            payload = httpsafe.read_json(resp)
             if payload.get("success") is False:
                 # e.g. over the daily query quota, or a bad token: do not cache
                 # (so a later lookup can retry), and do not treat as a result.

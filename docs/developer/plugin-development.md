@@ -274,6 +274,14 @@ Two things to understand:
    other capabilities are informational (surfaced on the status page); `network`
    is the one that gates the enable.
 
+   A plugin that sends a **credential** (an API key, a token, a login) uses
+   `kestrel_pi.httpsafe`, as `wpa-sec` and `wigle` do: `https_endpoint()` refuses
+   anything but `https://`, requests go with `allow_redirects=False` and
+   `stream=True` (`requests` re-sends a `cookies=` value to wherever a redirect
+   points), then `check_response()` refuses a redirect and `read_capped()` /
+   `read_json()` read the body with a size cap, because a broken or hostile server
+   could otherwise exhaust the daemon's memory, which every plugin shares.
+
 ```python
 def _upload(self, data):
     if not self.context.require_capability("network"):
