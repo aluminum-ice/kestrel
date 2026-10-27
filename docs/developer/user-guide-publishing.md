@@ -63,65 +63,16 @@ Ghost page should be edited by hand: the next publish overwrites it, and
 
 ## Running it
 
-It runs on a desktop, not in CI, and needs nothing from the device. Set it up
-once (Linux shown):
+It runs on a desktop, not in CI, and needs nothing from the device. The
+step-by-step runbook (setup, the Admin API key file, what to run in each
+terminal, the first publish, the routine after a stable release, and
+troubleshooting) is [`tools/ghost-guide/README.md`](../../tools/ghost-guide/README.md);
+keep operational steps there, not here.
 
-```bash
-python3 -m venv ~/.venvs/kestrel-guide
-~/.venvs/kestrel-guide/bin/pip install -r tools/ghost-guide/requirements.txt
-~/.venvs/kestrel-guide/bin/playwright install webkit
-sudo ~/.venvs/kestrel-guide/bin/playwright install-deps webkit   # Linux system libraries
-```
-
-`--browser chromium` (after `playwright install chromium`) works where WebKit
-can't run, but it is not Safari's engine, so publish with WebKit.
-
-Publishing needs a Ghost **Admin API key** from a dedicated Custom Integration
-(Ghost Admin, Settings, Integrations, *Add custom integration*, for example
-"Kestrel guide publisher"), so it can be revoked on its own. The key has full
-admin rights: keep it in your environment only, never in the repo. For example,
-in a `chmod 600` file outside the repo:
-
-```bash
-# ~/.config/kestrel-ghost.env
-GHOST_URL=https://www.3ntropy.io
-GHOST_ADMIN_API_KEY=<id>:<secret>
-```
-
-```bash
-set -a; . ~/.config/kestrel-ghost.env; set +a
-```
-
-The commands (each fetches release tags first; `--no-fetch` skips that):
-
-```bash
-PY=~/.venvs/kestrel-guide/bin/python
-$PY tools/ghost-guide/ghost_guide.py status            # live page's release vs the latest stable
-$PY tools/ghost-guide/ghost_guide.py diff              # text/figure changes publishing would make
-$PY tools/ghost-guide/ghost_guide.py build             # page + screenshots into tools/ghost-guide/out/<tag>/
-$PY tools/ghost-guide/ghost_guide.py push --preview    # publish to a draft "<slug>-preview" page
-$PY tools/ghost-guide/ghost_guide.py push              # publish the live page
-```
-
-`--tag X.Y.Z` targets a specific stable release instead of the latest; a beta
-tag is refused, as is a tag without a published, non-draft, non-pre-release
-release. `build` and `diff --shots` write `out/<tag>/preview.html` (a rough
-local preview, not the Ghost theme) and the screenshots; `out/` is git-ignored.
-
-### After a stable release
-
-1. `status` — confirm the page is behind the new release.
-2. `diff` — read the changes; they should be exactly the release's `GUIDE_MD`
-   changes. Open `out/<tag>/preview.html` and the screenshots in
-   `out/<tag>/shots/`.
-3. `push`.
-
-### The first publish
-
-The page predates the marker, so `push` refuses until you adopt it once. Run
-`push --preview` and check the draft preview in Ghost (layout, the notice
-callout, the tables, the contents links), then `push --force`. After that,
-plain `push` is enough.
+The key belongs to a dedicated Ghost Custom Integration so it can be revoked on
+its own. It has full admin rights, so it lives only in an env file outside the
+repo (`~/.config/kestrel-ghost.env`, mode 600) and in the shell that runs
+`push`; the tool never prints it.
 
 ### Adding or moving a screenshot
 
