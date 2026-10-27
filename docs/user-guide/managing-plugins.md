@@ -5,9 +5,9 @@ and serves the device web dashboard. The daemon ships **enabled** but does
 nothing on its own — it just runs its event loop and the status page until you
 enable a plugin. Every bundled plugin ships **disabled**.
 
-The reference plugins are: `memtemp`, `session-stats`, `gps`, `wpa-sec`, `wigle`,
-`backup`, and `ups-hat`. Each has its own setup guide where it needs one (see the
-[index](user-guides.md)).
+The ten reference plugins are: `memtemp`, `session-stats`, `gps`, `wpa-sec`,
+`wigle`, `backup`, `ups-hat`, `eink`, `updates`, and `remote-train`. Each has its
+own setup guide where it needs one (see the [index](user-guides.md)).
 
 ## From the web dashboard (easiest)
 
@@ -49,12 +49,12 @@ restart for the common cases.
 
 ### The authorized-use acknowledgment
 
-A plugin that sends data off the device — anything with the `network` capability,
-like `wpa-sec`, `wigle`, and `backup` — requires the same explicit authorized-use
-acknowledgment as capture before it turns on. In a terminal you'll be prompted;
-for scripts, add `--yes` to acknowledge non-interactively. Local-only plugins
-(`memtemp`, `session-stats`, `ups-hat`, and `gps` reading a local receiver) don't
-need it.
+A plugin that sends data off the device — anything with the `network` capability
+(`wpa-sec`, `wigle`, `backup`, `updates`, and `remote-train`) — requires the same
+explicit authorized-use acknowledgment as capture before it turns on. In a
+terminal you'll be prompted; for scripts, add `--yes` to acknowledge
+non-interactively. Local-only plugins (`memtemp`, `session-stats`, `ups-hat`,
+`eink`, and `gps` reading a local receiver) don't need it.
 
 ## Disabling a plugin
 

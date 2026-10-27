@@ -1,7 +1,7 @@
-"""Load the nine shipped reference plugins through the real loader, proving they
-import, declare valid metadata, and satisfy provides/requires - the framework
-half of Gate 3's "all plugins load and report as loaded" check (the hardware
-half is on-device)."""
+"""Load the shipped reference plugins (all but eink, which test_eink.py covers)
+through the real loader, proving they import, declare valid metadata, and
+satisfy provides/requires - the framework half of Gate 3's "all plugins load
+and report as loaded" check (the hardware half is on-device)."""
 
 import importlib.util
 import json
