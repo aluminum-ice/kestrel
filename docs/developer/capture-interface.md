@@ -1,6 +1,6 @@
 # Capture interface contract
 
-`contract_version: 3`
+`contract_version: 4`
 
 This is the stable surface the capture service exposes for the plugin system and
 the reinforcement-learning agent. It is the promise about what stays put, so
@@ -21,6 +21,14 @@ empty or wrong. v3 derives a single `radios_recent` count from the `packets`
 table, anchored to the DB's own newest packet, and adds `data_ts` so a consumer
 can judge the data's freshness. `aps_recent`/`clients_recent` are gone; a v2
 consumer that read them must move to `radios_recent`.
+
+Version 4 adds the best-effort per-AP seen index (`capture-seen.json`, under
+[Status](#status)): the collector records when each BSSID last produced a new
+hashline, so the networks page can sort by most-recently-captured. It is
+additive — a consumer that reads only the hashline store is unaffected — and
+best-effort: it is maintained going forward (handshakes already in the store
+when v4 shipped are not back-stamped), so a missing entry means "unknown", not
+"never seen".
 
 This file is the normative reference.
 
@@ -105,6 +113,24 @@ This file is the normative reference.
   - Enabled and tuned by `[capture.environment]` (`enabled`, `window_s`,
     `max_age_s`, `thresholds`); the density labels (Quiet/Light/Moderate/Busy/
     Dense) are the consumer's, from `thresholds`, not part of the file.
+- **Per-AP seen index** (`capture-seen.json`, added in v4): a small file the
+  collector writes into the store recording, per BSSID, when that AP last (and
+  first) produced a **new** unique hashline — so a consumer can sort/show
+  captured APs by recency without a timestamp in the hashline itself. Shape:
+
+  ```json
+  {"version": 1,
+   "aps": {"AA:BB:CC:DD:EE:FF": {"first": 1730000000, "last": 1730000500}}}
+  ```
+
+  - Keyed by BSSID as `AA:BB:CC:DD:EE:FF`; `last`/`first` are epoch seconds.
+  - `last` is the time a **new, de-duplicated** hashline for that AP was drained,
+    i.e. "last new handshake captured", **not** a live sighting — an AP re-seen
+    producing an identical hashline does not advance it.
+  - Best-effort and **going-forward**: only handshakes drained after v4 shipped
+    are stamped, so a BSSID absent here is "unknown" (a consumer falls back to
+    the store file's mtime, then to nothing), never "never captured".
+  - Maintained only while the collector runs; granularity is one poll (~10 s).
 
 ## Control
 

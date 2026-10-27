@@ -1593,6 +1593,39 @@ def test_dashboard_navcard_shows_network_and_ap_counts(monkeypatch, tmp_path):
     assert "12 network(s)" in html and "19 AP(s)" in html
 
 
+def test_networks_has_last_seen_column_and_sort_toggle(monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"},
+                        networks=_nets("HomeWiFi"))
+    body = client.get("/networks").get_data(as_text=True)
+    assert "<th>last seen</th>" in body
+    assert "Sort:" in body and "Recently captured" in body
+    # No timestamp on the fake row -> "never".
+    assert "never" in body
+
+
+def test_networks_sort_recent_orders_by_last_seen(monkeypatch, tmp_path):
+    # Names chosen so alphabetical and recency disagree.
+    rows = [{"essid": "Alpha", "bssids": 1, "handshakes": 1, "last_seen": 100},
+            {"essid": "Zeta", "bssids": 1, "handshakes": 1, "last_seen": 9_000}]
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"}, networks=rows)
+    by_name = client.get("/networks").get_data(as_text=True)
+    assert by_name.index("Alpha") < by_name.index("Zeta")        # default: name
+    by_recent = client.get("/networks?sort=recent").get_data(as_text=True)
+    assert by_recent.index("Zeta") < by_recent.index("Alpha")    # newest first
+    # The active sort tab is marked, and links keep the sort.
+    assert 'class="on"' in by_recent and "sort=recent" in by_recent
+
+
+def test_networks_sort_carries_through_search_and_view(monkeypatch, tmp_path):
+    rows = [{"essid": "Alpha", "bssids": 1, "handshakes": 1, "last_seen": 1}]
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"}, networks=rows,
+                        access_points=_aps(("Alpha", "AA:BB:CC:00:00:01")))
+    body = client.get("/networks?sort=recent").get_data(as_text=True)
+    # The search form and the view toggle both preserve sort=recent.
+    assert '<input type="hidden" name="sort" value="recent">' in body
+    assert "sort=recent" in body and "view=ap" in body
+
+
 # -- release-update card + /update route (updates plugin) --------------------
 def _update_client(monkeypatch, tmp_path, web_cfg=None, state=None,
                    enabled=True, replies=None):

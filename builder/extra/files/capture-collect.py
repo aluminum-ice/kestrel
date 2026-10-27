@@ -33,6 +33,11 @@ POLL_SECONDS = int(os.environ.get("PWN_CAPTURE_POLL", "10"))
 # the hashlines (contract_version 3, docs/developer/capture-interface.md). It is
 # NOT an .hc22000 file, so the store's hashline readers never pick it up.
 STATUS_NAME = "capture-status.json"
+# The per-AP last/first-seen index this maintains next to the hashlines
+# (contract_version 4). Keyed by BSSID (AA:BB:CC:DD:EE:FF); "last" is when a NEW
+# unique hashline for that AP was most recently drained into the store (not a
+# live sighting). It is NOT an .hc22000 file, so the hashline readers skip it.
+SEEN_NAME = "capture-seen.json"
 # Distinct transmitting radios seen in the most recent ENV_WINDOW_DEFAULT seconds
 # OF CAPTURE DATA (anchored to the newest packet, not wall-clock) is the density
 # signal. AngryOxide flushes the kismet DB in bursts, so a window of a few
@@ -276,6 +281,60 @@ def read_status():
         return None
 
 
+def _format_mac(hex12):
+    """The AP MAC as AA:BB:CC:DD:EE:FF, or "" if not 12 hex digits. Mirrors
+    ``kestrel_pi.capture._format_mac`` so capture-seen.json keys match the BSSID
+    the readers join on; the collector is a standalone script that does not
+    import the package."""
+    hex12 = hex12.strip().lower()
+    if len(hex12) != 12 or not all(c in "0123456789abcdef" for c in hex12):
+        return ""
+    return ":".join(hex12[i:i + 2] for i in range(0, 12, 2)).upper()
+
+
+def line_bssid(line):
+    """The AP BSSID (formatted) from one hc22000 line, or "" if unparseable."""
+    fields = line.split("*")
+    return _format_mac(fields[3]) if len(fields) >= 4 else ""
+
+
+def read_seen_times():
+    """Load ``{bssid: {"first", "last"}}`` from capture-seen.json (carried across
+    collector restarts), or ``{}`` if absent/unreadable."""
+    try:
+        with open(os.path.join(STORE_DIR, SEEN_NAME), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    aps = data.get("aps") if isinstance(data, dict) else None
+    return aps if isinstance(aps, dict) else {}
+
+
+def write_seen_times(aps):
+    """Atomically write the per-AP first/last-seen index into the store."""
+    dest = os.path.join(STORE_DIR, SEEN_NAME)
+    tmp = dest + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as out:
+            json.dump({"version": 1, "aps": aps}, out)
+        os.replace(tmp, dest)
+    except OSError as exc:
+        sys.stderr.write("capture-collect: %s: %s\n" % (dest, exc))
+
+
+def stamp_seen(seen_times, bssids, now):
+    """Record ``now`` as each BSSID's last-seen (and first-seen the first time).
+    Mutates and returns ``seen_times``."""
+    for bssid in bssids:
+        rec = seen_times.get(bssid)
+        if rec is None:
+            seen_times[bssid] = {"first": now, "last": now}
+        else:
+            rec["last"] = now
+            rec.setdefault("first", now)
+    return seen_times
+
+
 def update_environment(window_s):
     """Refresh the in-range readout once. Writes ``radios_recent`` and
     ``data_ts`` (the newest-packet epoch, so the reader can judge freshness)
@@ -312,6 +371,7 @@ def main():
     mode, single = output_config()
     env_enabled, env_window = environment_config()
     seen = {}  # target filename -> set of lines already in the store
+    seen_times = read_seen_times()  # bssid -> {first,last}, carried across restarts
 
     while True:
         if env_enabled:
@@ -320,6 +380,7 @@ def main():
             sources = [n for n in os.listdir(RUN_DIR) if n.endswith(".hc22000")]
         except FileNotFoundError:
             sources = []
+        stamp = set()  # BSSIDs that got a NEW hashline this poll
         for name in sources:
             try:
                 with open(
@@ -343,6 +404,9 @@ def main():
                     continue
                 seen[target].add(line)
                 pending.setdefault(target, []).append(line)
+                bssid = line_bssid(line)
+                if bssid:
+                    stamp.add(bssid)
             for target, new_lines in pending.items():
                 dest = os.path.join(STORE_DIR, target)
                 try:
@@ -350,6 +414,12 @@ def main():
                         out.write("\n".join(new_lines) + "\n")
                 except OSError as exc:
                     sys.stderr.write("capture-collect: %s: %s\n" % (dest, exc))
+        # Record the last (and first) time each AP produced a new hashline, so
+        # the networks page can sort by most-recently-captured. Written once per
+        # poll, only when something new arrived.
+        if stamp:
+            stamp_seen(seen_times, stamp, int(time.time()))
+            write_seen_times(seen_times)
         time.sleep(POLL_SECONDS)
 
 

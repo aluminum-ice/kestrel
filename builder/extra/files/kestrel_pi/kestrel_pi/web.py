@@ -574,9 +574,10 @@ def create_app(daemon):
             data = daemon.capture.captured_access_points()
         else:
             data = daemon.capture.captured_networks()
+        sort = "recent" if request.args.get("sort") == "recent" else "name"
         return html(_render_networks(
             data, control(), query=request.args.get("q", ""),
-            page=request.args.get("page", 1), view=view))
+            page=request.args.get("page", 1), view=view, sort=sort))
 
     @app.get("/agent")
     def agent_page():  # noqa: ANN202
@@ -1251,6 +1252,8 @@ _STATUS_CSS = (
     ".viewtabs a{padding:.4em .9em;border:1px solid var(--border);border-radius:8px;"
     "text-decoration:none;color:var(--link);background:var(--card);font-size:.9rem;}"
     ".viewtabs a.on{font-weight:700;box-shadow:inset 0 -2px 0 var(--link);}"
+    ".sorttabs{margin:.2em 0 .6em;}"
+    ".viewtabs .tablabel{align-self:center;color:var(--muted);font-size:.85rem;}"
     ".search,.wladd{display:flex;gap:.5em;margin:.3em 0 .8em;}"
     ".search input[type=text],.wladd input[type=text]{flex:1 1 auto;max-width:none;}"
     ".search button,.wladd button{margin:0;}"
@@ -2533,8 +2536,29 @@ def _mac_norm(value):
     return "".join(ch for ch in (value or "").lower() if ch in "0123456789abcdef")
 
 
+def _ago(epoch, now=None):
+    """A short relative time for an epoch — "just now" / "3m ago" / "2h ago" /
+    "5d ago", a plain date past two weeks, and "never" for missing/0. Used for
+    the networks page's "last seen" column."""
+    if not epoch:
+        return "never"
+    now = time.time() if now is None else now
+    delta = int(now - epoch)
+    if delta < 0:
+        delta = 0
+    if delta < 45:
+        return "just now"
+    if delta < 3600:
+        return "%dm ago" % (delta // 60)
+    if delta < 86400:
+        return "%dh ago" % (delta // 3600)
+    if delta < 86400 * 14:
+        return "%dd ago" % (delta // 86400)
+    return time.strftime("%Y-%m-%d", time.localtime(epoch))
+
+
 def _render_networks(rows_in, control=None, query="", page=1,
-                     per_page=NETWORKS_PER_PAGE, view="ssid"):
+                     per_page=NETWORKS_PER_PAGE, view="ssid", sort="name"):
     """The captured-networks page, in one of two views over the same store:
 
     - ``view="ssid"`` (by network): one row per ESSID, with its distinct-BSSID
@@ -2567,6 +2591,12 @@ def _render_networks(rows_in, control=None, query="", page=1,
         shown = rows_in
     matched = len(shown)
 
+    # Default order is by name (as the readers return it); "recent" re-sorts by
+    # last-captured, newest first, with never-stamped rows last.
+    if sort == "recent":
+        shown = sorted(shown, key=lambda r: (r.get("last_seen") or 0),
+                       reverse=True)
+
     per_page = max(1, int(per_page))
     pages = max(1, (matched + per_page - 1) // per_page)
     try:
@@ -2582,6 +2612,8 @@ def _render_networks(rows_in, control=None, query="", page=1,
     for r in window:
         essid = r.get("essid") or ""
         name = _esc(essid) if essid else '<span class="smeta">(hidden)</span>'
+        seen_cell = ('<td data-label="last seen"><span class="smeta">'
+                     + _esc(_ago(r.get("last_seen"))) + "</span></td>")
         if ap_view:
             bssid = r.get("bssid") or ""
             cell = (_esc(bssid) if bssid
@@ -2590,16 +2622,16 @@ def _render_networks(rows_in, control=None, query="", page=1,
                 "<tr><td data-label=\"network\">" + name + "</td>"
                 "<td data-label=\"bssid\">" + cell + "</td>"
                 "<td data-label=\"handshakes\">" + _esc(r.get("handshakes", 0))
-                + "</td></tr>"
+                + "</td>" + seen_cell + "</tr>"
             )
         else:
             rows.append(
                 "<tr><td data-label=\"network\">" + name + "</td>"
                 "<td data-label=\"bssids\">" + _esc(r.get("bssids", 0)) + "</td>"
                 "<td data-label=\"handshakes\">" + _esc(r.get("handshakes", 0))
-                + "</td></tr>"
+                + "</td>" + seen_cell + "</tr>"
             )
-    cols = 3
+    cols = 4
     body_rows = "".join(rows) or (
         "<tr><td colspan='" + str(cols) + "'>"
         + (("no %ss match that search" % noun) if needle
@@ -2616,6 +2648,9 @@ def _render_networks(rows_in, control=None, query="", page=1,
         if q:
             params["q"] = q
         params["view"] = over.get("view", view)
+        s = over.get("sort", sort)
+        if s and s != "name":
+            params["sort"] = s
         p = over.get("page", 1)
         if p != 1:
             params["page"] = p
@@ -2643,12 +2678,25 @@ def _render_networks(rows_in, control=None, query="", page=1,
     tabs = ('<div class="viewtabs">' + tab("By network", "ssid")
             + tab("By access point", "ap") + "</div>")
 
+    # Sort toggle: name (default) or most-recently-captured. Resets to page 1,
+    # keeps the view and search term.
+    def sorttab(label, target):
+        return ('<a' + (' class="on"' if target == sort else "")
+                + ' href="' + _esc(link(sort=target, page=1)) + '">'
+                + label + "</a>")
+
+    sorttabs = ('<div class="viewtabs sorttabs"><span class="tablabel">Sort:'
+                "</span>" + sorttab("Name", "name")
+                + sorttab("Recently captured", "recent") + "</div>")
+
     # Carry the current view through a search submit (always, so a search on the
     # non-default view keeps that view instead of reverting to the mode-default).
     hidden_fields = (
         ('<input type="hidden" name="token" value="' + _esc(token) + '">'
          if token else "")
         + '<input type="hidden" name="view" value="' + view + '">'
+        + ('<input type="hidden" name="sort" value="' + sort + '">'
+           if sort != "name" else "")
     )
     placeholder = "Search name or BSSID" if ap_view else "Search AP name"
     search = (
@@ -2673,15 +2721,17 @@ def _render_networks(rows_in, control=None, query="", page=1,
 
     if ap_view:
         heading = "Captured access points"
-        head_cells = "<th>network</th><th>BSSID</th><th>handshakes</th>"
+        head_cells = ("<th>network</th><th>BSSID</th><th>handshakes</th>"
+                      "<th>last seen</th>")
     else:
         heading = "Captured networks"
-        head_cells = "<th>network</th><th>bssids</th><th>handshakes</th>"
+        head_cells = ("<th>network</th><th>bssids</th><th>handshakes</th>"
+                      "<th>last seen</th>")
 
     back = '<p><a href="' + _esc(_url("/", control)) + '">&larr; Dashboard</a></p>'
     return _page(
         "captured " + noun + "s - Kestrel",
-        back + "<h1>" + heading + "</h1>" + tabs + search
+        back + "<h1>" + heading + "</h1>" + tabs + sorttabs + search
         + '<p class="count">' + count + "</p>"
         + "<div class='wrap'><table><thead><tr>" + head_cells
         + "</tr></thead><tbody>" + body_rows
