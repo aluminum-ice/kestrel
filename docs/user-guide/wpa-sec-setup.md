@@ -42,7 +42,14 @@ authorized-use prompt, and save.
 The same from the terminal:
 
 ```bash
-sudo kestrel plugins enable wpa-sec --set api_key='YOUR_WPA_SEC_KEY'
+sudo kestrel plugins enable wpa-sec     # asks for the key, input hidden
+```
+
+From a script, pass the key on stdin; `--set api_key=...` would put it in your
+shell history and the system journal (sudo logs every command line):
+
+```bash
+read -rs KEY; printf '%s\n' "$KEY" | sudo kestrel plugins enable wpa-sec --set-stdin api_key
 ```
 
 Optional `--set` keys: `endpoint` (default `https://wpa-sec.stanev.org`),

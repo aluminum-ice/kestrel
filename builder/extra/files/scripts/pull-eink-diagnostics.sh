@@ -145,7 +145,9 @@ REMOTE
 # A small manifest naming what was collected and from where.
 {
   echo "collected: $stamp"
-  echo "target:    $target (port $port)"
+  # The device's address or name stays out of a bundle meant for sharing.
+  case "$target" in *@*) shown="${target%%@*}@<host>" ;; *) shown="<host>" ;; esac
+  echo "target:    $shown (port $port)"
   echo "contents:"
   echo "  eink-report.txt   one labelled read-only report: version, board, eink"
   echo "                    plugin state, [plugins.eink] config, SPI nodes/module/"

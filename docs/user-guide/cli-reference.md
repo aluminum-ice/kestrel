@@ -38,7 +38,7 @@ importing a model. Use it when you want to script the device or reach those.
 | --- | --- |
 | `kestrel network` | Open the network menu (Wi-Fi, Bluetooth status, re-pair). |
 | `kestrel network status` | Show Bluetooth PAN and Wi-Fi state and IP addresses. |
-| `sudo kestrel network wifi --ssid NAME [--psk PASS] [--hidden] [--country GB] [--band 2.4\|5\|any]` | Save the Wi-Fi station network. `--psk` omitted = open network; `--hidden` for a non-broadcast SSID; `--country` is the two-letter regulatory code; `--band` picks the built-in chip's band. |
+| `sudo kestrel network wifi --ssid NAME [--psk-stdin] [--hidden] [--country GB] [--band 2.4\|5\|any]` | Save the Wi-Fi station network. `--psk-stdin` reads the passphrase from stdin (`--psk PASS` also works but warns: it lands in shell history and the journal); neither = open network; `--hidden` for a non-broadcast SSID; `--country` is the two-letter regulatory code; `--band` picks the built-in chip's band. |
 | `sudo kestrel network wifi --band 2.4\|5\|any` | Change only the saved network's band (no other change). |
 | `sudo kestrel network bt-pair` | Forget the paired phone and reopen the Bluetooth onboarding window to pair a new one. |
 
@@ -69,7 +69,7 @@ See [Setting up capture](capture-setup.md) and [the capture whitelist](capture-w
 | `kestrel plugins` | Open the plugin menu. |
 | `kestrel plugins list` | List all plugins and whether each is enabled. |
 | `kestrel plugins info NAME` | Show a plugin's capabilities, options, dependencies and health. |
-| `sudo kestrel plugins enable NAME [--yes] [--set k=v ...]` | Enable a plugin. Asks the authorized-use acknowledgment for ones that send data off the device; in a terminal it then walks the options (secrets masked). `--set k=v` sets an option non-interactively (repeatable); `--yes` skips the prompts. |
+| `sudo kestrel plugins enable NAME [--yes] [--set k=v ...] [--set-stdin KEY]` | Enable a plugin. Asks the authorized-use acknowledgment for ones that send data off the device; in a terminal it then walks the options (secrets masked). `--set k=v` sets an option non-interactively (repeatable); `--set-stdin KEY` reads one secret's value from stdin, so it stays out of shell history and the journal (a secret given with `--set` is accepted with a warning); `--yes` skips the prompts. |
 | `sudo kestrel plugins disable NAME` | Disable a plugin. |
 
 See [Managing plugins](managing-plugins.md) and the per-plugin guides in the [index](user-guides.md).

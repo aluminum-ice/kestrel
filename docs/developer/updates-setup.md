@@ -149,12 +149,15 @@ Token**, as read-only as it will go: only **repository: Read**.
 owner/name or server differs):
 
 ```bash
-sudo kestrel plugins enable updates --set repo=you/your-repo --set token=xxx
+sudo kestrel plugins enable updates --set repo=you/your-repo   # then asks for the token, hidden
 sudo kestrel plugins enable updates --set host=https://forgejo.example.org
+# or from a script, the token on stdin (never --set token=..., which lands in
+# the shell history and the system journal):
+read -rs TOKEN; printf '%s\n' "$TOKEN" | sudo kestrel plugins enable updates --set-stdin token
 ```
 
 The token is written to `config.toml` and masked everywhere afterwards. To
-change it later, re-run the same command with the new token. To go back to a
+change it later, re-run the same command and enter the new token. To go back to a
 public repo, clear it:
 
 ```bash

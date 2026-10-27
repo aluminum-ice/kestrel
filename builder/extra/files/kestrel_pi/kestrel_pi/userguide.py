@@ -84,11 +84,20 @@ A note on what "online" means: the dashboard shows an Internet row. A tethering 
 
 ### Adding a Wi-Fi network
 
-There is no web form for a Wi-Fi station network, so adding or changing one is a terminal task. From the device:
+There is no web form for a Wi-Fi station network, so adding or changing one is a terminal task. From the device, the easiest way is the menu, which asks for the passphrase with the input hidden:
 
 ```bash
-sudo kestrel network wifi --ssid "YOUR-WIFI" --psk "YOUR-PASSWORD"
+sudo kestrel network      # choose Wi-Fi station
 ```
+
+Or from a script, passing the passphrase on stdin so it never lands in your shell history or the system journal:
+
+```bash
+read -rs PSK    # type the passphrase (not echoed)
+printf '%s\n' "$PSK" | sudo kestrel network wifi --ssid "YOUR-WIFI" --psk-stdin
+```
+
+`--psk "..."` still works but warns: a passphrase on the command line is saved in your shell history and in the system journal (sudo logs every command line).
 
 Useful flags:
 
@@ -288,7 +297,9 @@ sudo kestrel plugins enable session-stats
 sudo kestrel plugins enable gps --set source=serial --set device=/dev/ttyACM0
 ```
 
-Run in a terminal, `plugins enable` also walks you through the options (secrets are masked). To change an option later, re-run `plugins enable <name> --set key=value` with the new value (or edit it on the plugin's web config page). Enabling does not require a reboot or even a daemon restart for the common cases. Disable with `sudo kestrel plugins disable <name>`, or the Disable control on the dashboard.
+Run in a terminal, `plugins enable` also walks you through the options (secrets are masked). To change an option later, re-run `plugins enable <name> --set key=value` with the new value (or edit it on the plugin's web config page).
+
+Keep secrets (API keys, tokens, Wi-Fi passphrases) off the command line: anything you type there is saved in your shell history and in the system journal, because sudo logs every command line. Let `plugins enable` ask for a secret (input hidden), or pass it on stdin with `--set-stdin <option>`; the CLI warns if a secret is given with `--set`. If you have passed one on the command line before, change that key or passphrase, and clear the old logs with `sudo journalctl --rotate && sudo journalctl --vacuum-time=1s` (this deletes all past journal entries) and your shell history with `history -c`. Enabling does not require a reboot or even a daemon restart for the common cases. Disable with `sudo kestrel plugins disable <name>`, or the Disable control on the dashboard.
 
 The authorized-use acknowledgment: any plugin that sends data off the device (the `network` capability: `wpa-sec`, `wigle`, `backup`, `remote-train`, and `updates`) takes the same explicit authorized-use acknowledgment as capture before it turns on, whether you enable it from the dashboard or the terminal. In a terminal you are prompted; add `--yes` for scripts. The acknowledgment is remembered device-wide, so once you have enabled capture it is silent afterward. Local-only plugins (`memtemp`, `session-stats`, `ups-hat`, `eink`, and `gps` reading a local receiver) never need it.
 
@@ -354,7 +365,7 @@ The face reads the learning agent's state and the battery when those are availab
 Uploads captured handshakes to [wpa-sec.stanev.org](https://wpa-sec.stanev.org), a distributed cracking service, and downloads the passwords recovered under your key. Off by default, and a network plugin, so enabling it takes the authorized-use acknowledgment.
 
 - Get your key: sign in at [wpa-sec.stanev.org](https://wpa-sec.stanev.org) and copy your personal key (a long hex string). It is both your upload credential and the key your results are filed under. Keep it private.
-- Enable: `sudo kestrel plugins enable wpa-sec --set api_key='YOUR_WPA_SEC_KEY'` (or enter the key on the plugin's web config page).
+- Enable: `sudo kestrel plugins enable wpa-sec` in a terminal, which asks for the key with the input hidden (or enter it on the plugin's web config page). For scripts, pass it on stdin with `--set-stdin api_key`, never with `--set`, which puts it in your shell history and the system journal.
 - Options: `endpoint` (default `https://wpa-sec.stanev.org`), `download_results` (default `true`), `results_interval_seconds` (default `3600`), `timeout` (default `30`).
 - It queues new handshakes while offline and uploads on reconnect (repackaging to a `.cap` first). With `download_results` on it fetches every network cracked under your key, from any device, to `/var/lib/kestrel/capture/cracked/wpa-sec.potfile`. Set `download_results = false` to upload only.
 - The card shows Uploaded (this session), Queued, and Cracked. "already submitted" in the log is harmless (wpa-sec de-duplicates server-side).
@@ -365,7 +376,7 @@ Uploads captured handshakes to [wpa-sec.stanev.org](https://wpa-sec.stanev.org),
 Submits the networks you observe, with their GPS coordinates, to [wigle.net](https://wigle.net), the crowd-sourced wardriving database. Off by default, a network plugin, and needs GPS to actually upload. WiGLE uploads only ever carry real GPS fixes.
 
 - Credentials: make a free account at [wigle.net](https://wigle.net), then under Account use "Show my token" to find the API Name (looks like `AIDxxxxxxxx...`) and the API Token (a long random string). Use those two, not your website login, and ignore the "Encoded for use" blob. Swapping them or pasting the wrong one is the usual cause of an HTTP 401.
-- Enable: `sudo kestrel plugins enable wigle --set api_name='AIDxxxxxxxx...' --set api_token='your-long-api-token'` (or enter the two values on the plugin's web config page).
+- Enable: `sudo kestrel plugins enable wigle` in a terminal, which asks for the API Name and the API Token (the token with the input hidden), or enter the two values on the plugin's web config page. For scripts, pass the token on stdin with `--set-stdin api_token` and the name with `--set api_name=...`.
 - Options: `geolocate` (default `false`), `geolocate_max_lookups` (default `5`), `retry_seconds` (default `300`), `timeout` (default `30`), `endpoint` (default `https://api.wigle.net`).
 - Modes (shown on the card): `gps` (GPS present, uploads observations with real coordinates, the normal mode), `gps + geolocate` (GPS present and `geolocate = true`; real fixes upload while fix-less observations are looked up for on-device display only, never uploaded), `geolocate` (`geolocate = true` and no GPS; looks up approximate positions for on-device display only and never uploads them), or `idle` (no GPS and `geolocate = false`; nothing to do).
 - The card also shows Uploaded, Queued, Networks, and the last Upload outcome. The queue persists across reboots, so nothing is lost on a restart.
@@ -556,9 +567,11 @@ The token is yours and lives only on the device, in `config.toml` (root-owned, d
 Set the repo, host and token from the terminal. The `updates` plugin's web config page shows them read-only: they decide where the code an update installs as root comes from, so only root can change them. Running `sudo kestrel plugins enable updates` in a terminal walks through the options and asks for the token with the input hidden, which keeps it out of your shell history; or set them directly:
 
 ```bash
-# set the token (and the repo/host if your fork lives elsewhere):
-sudo kestrel plugins enable updates --set repo=you/your-repo --set token=xxx
+# point at your fork (and its server, if it lives elsewhere), then be asked for the token:
+sudo kestrel plugins enable updates --set repo=you/your-repo
 sudo kestrel plugins enable updates --set host=https://forgejo.example.org
+# or, from a script, the token on stdin:
+read -rs TOKEN; printf '%s\n' "$TOKEN" | sudo kestrel plugins enable updates --set-stdin token
 # go back to a public repo:
 sudo kestrel plugins enable updates --set token=
 ```
@@ -602,7 +615,7 @@ This is the same mechanism as the first-boot Wi-Fi staging, and it works at any 
 | --- | --- |
 | `kestrel setup` | Guided first-time setup (network, then capture). |
 | `kestrel network status` | Show Bluetooth PAN and Wi-Fi state and IPs. |
-| `kestrel network wifi --ssid NAME [--psk PASS] [--hidden] [--country GB] [--band 2.4\|5\|any]` | Save Wi-Fi station credentials. |
+| `kestrel network wifi --ssid NAME [--psk-stdin] [--hidden] [--country GB] [--band 2.4\|5\|any]` | Save Wi-Fi station credentials (passphrase on stdin; `kestrel network` asks for it hidden). |
 | `kestrel network bt-pair` | Forget the paired phone and reopen Bluetooth onboarding. |
 | `kestrel web status` | Show the web address and whether controls are on. |
 | `kestrel web auth system\|basic\|token\|none` | Set the dashboard login mode. |

@@ -1089,3 +1089,21 @@ def test_single_file_plain_name_is_accepted(env):
     _auth_on(env)
     assert ctl.apply_change(_set_config("capture.output", "single_file", "all-2.hc22000"))["ok"]
     assert _config(env)["capture"]["output"]["single_file"] == "all-2.hc22000"
+
+
+def test_set_stdin_reads_the_value_from_stdin(env, monkeypatch):
+    # The CLI hands secrets over on stdin, so they never appear in this
+    # process's arguments (readable by every local user).
+    import io
+
+    monkeypatch.setattr(ctl.sys, "stdin", io.StringIO("placeholder-key\n"))
+    assert ctl.main(["plugins-ctl", "set-stdin", "wpa-sec", "api_key"]) == 0
+    assert _config(env)["plugins"]["wpa-sec"]["api_key"] == "placeholder-key"
+
+
+def test_set_stdin_keeps_the_value_verbatim(env, monkeypatch):
+    import io
+
+    monkeypatch.setattr(ctl.sys, "stdin", io.StringIO('a "quoted" value\r\n'))
+    assert ctl.cmd_set_stdin("wpa-sec", "api_key") == 0
+    assert _config(env)["plugins"]["wpa-sec"]["api_key"] == 'a "quoted" value'
