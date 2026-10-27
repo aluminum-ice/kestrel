@@ -119,12 +119,16 @@ lint:
 	tmp=$$(mktemp -d); \
 	  PYTHONPYCACHEPREFIX=$$tmp find builder/extra/files -name '*.py' -print0 \
 	  | xargs -0 python3 -m py_compile; status=$$?; rm -rf $$tmp; exit $$status
+	# Nothing real in the repo: placeholder MACs/emails only, no keys, tokens,
+	# captures or device data (CLAUDE.md, "Nothing real in the repo").
+	python3 tools/real-data-check/real_data_check.py
 
 # Framework unit tests (run with the venv's pytest on-device; needs pytest and
 # flask/requests). Not part of `lint`/CI, which only has the lint tools.
 .PHONY: test
 test:
 	cd builder/extra/files/kestrel_pi && python3 -m pytest -q
+	python3 -m pytest -q tools/real-data-check
 
 clean:
 	- rm -f $(PACKER) $(PISHRINK)
