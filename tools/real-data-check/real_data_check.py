@@ -45,6 +45,9 @@ _RESERVED_SUFFIXES = (".example", ".invalid", ".test", ".localhost", ".local",
                       ".path", ".device")
 # Local parts that name a service, not a person (the ssh clone user, noreply).
 _SERVICE_LOCAL_PARTS = ("git", "noreply")
+# Real addresses the project publishes on purpose: the role-based security
+# reporting alias in SECURITY.md. Never a personal address.
+ALLOWED_EMAILS = ("security@3ntropy.io",)
 
 # The documented default `pi` / `raspberry` hash in builder/config.yml.
 ALLOWED_HASHES = (
@@ -109,6 +112,8 @@ def placeholder_mac(mac):
 
 def allowed_email(local, domain):
     domain = domain.lower()
+    if "%s@%s" % (local.lower(), domain) in ALLOWED_EMAILS:
+        return True
     if local.lower() in _SERVICE_LOCAL_PARTS or domain.startswith("noreply."):
         return True
     return (domain in _RESERVED_DOMAINS

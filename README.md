@@ -40,6 +40,8 @@ Kestrel exists for research and education: learning how WPA/WPA2 handshakes, cap
 - **The safeguards are on by default.** Capture and every network-touching plugin ship disabled. Turning one on asks for an explicit authorized-use acknowledgment, which is never pre-ticked. The capture whitelist keeps the networks you list from ever being attacked.
 - **Treat what the device collects as sensitive.** Handshakes, network names and locations can identify people and places. Keep them on the device or your own systems, and never publish them, including in issues and pull requests here: use placeholders such as `My Network` and `00:00:5E:00:53:01` instead.
 
+Found a security problem in Kestrel itself? Please report it privately, as described in [SECURITY.md](SECURITY.md), rather than in a public issue.
+
 ## Web interface
 
 The device serves a mobile-first web dashboard over its management link (Bluetooth PAN or Wi-Fi). It shows live status, how busy the RF environment is around you, per-plugin readout cards and the learning agent, and it drives capture, plugins and power — all server-rendered, dependency-free and dark-mode aware.

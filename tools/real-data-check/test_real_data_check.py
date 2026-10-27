@@ -52,10 +52,13 @@ def test_emails():
                  "getty@tty1.service", "pi@192.168.1.50", "ssh pi@192.168.x.y",
                  "ssh://git@forge.example.org:2222/o/r.git",
                  "Co-Authored-By: x <noreply@anthropic.com>",
-                 "someone@noreply.forge.example"):
+                 "someone@noreply.forge.example", "Email **%s**." % rdc.ALLOWED_EMAILS[0]):
         assert kinds(text) == [], text
     person = "jane.doe" + "@" + "mail.com"
     assert kinds("contact %s" % person) == ["email address"]
+    # Only the exact published alias is allowed, not its whole domain.
+    other = "someone" + "@" + rdc.ALLOWED_EMAILS[0].split("@")[1]
+    assert kinds(other) == ["email address"]
 
 
 def test_secrets():

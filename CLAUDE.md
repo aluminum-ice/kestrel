@@ -50,7 +50,7 @@ Use these placeholders instead:
 | GPS | generic coordinates, such as `12.34567, -45.67890` |
 | Screenshots | the demo fixture (`tools/ghost-guide/fixture.py`) or other invented data |
 
-The only real identifiers allowed are the functional public project identity and upstream sources: the `aluminum-ice` handle and the `git.3ntropy.io` forge (clone URLs, release links, the `updates` plugin's default repo and host), the public guide page on `www.3ntropy.io` only where the publisher needs it (`tools/ghost-guide/guide.toml`) or a doc names that page, upstream source URLs, the documented default `pi`/`raspberry` hash, and `pi@kestrel.local`. Nothing else, including in examples: an example uses a placeholder even when the real value would be clearer.
+The only real identifiers allowed are the functional public project identity and upstream sources: the `aluminum-ice` handle and the `git.3ntropy.io` forge (clone URLs, release links, the `updates` plugin's default repo and host), the public guide page on `www.3ntropy.io` only where the publisher needs it (`tools/ghost-guide/guide.toml`) or a doc names that page, upstream source URLs, the documented default `pi`/`raspberry` hash, `pi@kestrel.local`, and the role-based reporting alias `security@3ntropy.io` in `SECURITY.md`. Nothing else, including in examples: an example uses a placeholder even when the real value would be clearer.
 
 Where real values live instead:
 
@@ -77,6 +77,7 @@ Commits use the project identity `aluminum-ice <aluminum-ice@noreply.git.3ntropy
 | `.forgejo/workflows/lint.yml`, `test.yml` | Run `make lint` / `make test` on push and pull request (runner label `docker`). |
 | `requirements-lint.txt`, `.yamllint` | Lint tool versions and yamllint config. |
 | `.claude/` | Claude Code settings (secret-file read denies, SessionStart hook that installs lint tools, PreToolUse hook that runs the real-data check before `git commit`). |
+| `SECURITY.md` | How to report a vulnerability privately (the `security@3ntropy.io` alias), scope, supported versions and safe harbor. Keep its scope in step when a new privilege boundary or network-facing surface is added. |
 | `tools/real-data-check/` | Stdlib checker for the "Nothing real in the repo" rule, run by `make lint` and the commit hook; its tests run in `make test`. |
 | `tools/ghost-guide/` | Desktop publisher for the public Ghost user-guide page: renders the latest stable release's `GUIDE_MD` with screenshots from that release's code (iPhone 14 Pro Max, dark mode) and pushes it via the Ghost Admin API (key from the environment only). Not in CI; see `docs/developer/user-guide-publishing.md`. |
 
