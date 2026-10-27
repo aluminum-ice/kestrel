@@ -171,3 +171,6 @@ cython_debug/
 /kestrel-*.7z
 /builder/output-my_rpi_image/
 /builder/packer_cache/
+
+# Ghost guide publisher builds (tools/ghost-guide)
+/tools/ghost-guide/out/
