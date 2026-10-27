@@ -38,7 +38,7 @@ the equivalent is `sudo apt-get install libgtk-4-1 libmanette-0.2-0 libenchant-2
    ```bash
    mkdir -p ~/.config
    (umask 077; cat > ~/.config/kestrel-ghost.env <<'EOF'
-   GHOST_URL=https://www.3ntropy.io
+   GHOST_URL=https://blog.example.com
    GHOST_ADMIN_API_KEY=REPLACE_WITH_ADMIN_API_KEY
    EOF
    )
