@@ -41,7 +41,7 @@ import threading
 import time
 from urllib.parse import quote, urlencode
 
-from kestrel_pi import Plugin
+from kestrel_pi import Plugin, httpsafe
 
 # The cracked-networks page shows at most this many records per page, so the
 # list stays light even with thousands of recovered networks.
@@ -242,19 +242,25 @@ class WpaSec(Plugin):
     def _upload(self, cap):
         import requests
 
-        endpoint = self.options.get("endpoint") or "https://wpa-sec.stanev.org"
         key = self.options.get("api_key") or ""
         try:
+            # https only and no redirects: the key travels as a cookie, which
+            # requests would re-send to wherever a redirect points.
+            endpoint = httpsafe.https_endpoint(self.options.get("endpoint"),
+                                               "https://wpa-sec.stanev.org")
             resp = requests.post(
                 endpoint,
                 cookies={"key": key},
                 files={"file": ("kestrel.cap", cap)},
                 timeout=int(self.options.get("timeout", 30)),
+                allow_redirects=False, stream=True,
             )
+            httpsafe.check_response(resp)
             if resp.status_code >= 400:
                 self.log.warning("wpa-sec upload HTTP %s", resp.status_code)
                 return False
-            if " already submitted" in (resp.text or ""):
+            body = httpsafe.read_capped(resp, httpsafe.MAX_JSON)
+            if b" already submitted" in body:
                 self.log.info("wpa-sec: capture already submitted")
             return True
         except Exception as exc:  # noqa: BLE001 - stay queued on any failure
@@ -437,27 +443,35 @@ class WpaSec(Plugin):
             return
         import requests
 
-        endpoint = self.options.get("endpoint") or "https://wpa-sec.stanev.org"
         key = self.options.get("api_key") or ""
         potfile = self._potfile_path()
         cracked_dir = os.path.dirname(potfile)
-        # dl=1 is keyed by the API key, so this returns every network cracked
-        # under your key, however it was submitted - not just this device's.
-        self.log.info("wpa-sec: fetching cracked results from %s", endpoint)
         try:
+            endpoint = httpsafe.https_endpoint(self.options.get("endpoint"),
+                                               "https://wpa-sec.stanev.org")
+            # dl=1 is keyed by the API key, so this returns every network
+            # cracked under your key, however it was submitted - not just this
+            # device's.
+            self.log.info("wpa-sec: fetching cracked results from %s", endpoint)
             resp = requests.get(
                 endpoint + "/?api&dl=1",
                 cookies={"key": key},
                 timeout=int(self.options.get("timeout", 30)),
+                allow_redirects=False, stream=True,
             )
+            httpsafe.check_response(resp)
             if resp.status_code >= 400:
                 self.log.warning("wpa-sec results HTTP %s", resp.status_code)
                 return
-            body = resp.text
+            body = httpsafe.read_capped(resp).decode("utf-8", errors="replace")
             networks = sum(1 for line in body.splitlines() if line.strip())
-            os.makedirs(cracked_dir, exist_ok=True)
+            # Recovered passphrases: readable by the pi account only.
+            os.makedirs(cracked_dir, mode=0o700, exist_ok=True)
+            os.chmod(cracked_dir, 0o700)
             tmp = potfile + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as handle:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(body)
             os.replace(tmp, potfile)
             with self._lock:

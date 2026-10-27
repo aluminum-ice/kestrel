@@ -259,17 +259,6 @@ is listed roughly by impact.
   `shlex.quote` the remote path.
 - **Pick up when:** any change to the capture launcher or the SSH plugins.
 
-### Harden the uploader plugins
-
-- **What:** `wpa-sec` and `wigle` accept `http://` endpoints, which would send
-  their API keys in cleartext if an endpoint were changed; `_download_results`
-  reads the response with no size cap; and the cracked-PSK potfile is written
-  with the default umask (world-readable).
-- **Why deferred:** needs the endpoint changed by the operator to matter.
-- **What to do:** require `https://` (as `updates` does), cap response size, and
-  write the potfile `0600`.
-- **Pick up when:** any change to those plugins.
-
 ### Extract boot-partition episode archives as `pi`
 
 - **What:** `agent-provision.sh` runs `tar -xzf` as root into the `pi`-owned
