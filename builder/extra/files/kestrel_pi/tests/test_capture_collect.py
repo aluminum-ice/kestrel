@@ -213,6 +213,37 @@ def test_target_for_per_ap_no_bssid_is_unknown(mod):
     assert mod.target_for(line, "per-ap", "all.hc22000") == "unknown.hc22000"
 
 
+# --- capture-seen.json: the per-AP last/first-seen index -----------------
+
+def test_line_bssid_formats_the_ap_mac(mod):
+    line = "WPA*02*deadbeef*aabbccddeeff*001122334455*6e6574*0*0"
+    assert mod.line_bssid(line) == "AA:BB:CC:DD:EE:FF"   # colon-upper, reader-matching
+    assert mod.line_bssid("not*a*real*line") == ""       # field 4 not 12 hex
+
+
+def test_stamp_seen_sets_first_once_and_last_each_time(mod):
+    t = {}
+    mod.stamp_seen(t, {"AA:BB:CC:DD:EE:01"}, 1000)
+    assert t == {"AA:BB:CC:DD:EE:01": {"first": 1000, "last": 1000}}
+    mod.stamp_seen(t, {"AA:BB:CC:DD:EE:01"}, 2000)
+    assert t == {"AA:BB:CC:DD:EE:01": {"first": 1000, "last": 2000}}   # first kept
+
+
+def test_seen_times_round_trip(mod):
+    aps = {"AA:BB:CC:DD:EE:01": {"first": 10, "last": 20}}
+    mod.write_seen_times(aps)
+    assert mod.read_seen_times() == aps
+    # The index file is not mistaken for capture data.
+    assert mod.SEEN_NAME in os.listdir(mod.STORE_DIR)
+    assert not mod.SEEN_NAME.endswith(".hc22000")
+
+
+def test_read_seen_times_tolerates_a_bad_file(mod):
+    with open(os.path.join(mod.STORE_DIR, mod.SEEN_NAME), "w") as fh:
+        fh.write("not json{")
+    assert mod.read_seen_times() == {}
+
+
 def test_target_for_per_ap_decodes_non_utf8_essid_via_latin1(mod):
     # A non-UTF-8 ESSID must route deterministically, not crash: 0xff is invalid
     # UTF-8 but decodes under latin-1, then sanitizes to a safe filename.

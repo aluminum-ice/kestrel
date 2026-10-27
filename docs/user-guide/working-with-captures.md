@@ -49,9 +49,12 @@ one file, whereas `per-ap` keys on the BSSID and keeps them apart.
   BSSID, so APs that reuse a name stay separate; search also matches a pasted
   BSSID). It defaults to match your `[capture.output] mode`, but you can flip the
   view anytime — it reads the whole store either way, regardless of how each
-  handshake was captured. Both are searchable and paginated, and the dashboard
-  card shows the network and access-point totals. The `session-stats` plugin card
-  shows live counts for the current session.
+  handshake was captured. Both are searchable and paginated, sortable by name
+  (default) or by **most recently captured**, and show a **last seen** column
+  (when the AP last produced a new handshake). Captures made before you updated
+  to the release that added this show "last seen" from the file's timestamp, or
+  "never". The dashboard card shows the network and access-point totals. The
+  `session-stats` plugin card shows live counts for the current session.
 - **From the terminal:** `kestrel capture status` reports the store size
   and how many capture files it holds.
 

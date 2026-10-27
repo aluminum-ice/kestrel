@@ -145,7 +145,52 @@ def test_captured_access_points_folds_missing_bssid(tmp_path):
     (tmp_path / "Home.hc22000").write_text("\n".join([NO_BSSID, NO_BSSID.replace(
         "112233445566", "112233445599")]) + "\n")
     aps = CaptureInterface(str(tmp_path)).captured_access_points()
-    assert aps == [{"essid": "", "bssid": "", "handshakes": 2}]
+    assert aps == [{"essid": "", "bssid": "", "handshakes": 2, "last_seen": None}]
+
+
+def _write_seen(tmp_path, aps):
+    (tmp_path / "capture-seen.json").write_text(
+        json.dumps({"version": 1, "aps": aps}), encoding="utf-8")
+
+
+def test_last_seen_comes_from_the_seen_index(tmp_path):
+    (tmp_path / "Home.hc22000").write_text("\n".join([EAPOL, HOME_B]) + "\n")
+    _write_seen(tmp_path, {"AA:BB:CC:DD:EE:FF": {"first": 10, "last": 100},
+                           "AA:BB:CC:DD:EE:02": {"first": 5, "last": 50}})
+    aps = {(a["essid"], a["bssid"]): a["last_seen"]
+           for a in CaptureInterface(str(tmp_path)).captured_access_points()}
+    assert aps[("Home", "AA:BB:CC:DD:EE:FF")] == 100
+    assert aps[("Home", "AA:BB:CC:DD:EE:02")] == 50
+    # The network's last_seen is the newest across its APs.
+    net = {n["essid"]: n["last_seen"]
+           for n in CaptureInterface(str(tmp_path)).captured_networks()}
+    assert net["Home"] == 100
+
+
+def test_last_seen_falls_back_to_file_mtime(tmp_path):
+    # No seen index (a store predating contract_version 4): fall back to the
+    # store file's mtime so old captures still sort sensibly.
+    f = tmp_path / "Home.hc22000"
+    f.write_text(EAPOL + "\n")
+    os.utime(f, (1_000_000, 1_000_000))
+    aps = CaptureInterface(str(tmp_path)).captured_access_points()
+    assert aps[0]["last_seen"] == 1_000_000
+
+
+def test_last_seen_none_when_no_index_and_mtime_unknown(tmp_path):
+    # The unknown-BSSID fold row has no AP to date.
+    (tmp_path / "Home.hc22000").write_text(NO_BSSID + "\n")
+    aps = CaptureInterface(str(tmp_path)).captured_access_points()
+    assert aps == [{"essid": "", "bssid": "", "handshakes": 1, "last_seen": None}]
+
+
+def test_seen_index_wins_over_mtime(tmp_path):
+    f = tmp_path / "Home.hc22000"
+    f.write_text(EAPOL + "\n")
+    os.utime(f, (1_000_000, 1_000_000))
+    _write_seen(tmp_path, {"AA:BB:CC:DD:EE:FF": {"first": 1, "last": 2_000_000}})
+    aps = CaptureInterface(str(tmp_path)).captured_access_points()
+    assert aps[0]["last_seen"] == 2_000_000   # the stamp, not the mtime
 
 
 def test_capture_counts_networks_and_access_points(tmp_path):

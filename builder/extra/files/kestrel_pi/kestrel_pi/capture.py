@@ -21,6 +21,9 @@ from dataclasses import dataclass, field
 # (contract_version 3). Read by the daemon for the Environment readout; absent,
 # unreadable, stale, or not-scanning all mean "unknown".
 STATUS_NAME = "capture-status.json"
+# The collector's per-AP first/last-seen index (contract_version 4), keyed by
+# BSSID; "last" is when a new unique hashline for that AP was last drained.
+SEEN_NAME = "capture-seen.json"
 
 # Density buckets: the upper bound (inclusive) of distinct radios-in-range for
 # each of the first four labels; anything above the last bound is the fifth.
@@ -179,22 +182,31 @@ class CaptureInterface:
         (:meth:`captured_networks`) and the by-access-point view
         (:meth:`captured_access_points`) are derived from this single parse,
         because the file layout on disk (``[capture.output] mode``) does not
-        affect it -- every hashline carries its own ESSID and BSSID."""
+        affect it -- every hashline carries its own ESSID and BSSID.
+
+        Returns ``(nets, mtime_by_bssid)`` where ``mtime_by_bssid`` maps each
+        BSSID to the newest mtime of a store file it appears in -- the fallback
+        "last captured" time for APs the collector's seen-index predates (it
+        only stamps handshakes drained after contract_version 4 shipped)."""
         paths = self.hashline_files()
         signature = []
+        mtimes = {}
         for path in paths:
             try:
                 st = os.stat(path)
             except OSError:
                 continue
             signature.append((path, st.st_size, st.st_mtime_ns))
+            mtimes[path] = st.st_mtime
         signature = tuple(signature)
         with self._networks_lock:
             cached = self._networks_cache
         if cached is not None and cached[0] == signature:
-            return cached[1]
+            return cached[1], cached[2]
         nets = {}
+        mtime_by_bssid = {}
         for path in paths:
+            fmtime = mtimes.get(path, 0)
             for event in self.read_events(path):
                 slot = nets.get(event.essid)
                 if slot is None:
@@ -204,52 +216,94 @@ class CaptureInterface:
                 if event.bssid:
                     slot["bssids"][event.bssid] = (
                         slot["bssids"].get(event.bssid, 0) + 1)
+                    if fmtime > mtime_by_bssid.get(event.bssid, 0):
+                        mtime_by_bssid[event.bssid] = fmtime
                 else:
                     slot["no_bssid"] += 1
         with self._networks_lock:
-            self._networks_cache = (signature, nets)
-        return nets
+            self._networks_cache = (signature, nets, mtime_by_bssid)
+        return nets, mtime_by_bssid
+
+    def _read_seen(self):
+        """``{bssid: last_epoch}`` from the collector's ``capture-seen.json``
+        index, or ``{}`` if absent/unreadable. Read live (not cached with the
+        parse) so a fresh stamp is reflected even when the hashline files are
+        unchanged."""
+        try:
+            with open(os.path.join(self.store_dir, SEEN_NAME),
+                      "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return {}
+        aps = data.get("aps") if isinstance(data, dict) else None
+        if not isinstance(aps, dict):
+            return {}
+        out = {}
+        for bssid, rec in aps.items():
+            try:
+                out[bssid] = int(rec.get("last"))
+            except (AttributeError, TypeError, ValueError):
+                continue
+        return out
+
+    def _last_seen(self, bssid, seen, mtime_by_bssid):
+        """Best "last captured" epoch for a BSSID: the collector's stamp if it
+        has one, else the store-file mtime fallback, else ``None``."""
+        if bssid in seen:
+            return seen[bssid]
+        mtime = mtime_by_bssid.get(bssid)
+        return int(mtime) if mtime else None
 
     def captured_networks(self):
         """Unique captured networks across the whole store, keyed by ESSID.
 
-        Returns a list of ``{"essid", "bssids", "handshakes"}`` (``bssids`` is
-        the count of distinct APs seen under that ESSID) sorted by ESSID
-        (case-insensitive; an empty/hidden ESSID sorts last). A caller rendering
-        it should search and paginate the returned list rather than the store.
-        This is the by-network view; :meth:`captured_access_points` is the
-        by-access-point view over the same cached parse."""
-        nets = self._parse_store()
-        out = [
-            {"essid": essid, "bssids": len(data["bssids"]),
-             "handshakes": data["handshakes"]}
-            for essid, data in nets.items()
-        ]
+        Returns a list of ``{"essid", "bssids", "handshakes", "last_seen"}``
+        (``bssids`` is the count of distinct APs seen under that ESSID;
+        ``last_seen`` is the newest capture epoch across them, or ``None``)
+        sorted by ESSID (case-insensitive; an empty/hidden ESSID sorts last). A
+        caller rendering it should search and paginate the returned list rather
+        than the store. This is the by-network view;
+        :meth:`captured_access_points` is the by-access-point view over the same
+        cached parse."""
+        nets, mtime_by_bssid = self._parse_store()
+        seen = self._read_seen()
+        out = []
+        for essid, data in nets.items():
+            times = [t for t in (self._last_seen(b, seen, mtime_by_bssid)
+                                 for b in data["bssids"]) if t is not None]
+            out.append({"essid": essid, "bssids": len(data["bssids"]),
+                        "handshakes": data["handshakes"],
+                        "last_seen": max(times) if times else None})
         out.sort(key=lambda net: (net["essid"] == "", net["essid"].lower()))
         return out
 
     def captured_access_points(self):
         """One entry per distinct access point (ESSID+BSSID) across the store.
 
-        Returns a list of ``{"essid", "bssid", "handshakes"}`` sorted by ESSID
-        (case-insensitive; empty/hidden last) then BSSID, where ``handshakes``
-        is that AP's own count. A hidden/empty ESSID still yields one entry per
-        BSSID -- the APs stay distinct, which is the whole point of keying on the
-        BSSID. Handshakes whose BSSID could not be parsed (a corrupt line) are
-        folded into a single trailing entry with an empty ``bssid`` (the page
+        Returns a list of ``{"essid", "bssid", "handshakes", "last_seen"}``
+        sorted by ESSID (case-insensitive; empty/hidden last) then BSSID, where
+        ``handshakes`` is that AP's own count and ``last_seen`` its newest
+        capture epoch (or ``None``). A hidden/empty ESSID still yields one entry
+        per BSSID -- the APs stay distinct, which is the whole point of keying on
+        the BSSID. Handshakes whose BSSID could not be parsed (a corrupt line)
+        are folded into a single trailing entry with an empty ``bssid`` (the page
         renders it as the "(unknown BSSID)" row). This is the by-access-point
         view; :meth:`captured_networks` is the by-network view."""
-        nets = self._parse_store()
+        nets, mtime_by_bssid = self._parse_store()
+        seen = self._read_seen()
         out = []
         unknown = 0
         for essid, data in nets.items():
             for bssid, count in data["bssids"].items():
-                out.append({"essid": essid, "bssid": bssid, "handshakes": count})
+                out.append({"essid": essid, "bssid": bssid, "handshakes": count,
+                            "last_seen": self._last_seen(bssid, seen,
+                                                         mtime_by_bssid)})
             unknown += data["no_bssid"]
         out.sort(key=lambda ap: (ap["essid"] == "", ap["essid"].lower(),
                                  ap["bssid"]))
         if unknown:
-            out.append({"essid": "", "bssid": "", "handshakes": unknown})
+            out.append({"essid": "", "bssid": "", "handshakes": unknown,
+                        "last_seen": None})
         return out
 
     def capture_counts(self):
@@ -257,7 +311,7 @@ class CaptureInterface:
         of distinct ESSIDs and of distinct ESSID+BSSID APs (the row counts of
         the two /networks views, so the dashboard navcard and the page agree).
         The "(unknown BSSID)" fold is not counted as an access point."""
-        nets = self._parse_store()
+        nets, _mtime = self._parse_store()
         return {
             "networks": len(nets),
             "access_points": sum(len(d["bssids"]) for d in nets.values()),
