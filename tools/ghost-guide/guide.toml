@@ -1,0 +1,77 @@
+# The Ghost user-guide page: what wraps GUIDE_MD and where the screenshots go.
+# No secrets here: the Ghost Admin API key comes from the environment.
+
+[ghost]
+page_slug = "kestrel-user-guide"
+# The public page, read by `status` and `diff` (no key needed).
+public_url = "https://www.3ntropy.io/kestrel-user-guide/"
+
+[release]
+# Where stable releases are published; the notice links to the release page.
+host = "https://git.3ntropy.io"
+repo = "aluminum-ice/kestrel"
+
+[page]
+subtitle = "The complete how-to for setting up and running a Kestrel device — first boot, getting online, the dashboard, capturing, plugins, the learning agent, updates, a command reference, and troubleshooting."
+hero_caption = "Kestrel at a glance: the phone dashboard, the e-ink face, and the learning agent."
+
+# Each figure is regenerated from the release's code on every run. `key` is the
+# image name on Ghost (it may gain a -N suffix there). `place = "hero"` puts it
+# under the subtitle; `after` names the heading slug it follows. Phone shots load
+# `path` on the demo device (optionally scrolled to the text in `focus`, in the
+# named `scenario`); `source = "eink"` is the e-ink panel frame.
+
+[[figure]]
+key = "phone-dashboard"
+place = "hero"
+path = "/"
+alt = "The Kestrel web dashboard"
+
+[[figure]]
+key = "eink-panel"
+place = "hero"
+source = "eink"
+alt = "The Kestrel e-ink face"
+
+[[figure]]
+key = "phone-agent"
+place = "hero"
+path = "/agent"
+alt = "The Kestrel learning-agent page"
+
+[[figure]]
+key = "phone-settings"
+after = "advanced-settings"
+path = "/settings"
+alt = "The Advanced settings page"
+caption = "Advanced settings — each tunable with its current value and default."
+
+[[figure]]
+key = "phone-networks"
+after = "capturing-handshakes"
+path = "/networks"
+alt = "The Networks page listing the access points seen during capture."
+caption = "The Networks page listing the access points seen during capture."
+
+[[figure]]
+key = "phone-whitelist"
+after = "the-capture-whitelist"
+path = "/whitelist"
+alt = "The capture whitelist page"
+caption = "The whitelist page — networks capture must never attack."
+
+[[figure]]
+key = "phone-plugins"
+after = "plugins"
+path = "/plugins"
+alt = "The Plugins page — enable, disable and open each plugin."
+caption = "The Plugins page — enable, disable and open each plugin."
+
+[[figure]]
+key = "phone-update"
+after = "upgrading-in-place"
+path = "/"
+scenario = "update-available"
+focus = "Update available"
+alt = "The dashboard offering an in-place upgrade"
+caption = "When a newer stable release can be applied in place, the dashboard offers the upgrade."

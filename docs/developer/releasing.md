@@ -237,5 +237,9 @@ per-hunk, never the default.
 4. Run the Release workflow with the chosen `release_version` and `update_kind`.
 5. Confirm the published manifest's `kind` matches intent (`auto` prints its
    decision and reason in the workflow log).
+6. For a stable release, update the public user guide on Ghost:
+   `tools/ghost-guide/ghost_guide.py status`, `diff`, then `push` (see
+   [Publishing the user guide](user-guide-publishing.md)). Betas are never
+   published there.
 
 See also: [In-field updates](updates-setup.md), [Tech stack](tech-stack.md).

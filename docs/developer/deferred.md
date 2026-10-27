@@ -108,3 +108,26 @@ How to use this file:
   app-layer.
 - **Pick up when:** the next release that is already reflash-class for a larger
   reason, so this rides along at no extra reflash cost.
+
+## Ghost user-guide publisher (`tools/ghost-guide`)
+
+### Remove superseded screenshots from Ghost
+
+- **What:** each publish uploads any screenshot whose pixels changed, and the
+  replaced image stays in Ghost's media library.
+- **Why deferred:** Ghost's Admin API has no image delete, so it means working
+  on the server's content directory or by hand in Ghost, outside the API key's
+  reach.
+- **What to do:** periodically delete `content/images/**/<figure key>-N.png`
+  files no page references, on the Ghost host.
+- **Trigger:** the media library grows enough to matter.
+
+### Run the publisher's tests in CI
+
+- **What:** `python3 -m pytest tools/ghost-guide` (renderer, framing, pixel
+  comparison) runs only on a desktop.
+- **Why deferred:** the Test workflow installs only what `make test` needs; this
+  adds markdown-it-py (the browser isn't needed for these tests).
+- **What to do:** add a step to `.forgejo/workflows/test.yml` that installs
+  `markdown-it-py` and `Pillow` and runs the tool's tests.
+- **Trigger:** the tool's renderer starts changing often.
