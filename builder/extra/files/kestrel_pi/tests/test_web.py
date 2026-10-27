@@ -868,6 +868,7 @@ def test_settings_page_renders_editable_and_readonly(monkeypatch, tmp_path):
     assert "capture.enabled" in body and 'href="/whitelist"' in body
     # the off-limits network file: a read-only note that redirects to the CLI
     assert "/etc/default/kestrel" in body and "network wifi --band" in body
+    assert '<div class="card pad"><div class="scol">' in body
     # plugin options live on the per-plugin page, linked from here
     assert 'href="/manage/wpa-sec"' in body
 
@@ -1678,6 +1679,9 @@ def test_update_card_offers_the_upgrade_button(monkeypatch, tmp_path):
     assert "Update available" in page
     assert ">Upgrade to 0.5.0</button>" in page
     assert 'action="/update' in page
+    # free content (heading, text, form) needs the padded card, unlike .srow rows
+    assert '<div class="card pad"><h3>Update available</h3>' in page
+    assert ".card.pad{padding:" in page
 
 
 def test_update_card_shows_needs_reflash_without_a_button(monkeypatch, tmp_path):
@@ -1685,6 +1689,7 @@ def test_update_card_shows_needs_reflash_without_a_button(monkeypatch, tmp_path)
     page = client.get("/", headers=_basic()).get_data(as_text=True)
     assert "needs a reflash" in page
     assert "the base image changed" in page
+    assert '<div class="card pad"><h3>Update available</h3>' in page
     assert "Upgrade to" not in page           # no in-place button
 
 
