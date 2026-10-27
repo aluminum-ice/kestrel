@@ -174,3 +174,33 @@ cython_debug/
 
 # Ghost guide publisher builds (tools/ghost-guide)
 /tools/ghost-guide/out/
+
+# Real device data and secrets never belong in the repo (CLAUDE.md, "Nothing
+# real in the repo"). tools/real-data-check fails on these even if forced in.
+*.pcap
+*.pcapng
+*.cap
+*.hc22000
+*.22000
+*.hccapx
+*.potfile
+*.gpx
+*.nmea
+*.kismet
+*.netxml
+*.pt
+*.pth
+model-*.zip
+capture-seen.json
+capture-status.json
+*.key
+*.pem
+*.p12
+*.pfx
+id_rsa
+id_ecdsa
+id_ed25519
+id_dsa
+# Bundles the scripts/pull-*.sh tools write into the current directory
+*-diagnostics-*/
+capture-health-*/

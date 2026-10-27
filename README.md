@@ -13,7 +13,9 @@ A clean, secrets-free 64-bit Raspberry Pi OS image, built with [Packer](https://
 
 Kestrel is a small, battery-powered companion that sits nearby, listens to the Wi-Fi around it, collects WPA/WPA2 handshakes for offline analysis, and runs a reinforcement-learning agent that learns to choose where and how to listen: an autonomous, always-learning capture device built on a modern, maintainable foundation.
 
-> This image ships a documented DEFAULT login (`pi` / `raspberry`). Change it before any real use. It is a tool for authorized testing on networks you own or have permission to test.
+> **Authorized use only.** Kestrel is a research and education project. Use it only on networks you own or have explicit permission to test; capturing handshakes from, or deauthenticating, any other network may be illegal. See [Authorized use only](#authorized-use-only).
+>
+> The image also ships a documented DEFAULT login (`pi` / `raspberry`). Change it before any real use.
 
 ### Highlights
 
@@ -28,6 +30,17 @@ Kestrel is a small, battery-powered companion that sits nearby, listens to the W
 The image is based on **Raspberry Pi OS Lite (64-bit), bookworm (Debian 12, Python 3.11), release 2026-06-18**, from Raspberry Pi's "oldstable" downloads. The Python stack (PyTorch and stable-baselines3) makes it large: the build uses an 8.4 GB root image, then shrinks it with PiShrink.
 
 Target boards: the **Raspberry Pi 5** is the primary, standard board. The Raspberry Pi Zero 2 W is also supported as a smaller, lower-power option, within the constraints noted below (2.4 GHz-only Wi-Fi, and too little RAM to train the learning agent on-device). Both require an external USB WiFi adapter for packet capture (see WiFi capture adapter below).
+
+## Authorized use only
+
+Kestrel exists for research and education: learning how WPA/WPA2 handshakes, capture tooling and adaptive scanning work, on networks you are allowed to test.
+
+- **Only capture networks you own, or have explicit permission to test** (in writing, ideally). Capturing handshakes from, or sending deauthentication frames to, any other network may be illegal where you are, even if you never try to crack what you captured.
+- **You are responsible** for complying with the laws that apply to you, including radio and computer-misuse laws.
+- **The safeguards are on by default.** Capture and every network-touching plugin ship disabled. Turning one on asks for an explicit authorized-use acknowledgment, which is never pre-ticked. The capture whitelist keeps the networks you list from ever being attacked.
+- **Treat what the device collects as sensitive.** Handshakes, network names and locations can identify people and places. Keep them on the device or your own systems, and never publish them, including in issues and pull requests here: use placeholders such as `My Network` and `00:00:5E:00:53:01` instead.
+
+Found a security problem in Kestrel itself? Please report it privately, as described in [SECURITY.md](SECURITY.md), rather than in a public issue.
 
 ## Web interface
 
