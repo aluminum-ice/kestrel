@@ -252,7 +252,7 @@ Restart capture after a change (`sudo systemctl restart kestrel-capture.service`
 
 ### Where captures go, and housekeeping
 
-The persistent store is `/var/lib/kestrel/capture/`, with one `<ssid>.hc22000` file per network (or one `<ssid>_<bssid>.hc22000` file per access point in `per-ap` mode, or one combined file in `single` mode). It is append-and-dedup, never truncated: reboots and attack restarts add new unique handshakes to the existing files rather than replacing them. AngryOxide's raw working files live in a size-capped scratch `.run/` subdirectory (`max_run_mb`, default 512 MB) so they cannot fill the card; only that scratch is pruned, never your handshakes.
+The persistent store is `/var/lib/kestrel/capture/`, with one `<ssid>.hc22000` file per network (or one `<ssid>_<bssid>.hc22000` file per access point in `per-ap` mode, or one combined file in `single` mode). It is append-and-dedup, never truncated: reboots and attack restarts add new unique handshakes to the existing files rather than replacing them. AngryOxide's raw working files live in a size-capped scratch directory, `/var/lib/kestrel/capture-run/` (`max_run_mb`, default 512 MB) so they cannot fill the card; only that scratch is pruned, never your handshakes.
 
 Check status any time:
 
@@ -372,7 +372,7 @@ Submits the networks you observe, with their GPS coordinates, to [wigle.net](htt
 
 ### backup (mirror the capture store off-device)
 
-Mirrors the on-device capture data to a remote server over SSH, so a lost or reflashed card does not take the data with it. Off by default, a network plugin, so enabling it takes the acknowledgment. It backs up everything under the capture store except the transient `.run/` scratch (hashlines, GPS sidecars, the wigle geo-cache, the wpa-sec potfile, archives, and the agent's model and episode logs).
+Mirrors the on-device capture data to a remote server over SSH, so a lost or reflashed card does not take the data with it. Off by default, a network plugin, so enabling it takes the acknowledgment. It backs up everything under the capture store except its transient `.run/` working dir (hashlines, GPS sidecars, the wigle geo-cache, the wpa-sec potfile, archives, and the agent's model and episode logs).
 
 It uses rsync over SSH by default, which is the recommendation (incremental and resumable, cheap over a slow link); `tool = "scp"` is a plain recursive copy kept only as a fallback. The device copies as the `pi` account using its SSH key, and no key or password is ever stored. Set it up in order:
 
@@ -553,7 +553,7 @@ The default repo is public, so the plugin reads its releases with no credentials
 
 The token is yours and lives only on the device, in `config.toml` (root-owned, device-only), masked everywhere and never shown back. It is never committed and never baked into the image. Scope it as narrowly as possible: create it in Forgejo under Settings → Applications with only the **repository: Read** permission. It is only ever sent to the configured `host`.
 
-Set the repo and token from the `updates` plugin's web config page (with the login on), where you can type the token in directly; or from the terminal:
+Set the repo, host and token from the terminal. The `updates` plugin's web config page shows them read-only: they decide where the code an update installs as root comes from, so only root can change them. Running `sudo kestrel plugins enable updates` in a terminal walks through the options and asks for the token with the input hidden, which keeps it out of your shell history; or set them directly:
 
 ```bash
 # set the token (and the repo/host if your fork lives elsewhere):

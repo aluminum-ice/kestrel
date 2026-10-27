@@ -185,15 +185,18 @@ class Updates(Plugin):
         # NB: pure string literals, not DEFAULT_REPO/DEFAULT_HOST - the root
         # plugins-ctl helper reads __options__ statically with ast and never
         # imports this module, so a Name reference here would not resolve.
-        "repo": {"type": "str", "default": "aluminum-ice/kestrel"},
+        # root_only (repo, host, token): root's `update apply` trusts these to
+        # say where the code it installs comes from, so they're set only from
+        # the terminal (sudo), never through the pi-reachable apply socket.
+        "repo": {"type": "str", "default": "aluminum-ice/kestrel", "root_only": True},
         # The Forgejo (or Gitea) server hosting `repo`, as an https:// URL.
-        "host": {"type": "str", "default": "https://git.3ntropy.io"},
+        "host": {"type": "str", "default": "https://git.3ntropy.io", "root_only": True},
         # Optional Forgejo access token, for a PRIVATE repo or fork. Empty (the
         # default) => unauthenticated requests, public repos only. Stored only
         # in this device's config.toml, never in the image or the git repo;
         # marked secret so the CLI and web never echo it. It needs read-only
         # "repository" scope. It also authenticates the `update apply` clone.
-        "token": {"type": "str", "default": "", "secret": True},
+        "token": {"type": "str", "default": "", "secret": True, "root_only": True},
         # Opt in to beta (-beta.N pre-release) updates as well as stable ones.
         # Off => only stable releases are offered. Turning it off while on a
         # beta keeps the device where it is (no downgrade) until a stable

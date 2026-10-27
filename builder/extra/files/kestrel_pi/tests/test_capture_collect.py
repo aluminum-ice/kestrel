@@ -30,6 +30,7 @@ def mod(tmp_path):
     m = _load()
     m.RUN_DIR = str(tmp_path / "run")
     m.STORE_DIR = str(tmp_path / "store")
+    m.LEGACY_RUN_DIR = os.path.join(m.STORE_DIR, ".run")
     os.makedirs(m.RUN_DIR)
     os.makedirs(m.STORE_DIR)
     return m
@@ -252,3 +253,41 @@ def test_target_for_per_ap_decodes_non_utf8_essid_via_latin1(mod):
     assert target.endswith("_aa_bb_cc_dd_ee_ff.hc22000")
     assert set(target) <= set(
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+
+
+# --- run dir: root-owned now, the legacy in-store .run/ still drained -------
+
+def test_run_sources_include_the_legacy_store_run_dir(mod):
+    # An in-place update moves the run dir out of the store; hashlines an older
+    # release left in the store's .run/ must still reach the store.
+    os.makedirs(mod.LEGACY_RUN_DIR)
+    for directory, name in ((mod.RUN_DIR, "new.hc22000"), (mod.LEGACY_RUN_DIR, "old.hc22000"),
+                            (mod.RUN_DIR, "kestrel.pcapng"),
+                            (mod.LEGACY_RUN_DIR, "restore-state.json")):
+        open(os.path.join(directory, name), "w").close()
+    assert mod.run_sources() == [os.path.join(mod.RUN_DIR, "new.hc22000"),
+                                 os.path.join(mod.LEGACY_RUN_DIR, "old.hc22000")]
+
+
+def test_run_sources_tolerate_missing_dirs(mod, tmp_path):
+    mod.RUN_DIR = str(tmp_path / "gone")
+    assert mod.run_sources() == []
+
+
+def test_default_run_dir_is_outside_the_store():
+    m = _load()
+    assert not m.RUN_DIR.startswith(m.STORE_DIR.rstrip("/") + "/")
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("mine.hc22000", "mine.hc22000"),
+    ("../../etc/passwd", "all.hc22000"),
+    ("/etc/passwd", "all.hc22000"),
+    ("sub/x.hc22000", "all.hc22000"),
+    ("..", "all.hc22000"),
+])
+def test_single_file_must_be_a_plain_name_in_the_store(mod, tmp_path, value, expected):
+    config = tmp_path / "config.toml"
+    config.write_text('[capture.output]\nmode = "single"\nsingle_file = "%s"\n' % value)
+    mod.CONFIG = str(config)
+    assert mod.output_config() == ("single", expected)

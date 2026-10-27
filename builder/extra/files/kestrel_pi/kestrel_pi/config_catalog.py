@@ -108,8 +108,9 @@ SECTIONS = [
                   "All append-only.", RESTART_CAPTURE,
                   choices=["per-ssid", "per-ap", "single"]),
             _edit("capture.output", "single_file", "str", "all.hc22000",
-                  "Name of the combined file when mode=single.", RESTART_CAPTURE,
-                  maxlen=128),
+                  "Name of the combined file when mode=single: a plain file "
+                  "name in the store (no '/', no leading '.').", RESTART_CAPTURE,
+                  maxlen=128, pattern="[A-Za-z0-9_-][A-Za-z0-9._-]*"),
             _edit("capture.angryoxide", "headless", "bool", True,
                   "The service always runs headless; 'off' only affects a by-hand "
                   "terminal launch. Leave on unless debugging in a terminal.",
@@ -129,8 +130,9 @@ SECTIONS = [
                   RESTART_CAPTURE, min=0),
             _edit("capture.housekeeping", "archive_dir", "str",
                   "/var/lib/kestrel/capture/archive",
-                  "Where archives land. Keep it on the data partition.",
-                  RESTART_CAPTURE, maxlen=256),
+                  "Where archives land: a folder inside /var/lib/kestrel/capture "
+                  "(housekeeping never writes or deletes anywhere else).",
+                  RESTART_CAPTURE, maxlen=256, under="/var/lib/kestrel/capture"),
             _edit("capture.housekeeping", "keep_archives", "int", 0,
                   "Keep only the newest N archive sets (0 = keep all).",
                   RESTART_CAPTURE, min=0),
@@ -289,9 +291,10 @@ def editable_entries():
 
 def _constraints(entry):
     """The validator constraints of an editable entry (what the apply helper's
-    allow-list carries): type plus whichever of min/max/choices/maxlen apply."""
+    allow-list carries): type plus whichever of min/max/choices/maxlen/pattern/
+    under apply."""
     spec = {"type": entry["type"]}
-    for limit in ("min", "max", "choices", "maxlen"):
+    for limit in ("min", "max", "choices", "maxlen", "pattern", "under"):
         if limit in entry:
             spec[limit] = entry[limit]
     return spec

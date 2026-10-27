@@ -159,6 +159,40 @@ def test_option_field_renders_help_and_default_hints():
     assert "default: RecurrentPPO,PPO,DQN,QR-DQN" in html
 
 
+
+def test_root_only_option_is_shown_read_only_with_the_terminal_command():
+    spec = {"type": "str", "default": "https://forge.example.org", "root_only": True}
+    html = web._option_field("host", spec, {}, set(), False, plugin="updates")
+    assert "<input" not in html and 'name="opt-host"' not in html
+    assert "https://forge.example.org" in html
+    assert "sudo kestrel plugins enable updates --set host=..." in html
+
+
+def test_root_only_secret_is_never_shown():
+    spec = {"type": "str", "default": "", "secret": True, "root_only": True}
+    html = web._option_field("token", spec, {"token": "SECRETVALUE"}, set(), False,
+                             plugin="updates")
+    assert "SECRETVALUE" not in html and "<input" not in html
+    assert ": set</div>" in html
+
+
+def test_build_change_never_sends_a_root_only_option():
+    class _Rec:
+        name = "updates"
+
+        class cls:
+            __options__ = {
+                "host": {"type": "str", "default": "https://a.example", "root_only": True},
+                "beta": {"type": "bool", "default": False},
+            }
+
+    class _Daemon:
+        config = {"plugins": {"updates": {"enabled": True}}}
+
+    change = web.build_change(_Daemon(), _Rec(), {
+        "opt-host": "https://evil.example", "bool-beta": "1", "opt-beta": "on"})
+    assert change == {"plugin": "updates", "set": {"beta": True}}
+
 def test_dashboard_nav_card_counts_enabled_plugins():
     control = {"ready": True, "csrf": "t", "qs": "",
                "enabled": {"gps": True, "wigle": False}, "acked": True}

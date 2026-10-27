@@ -23,9 +23,12 @@ import sys
 import time
 
 RUN_DIR = os.environ.get(
-    "PWN_CAPTURE_RUN_DIR", "/var/lib/kestrel/capture/.run"
+    "PWN_CAPTURE_RUN_DIR", "/var/lib/kestrel/capture-run"
 )
 STORE_DIR = os.environ.get("PWN_CAPTURE_DIR", "/var/lib/kestrel/capture")
+# Where the run dir used to be, inside the store. Hashlines an older release
+# left there are still drained, so an in-place update loses none.
+LEGACY_RUN_DIR = os.path.join(STORE_DIR, ".run")
 CONFIG = os.environ.get("PWN_CONFIG", "/etc/kestrel/config.toml")
 POLL_SECONDS = int(os.environ.get("PWN_CAPTURE_POLL", "10"))
 
@@ -63,12 +66,36 @@ def _capture_config():
         return {}
 
 
+def run_sources():
+    """Paths of the *.hc22000 files to drain: the run dir's, plus any an older
+    release left in the store's legacy .run/ (drained, never deleted here)."""
+    sources = []
+    for run_dir in (RUN_DIR, LEGACY_RUN_DIR):
+        try:
+            sources += [os.path.join(run_dir, n) for n in sorted(os.listdir(run_dir))
+                        if n.endswith(".hc22000")]
+        except OSError:
+            pass
+    return sources
+
+
+# A single_file value must be a plain file name in the store: no directory part
+# and no leading dot, so it can't name a path outside the store.
+_SINGLE_FILE_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
+
+
 def output_config():
-    """(mode, single_file) from config, with safe defaults."""
+    """(mode, single_file) from config, with safe defaults. A single_file that
+    isn't a plain file name falls back to the default."""
     mode, single = "per-ssid", "all.hc22000"
     out = _capture_config().get("output", {}) or {}
     mode = out.get("mode", mode)
-    single = out.get("single_file", single)
+    configured = out.get("single_file", single)
+    if isinstance(configured, str) and _SINGLE_FILE_RE.fullmatch(configured):
+        single = configured
+    else:
+        sys.stderr.write("capture-collect: ignoring single_file %r (not a plain "
+                         "file name); using %s\n" % (configured, single))
     return mode, single
 
 
@@ -376,19 +403,10 @@ def main():
     while True:
         if env_enabled:
             update_environment(env_window)
-        try:
-            sources = [n for n in os.listdir(RUN_DIR) if n.endswith(".hc22000")]
-        except FileNotFoundError:
-            sources = []
         stamp = set()  # BSSIDs that got a NEW hashline this poll
-        for name in sources:
+        for source in run_sources():
             try:
-                with open(
-                    os.path.join(RUN_DIR, name),
-                    "r",
-                    encoding="utf-8",
-                    errors="replace",
-                ) as handle:
+                with open(source, "r", encoding="utf-8", errors="replace") as handle:
                     run_lines = handle.read().splitlines()
             except OSError:
                 continue

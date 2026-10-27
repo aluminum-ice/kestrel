@@ -345,6 +345,14 @@ __options__ = {
   kept distinct from `int`.
 - Defaults are applied; an undeclared key in the table is ignored with a warning.
 - The validated values arrive as `self.options` (and `self.context.options`).
+- `"secret": True` marks a value the CLI and the web page never show back
+  (a password field, masked prompts).
+- `"root_only": True` marks an option that **root acts on**, such as where
+  the `updates` plugin's in-place update comes from (`host`, `repo`, `token`).
+  It can be set only from the terminal (`sudo kestrel plugins enable <name>
+  --set <option>=...`): the web page shows it read-only, and the root apply
+  helper refuses it, because anything that can reach that socket runs as `pi`.
+  Mark any option whose value a root process trusts.
 
 In config.toml, your options live under `[plugins.<name>]` alongside the
 framework's own `enabled` flag. **Config is edited one key at a time** through the

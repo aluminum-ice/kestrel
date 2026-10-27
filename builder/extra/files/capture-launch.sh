@@ -212,13 +212,20 @@ build_args() {
 trap 'stopping=yes; if [ -n "${ao_pid:-}" ]; then kill -TERM "$ao_pid" 2>/dev/null || true; fi' INT TERM
 
 # Prepare directories and the whitelist file from config (once; the collector
-# and whitelist persist across AngryOxide relaunches).
-mkdir -p "$PWN_CAPTURE_DIR" "$PWN_CAPTURE_RUN_DIR"
+# and whitelist persist across AngryOxide relaunches). The run dir is root's
+# (AngryOxide writes it as root) and pi may only read it, so nothing pi plants
+# there can redirect a root write; install -d also fixes an older dir's mode.
+mkdir -p "$PWN_CAPTURE_DIR"
+install -d -o root -g pi -m 0750 "$PWN_CAPTURE_RUN_DIR"
 "$PWN_CONFIG_GET" capture.whitelist "" | sed '/^$/d' > "$PWN_WHITELIST_FILE"
 
 # Start the collector that merges run-dir hashlines into the append-only store.
+# It runs as pi: it only reads the run dir and writes the pi-owned store, so a
+# symlink planted in the store can't make it write anywhere as root. setpriv
+# execs in place, so $collector_pid is the collector itself (for the trap).
 PWN_CAPTURE_RUN_DIR="$PWN_CAPTURE_RUN_DIR" PWN_CAPTURE_DIR="$PWN_CAPTURE_DIR" \
-    PWN_CONFIG="$PWN_CONFIG" "$COLLECT" &
+    PWN_CONFIG="$PWN_CONFIG" \
+    setpriv --reuid=pi --regid=pi --init-groups -- "$COLLECT" &
 collector_pid=$!
 
 # Bound the run dir so a long session can't fill the card. AngryOxide's pcapng

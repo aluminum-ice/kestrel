@@ -114,7 +114,7 @@ The persistent store is `/var/lib/kestrel/capture/`, with one
 unique handshakes to the existing files rather than replacing them.
 
 AngryOxide's raw working files (packet captures, kismet DB) live in a scratch
-`.run/` subdirectory that is size-capped (`max_run_mb`, default 512 MB) so it
+directory, `/var/lib/kestrel/capture-run/`, that is size-capped (`max_run_mb`, default 512 MB) so it
 can't fill the card — only the raw scratch is pruned, never your handshakes.
 
 ## Checking status

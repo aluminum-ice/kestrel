@@ -47,7 +47,7 @@ is covered at the end.
 | Key | Values | Default | What it does |
 | --- | --- | --- | --- |
 | `mode` | `per-ssid` / `per-ap` / `single` | `per-ssid` | One file per network (`per-ssid`), one file per access point keyed on BSSID so unrelated APs sharing a name never merge (`per-ap`), or one combined file (`single`). All are only ever appended to. |
-| `single_file` | filename | `all.hc22000` | The combined file's name when `mode = single`. |
+| `single_file` | filename | `all.hc22000` | The combined file's name when `mode = single`: a plain file name in the store (letters, digits, `.`, `_`, `-`; no `/`, no leading `.`). Anything else is refused, and the collector falls back to `all.hc22000`. |
 
 ## `[capture.angryoxide]` — the capture engine
 
@@ -77,7 +77,7 @@ shows "unknown", never a misleading zero.
 | `action` | `off` / `rotate` / `archive` | `off` | Daily maintenance policy. `off` does nothing automatically; `rotate` archives when a limit below is hit; `archive` snapshots every day. It never deletes. |
 | `max_store_mb` | whole number (`0` = no limit) | `0` | Store size that triggers `rotate`. |
 | `max_age_days` | whole number (`0` = no limit) | `0` | Store age that triggers `rotate`. |
-| `archive_dir` | path | `/var/lib/kestrel/capture/archive` | Where archives are written. |
+| `archive_dir` | path inside `/var/lib/kestrel/capture/` | `/var/lib/kestrel/capture/archive` | Where archives are written. It must be a folder inside the capture store: housekeeping runs as `pi` and never writes or deletes anywhere else, and a value outside the store is refused (the web page won't save it; housekeeping skips archiving and logs why). |
 | `keep_archives` | whole number (`0` = keep all) | `0` | Keep only the newest N archive sets. |
 | `max_run_mb` | whole number (`0` = no cap) | `512` | Live cap on the raw packet-capture working directory (not your handshakes). At the cap, capture rolls and drops the raw files; handshakes are always kept. `0` can fill the card on a long session. |
 

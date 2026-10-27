@@ -65,7 +65,10 @@ This file is the normative reference.
   over parsing AngryOxide's terminal output.
 - **Packet captures:** AngryOxide's `.pcapng` and kismet DB (and any other
   per-run artifacts) stay in the run directory
-  `/var/lib/kestrel/capture/.run/`. The run directory is an implementation
+  `/var/lib/kestrel/capture-run/` (root-owned, outside the store, so the
+  root-run AngryOxide never writes into a pi-owned directory; releases before
+  this used the store's `.run/`, which the collector still drains). The run
+  directory is an implementation
   detail, not part of the stable surface; only the store above is contractual.
   It is also **size-bounded** (`[capture.housekeeping] max_run_mb`, on by
   default): the service clears stale raw files on start and rolls the capture
