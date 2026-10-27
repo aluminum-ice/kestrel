@@ -1087,6 +1087,11 @@ _STATUS_CSS = (
     ".dot.ok{background:var(--on-bd);}.dot.no{background:var(--err-bd);}"
     ".card{background:var(--card);border:1px solid var(--border);border-radius:12px;"
     "box-shadow:var(--shadow);overflow:hidden;margin:.3em 0 1em;}"
+    # a card holding free content (headings, text, a form) rather than .srow
+    # rows, which pad themselves: pad it the same, and keep its first and last
+    # child's margins from doubling that inset.
+    ".card.pad{padding:.85em 1em;}"
+    ".card.pad>:first-child{margin-top:0;}.card.pad>:last-child{margin-bottom:0;}"
     ".srow{display:flex;align-items:center;gap:.75em;padding:.85em 1em;"
     "border-bottom:1px solid var(--border);flex-wrap:wrap;}"
     ".srow:last-child{border-bottom:none;}"
@@ -1856,7 +1861,7 @@ def _update_controls(control):
                       + "What's new in " + latest + "?</a></p>")
     if not state.get("offerable"):
         reason = _esc(state.get("reason") or "it changed the base OS")
-        return ('<div class="card"><h3>Update available</h3><p>Version ' + latest
+        return ('<div class="card pad"><h3>Update available</h3><p>Version ' + latest
                 + ' is available, but it needs a reflash (' + reason
                 + "). It can't be applied in place.</p>" + notes_link + "</div>")
 
@@ -1882,7 +1887,7 @@ def _update_controls(control):
                   "fresh backup</button></form>")
 
     verb = "Retry" if fail else "Upgrade to " + latest
-    return ('<div class="card"><h3>Update available</h3>' + fail_html
+    return ('<div class="card pad"><h3>Update available</h3>' + fail_html
             + '<p>Version ' + latest + ' can be installed in place.</p>'
             + '<form method="post" action="/update' + qs + '">' + _csrf_field(control)
             + '<input type="hidden" name="action" value="apply">'
@@ -3309,7 +3314,7 @@ def _render_settings(cfg, control=None, message=None, error=False):
 
     note = config_catalog.ETC_DEFAULT_NOTE
     parts.append('<h2 id="network">Network file (not editable here)</h2>'
-                 '<div class="card"><div class="scol">'
+                 '<div class="card pad"><div class="scol">'
                  '<span class="skey">' + _esc(note["file"]) + "</span>"
                  '<span class="smeta">' + _esc(", ".join(note["keys"])) + "</span></div>"
                  '<div class="hint">' + _esc(note["why"]) + "</div>"
