@@ -234,8 +234,7 @@ def load_policy(policy_name, algorithm, model_dir, dwell_seconds=5,
                 "model env-spec v%s != current v%s; using baseline"
                 % (meta_spec, spec.SPEC_VERSION))
     try:
-        cls = _algo_class(algorithm)
-        model = cls.load(model_path)
+        model = _load_weights(algorithm, model_path)
     except KeyError:
         return baseline, "baseline", "unknown algorithm %r; using baseline" % (algorithm,)
     except ImportError as exc:
@@ -261,8 +260,7 @@ def load_learned(algorithm, model_path, logger=None):
     if not valid_algorithm(algorithm):
         return None, "unknown algorithm %r" % (algorithm,)
     try:
-        cls = _algo_class(algorithm)
-        model = cls.load(model_path)
+        model = _load_weights(algorithm, model_path)
     except ImportError as exc:
         return None, "ML stack unavailable (%s)" % exc
     except Exception as exc:  # noqa: BLE001 - a corrupt/incompatible model
@@ -270,6 +268,56 @@ def load_learned(algorithm, model_path, logger=None):
             logger.warning("loading model %s failed: %s", model_path, exc)
         return None, "model failed to load (%s)" % exc
     return LearnedPolicy(model, algorithm), ""
+
+
+# Construction overrides for an inference-only model. They only shrink the
+# training buffers SB3 allocates up front (a default DQN replay buffer holds a
+# million observations); the networks, and so the weights that fit them, are
+# the same as training builds with make_algorithm's defaults.
+_INFERENCE_KWARGS = {
+    "RecurrentPPO": {"n_steps": 2, "batch_size": 2},
+    "PPO": {"n_steps": 2, "batch_size": 2},
+    "DQN": {"buffer_size": 1, "learning_starts": 0},
+    "QR-DQN": {"buffer_size": 1, "learning_starts": 0},
+}
+
+
+def _spaces_env():
+    """A gymnasium env with only the fixed spec spaces: enough for SB3 to build
+    a model's networks for inference. It is never reset or stepped."""
+    import gymnasium as gym
+    import numpy as np
+    from gymnasium import spaces
+
+    class _SpacesEnv(gym.Env):
+        def __init__(self):
+            low, high = spec.observation_bounds()
+            self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
+            self.action_space = spaces.Discrete(spec.ACTION_N)
+
+        def reset(self, *, seed=None, options=None):
+            raise NotImplementedError("inference-only env")
+
+        def step(self, action):
+            raise NotImplementedError("inference-only env")
+
+    return _SpacesEnv()
+
+
+def _load_weights(algorithm, model_path):
+    """The model at ``model_path``, loaded as weights only.
+
+    SB3's ``cls.load`` also restores the Python objects saved alongside the
+    weights by unpickling them, which can run code from the file - and model
+    files arrive from a remote training host and the boot partition. This
+    builds a fresh model for the fixed spec spaces instead and copies in only
+    the tensors (``set_parameters`` skips the pickled data; torch loads the
+    tensors with ``weights_only``). A file whose networks don't match raises,
+    and the caller falls back to the baseline."""
+    model = make_algorithm(algorithm, _spaces_env(), device="cpu",
+                           **_INFERENCE_KWARGS[algorithm])
+    model.set_parameters(model_path, exact_match=True, device="cpu")
+    return model
 
 
 def make_algorithm(algorithm, env, logger=None, **kwargs):

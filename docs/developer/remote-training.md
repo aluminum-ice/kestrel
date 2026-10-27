@@ -348,7 +348,11 @@ Same as the uploaders and backup: the plugin declares the `network` capability,
 so enabling it takes the one-time authorized-use acknowledgment. It is SSH to a
 host the operator controls, with the operator's own key; no new secret is stored
 (the remote password is typed once into `ssh-copy-id` at setup and kept nowhere).
-First connection to a new host records its host key (`accept-new`). Nothing in
+The host key is confirmed once, interactively, when `remote-train setup` runs
+`ssh-copy-id`; every later connection requires that recorded key
+(`StrictHostKeyChecking=yes`), so an unattended run never trusts a host it
+hasn't seen. Pulled models are loaded as weights only (no pickled objects are
+restored from the file), so a bad model can't run code. Nothing in
 the model path runs as root on the device — pulled models land in the pi-owned
 agent dir.
 

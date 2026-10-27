@@ -391,7 +391,7 @@ class Backup(Plugin):
                  if not _excluded(n, excludes)]
         if not items:
             return (True, 0, 0, "")
-        sshopts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+        sshopts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
                    "-o", "ConnectTimeout=20",
                    "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
         try:
@@ -422,7 +422,7 @@ class Backup(Plugin):
         # down) within ~a minute instead of hanging the transfer, and an idle
         # link is kept from being dropped by the phone's power-save.
         return ("ssh -i %s -p %d -o BatchMode=yes "
-                "-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 "
+                "-o StrictHostKeyChecking=yes -o ConnectTimeout=20 "
                 "-o ServerAliveInterval=15 -o ServerAliveCountMax=4"
                 % (shlex.quote(key), self._port()))
 
