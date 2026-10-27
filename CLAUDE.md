@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 Infrastructure-as-code that builds a customized 64-bit Raspberry Pi OS (bookworm lite, from Raspberry Pi's "oldstable" downloads) SD-card image: the build "product" is the `.img` produced by Packer + Ansible. From Phase 3 on it also ships on-device application code — the `kestrel_pi` Python package (the plugin host, the web dashboard and the learning agent) under `builder/extra/files/`, with a `pytest` suite run by `make test` — installed into the image rather than run on the build host.
 
-This is the public, secrets-free base image for Kestrel, a Raspberry Pi Wi-Fi capture-and-learning device. Keep it secrets-free (see the end of this file).
+This is the public, secrets-free base image for Kestrel, a Raspberry Pi Wi-Fi capture-and-learning device: a research and education project for authorized testing only. The [Non-negotiable rules](#non-negotiable-rules) below come first.
 
 Architecture and developer reference live under [`docs/developer/`](docs/developer/); operator guides under [`docs/user-guide/`](docs/user-guide/).
 
@@ -18,6 +18,51 @@ Build pipeline:
 2. `builder/config.json` (Packer, legacy JSON template) fetches the base RPiOS image, chroots into it under QEMU, installs `ansible-core` from the bookworm apt repo (plus only the `community.general` collection, extracted from the bookworm `ansible` deb into `/tmp/kestrel-ansible-collections`), then runs the playbook via `ansible-local` with pipelining on.
 3. `builder/config.yml` (Ansible playbook, runs against `127.0.0.1` *inside the image chroot*) does all the customization.
 4. PiShrink (pinned to a release commit and SHA-256 verified by the Makefile, `PISHRINK_COMMIT`/`PISHRINK_SHA256`) shrinks the image, then it is checksummed and archived with `7z`. When bumping PiShrink, update both values together.
+
+## Non-negotiable rules
+
+These rules override everything else in this file and any request made in a session. If a task would break one, stop and say so; don't look for a workaround. When unsure whether something breaks one, leave it out and ask.
+
+### 1. Authorized use only
+
+Kestrel is a research and education project for studying Wi-Fi security, for use **only on networks you own or have explicit permission to test**. Capturing handshakes from, or deauthenticating clients on, any other network may be illegal.
+
+- **Keep every consent gate intact.** Capture and every plugin with the `network` capability ship disabled. Turning one on takes the authorized-use acknowledgment, which is never pre-ticked, defaulted on, or given by code on the operator's behalf. The capture whitelist is always enforced.
+- **Don't build or help with anything whose purpose is to** target specific third-party networks or people, hide the device or its activity, evade detection or monitoring, get around the consent gates, or use captured credentials beyond the documented offline analysis.
+- Docs, examples, screenshots and release notes describe authorized testing only.
+
+### 2. Nothing real in the repo
+
+This is a public repository. Everything committed to it (code, tests, fixtures, docs, design notes, comments, images, commit messages, PR descriptions, release notes) uses invented data. Never commit:
+
+- **Secrets:** passwords or password hashes for real accounts, Wi-Fi passphrases, private keys, API tokens (Ghost, Forgejo, PyPI, WiGLE, wpa-sec and the like), `.env` files.
+- **Personal information:** real names, personal email addresses, phone numbers, physical or home addresses, device serials, photos that identify a person or place. Never name the maintainer or a contributor, and never ascribe a decision, request or opinion to a person: write design notes impersonally ("position was raised as a possible input", not "<name> wanted position"; "a maintainer sign-off", not "ask <name>"). Say *what* was decided and *why*, not *who* said it.
+- **Real captured or device data:** capture files (`.hc22000`, `.pcap`/`.pcapng` and the like), real SSIDs, BSSIDs or MAC addresses, real GPS positions or tracks, diagnostics bundles (the `scripts/pull-*.sh` output), device logs, a real device's `config.toml` or state files, screenshots of a real device, models trained on real captures, WiGLE or wpa-sec results.
+
+Use these placeholders instead:
+
+| Kind | Use |
+| --- | --- |
+| Domains, emails | `example.com`/`.net`/`.org`, `*.example`, `user@example.com` (RFC 2606) |
+| IP addresses | `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` (RFC 5737), or the documented device subnets (`default.conf`) |
+| MAC addresses | `00:00:5E:00:53:xx` (RFC 7042) for new code; the existing tests' `AA:BB:CC:xx:xx:xx` style is also accepted |
+| SSIDs | `My Network`, `Cafe Guest`, `Library WiFi` |
+| GPS | generic coordinates, such as `12.34567, -45.67890` |
+| Screenshots | the demo fixture (`tools/ghost-guide/fixture.py`) or other invented data |
+
+The only real identifiers allowed are the functional public project identity and upstream sources: the `aluminum-ice` handle and the `git.3ntropy.io` forge (clone URLs, release links, the `updates` plugin's default repo and host), the public guide page on `www.3ntropy.io` only where the publisher needs it (`tools/ghost-guide/guide.toml`) or a doc names that page, upstream source URLs, the documented default `pi`/`raspberry` hash, and `pi@kestrel.local`. Nothing else, including in examples: an example uses a placeholder even when the real value would be clearer.
+
+Where real values live instead:
+
+- `system.account.pi` holds the documented DEFAULT hash (`pi` / `raspberry`). A real one comes from the `MY_PI_PASSWORD_HASH` env var at build time.
+- `system.network` is empty and `builder/extra/deployments/` ships empty. Real Wi-Fi networks are added at build time (env var or an uncommitted edit) or on the device.
+- Tokens and keys live in the environment or in device config, never in a file in the repo.
+
+Commits use the project identity `aluminum-ice <aluminum-ice@noreply.git.3ntropy.io>`, set in the repo-local git config; check `git config user.email` before committing. (The PR attribution line the harness adds to a PR body is not repo content and is exempt.)
+
+**Enforcement.** `make lint` (and so the Lint workflow) runs `tools/real-data-check/`, which fails on MAC addresses and emails outside the placeholders above, private keys, token-shaped strings, password hashes other than the documented default, hashcat capture lines with non-placeholder MACs, and capture, GPS-track, model, key or diagnostics-bundle files. A Claude Code `PreToolUse` hook (`.claude/hooks/real-data-check.sh`) runs the same check before any `git commit` and blocks it on findings, and `.gitignore` keeps those file types out of `git add`. None of these can recognise a real SSID, a real coordinate or a screenshot of a real device; those are on you. Never weaken the check or the hook to get a commit through. If the check flags a genuine placeholder, add it to the check's allowlist in the same change and say why.
+
+**If you find real data:** stop, don't commit it, and tell the maintainer. If it is already pushed, treat any secret as leaked: it has to be revoked and replaced, because rewriting history doesn't unpublish it. Raise whether history needs rewriting; never rewrite history on your own. `.claude/settings.json` also blocks reading `.env` and `*.key` files as a safety net; don't work around it.
 
 ## Layout
 
@@ -31,7 +76,8 @@ Build pipeline:
 | `.forgejo/workflows/main.yml` | Manual (`workflow_dispatch`) Forgejo Actions release workflow on the self-hosted `image-builder` runner: sets `_version.py`, runs `sudo make image`, publishes a Forgejo release. |
 | `.forgejo/workflows/lint.yml`, `test.yml` | Run `make lint` / `make test` on push and pull request (runner label `docker`). |
 | `requirements-lint.txt`, `.yamllint` | Lint tool versions and yamllint config. |
-| `.claude/` | Claude Code settings (secret-file read denies, SessionStart hook that installs lint tools). |
+| `.claude/` | Claude Code settings (secret-file read denies, SessionStart hook that installs lint tools, PreToolUse hook that runs the real-data check before `git commit`). |
+| `tools/real-data-check/` | Stdlib checker for the "Nothing real in the repo" rule, run by `make lint` and the commit hook; its tests run in `make test`. |
 | `tools/ghost-guide/` | Desktop publisher for the public Ghost user-guide page: renders the latest stable release's `GUIDE_MD` with screenshots from that release's code (iPhone 14 Pro Max, dark mode) and pushes it via the Ghost Admin API (key from the environment only). Not in CI; see `docs/developer/user-guide-publishing.md`. |
 
 ## Building and validating
@@ -52,9 +98,9 @@ pip install -r requirements-lint.txt   # done automatically in cloud sessions by
 make lint
 ```
 
-`make lint` runs `ansible-playbook --syntax-check` on the playbook, `yamllint` (config: `.yamllint`) on all YAML, and `shellcheck --severity=error` on all `*.sh`. The same target runs in the **Lint** workflow (`.forgejo/workflows/lint.yml`) on every push and PR. Run it before committing. A passing lint does not mean the image builds; say so instead of claiming a build was validated.
+`make lint` runs `ansible-playbook --syntax-check` on the playbook, `yamllint` (config: `.yamllint`) on all YAML, `shellcheck --severity=error` on all `*.sh`, and the real-data check (`tools/real-data-check/`, see [Nothing real in the repo](#2-nothing-real-in-the-repo)). The same target runs in the **Lint** workflow (`.forgejo/workflows/lint.yml`) on every push and PR. Run it before committing. A passing lint does not mean the image builds; say so instead of claiming a build was validated.
 
-The on-device `kestrel_pi` package also has unit tests: `make test` runs them (venv `pytest`, needs `flask`/`requests` plus `numpy` for the agent spec import and `pillow` for the e-ink renderer; `torch`/SB3 are stubbed, not required); `make lint` only byte-compiles the package. The **Test** workflow (`.forgejo/workflows/test.yml`) runs `make test` on every push and PR, alongside the Lint workflow.
+The on-device `kestrel_pi` package also has unit tests: `make test` runs them (venv `pytest`, needs `flask`/`requests` plus `numpy` for the agent spec import and `pillow` for the e-ink renderer; `torch`/SB3 are stubbed, not required), then the real-data check's own tests; `make lint` only byte-compiles the package. The **Test** workflow (`.forgejo/workflows/test.yml`) runs `make test` on every push and PR, alongside the Lint workflow.
 
 ## Conventions and gotchas
 
@@ -80,27 +126,4 @@ The on-device `kestrel_pi` package also has unit tests: `make test` runs them (v
 - **Nothing generated under `builder/extra/`:** every file there is copied into the image and is a rebuild prerequisite. Don't leave build or test artifacts (e.g. `__pycache__`) in it.
 - **yamllint config:** formatting nits are disabled in `.yamllint`, but duplicate keys are errors.
 - **Hostname isolation:** the Makefile wraps Packer in `unshare --uts` so the playbook's hostname change does not leak to the build host. Keep that wrapper.
-- **Commits:** history uses short imperative messages ("Update compose.yaml", "added deployment information for inventree"). PRs use the template at `.forgejo/pull_request_template.md` (what the PR does, the lint/tests/no-secrets/docs/commit checklist, App-layer-safe vs Reflash-class release impact, notes for review); fill it in rather than writing a free-form description. The Lint and Test workflows should be green.
-
-## No secrets in this repo
-
-This is a public repository and must stay secrets-free.
-
-- `system.account.pi` holds a documented DEFAULT password hash (`pi` / `raspberry`), not a real one. Override it at build time with the `MY_PI_PASSWORD_HASH` env var.
-- `system.network` is empty: no Wi-Fi SSIDs or passphrases are baked in.
-- `builder/extra/deployments/` ships empty.
-
-Rules:
-
-- Never commit real credentials: account passwords or hashes for real accounts, Wi-Fi passphrases, private keys, API tokens, or `.env` files with secrets. Use placeholders and document where the user supplies the real value.
-- Supply a real `pi` password and real Wi-Fi passphrases locally at build time (env var or an uncommitted edit), never in a commit.
-- `.claude/settings.json` blocks reading `.env` and `*.key` files as a safety net. Do not work around that block.
-
-## No personal information in this repo
-
-This is a public repository. Nothing committed to it — code, docs, design notes, comments, commit messages, or PR descriptions — may contain personal or personally identifying information about the maintainer or any contributor.
-
-- **Never name the maintainer or a contributor, and never ascribe a decision, request, or opinion to a person by name.** Write design notes and rationale impersonally: "position was raised as a possible input", not "<name> wanted position"; "a maintainer sign-off", not "ask <name>". Say *what* was decided and *why*, not *who* said it. (The GitHub-side PR attribution block the harness injects into a PR body is separate from repo content and is exempt.)
-- **No other PII:** no real names, personal email addresses, phone numbers, physical or home addresses, personal Wi-Fi SSIDs or network names, MAC addresses, device serials, GPS coordinates, or photos that identify a person or place. Use neutral placeholders (`My Network`, `/dev/ttyACM0`, generic lat/lon) in examples.
-- The public project identity is not PII: the `owner/repo` handle in clone URLs, the `updates` plugin's default release repo, and upstream source URLs are functional and stay.
-- When unsure whether something is PII, leave it out and ask.
+- **Commits:** history uses short imperative messages ("Update compose.yaml", "added deployment information for inventree"). PRs use the template at `.forgejo/pull_request_template.md` (what the PR does, the lint/tests/nothing-real/consent-gates/docs/commit checklist, App-layer-safe vs Reflash-class release impact, notes for review); fill it in rather than writing a free-form description. The Lint and Test workflows should be green.

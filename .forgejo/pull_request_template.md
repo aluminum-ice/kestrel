@@ -10,9 +10,10 @@ disclosures that let the maintainer merge on the green checks without a manual
 audit. Tick what applies; a red check will block, an unticked box will not.
 -->
 
-- [ ] **Lint passes** — `make lint` (ansible `--syntax-check`, `yamllint`, `shellcheck --severity=error`). The **Lint** workflow runs this on the PR.
-- [ ] **Tests pass** — `make test` (the `kestrel_pi` pytest suite). The **Test** workflow runs this on the PR.
-- [ ] **No secrets, no personal information.** This is a public repository. The diff contains no real account passwords or hashes, Wi-Fi passphrases, private keys, API tokens, `.env` files, real names, personal emails, MAC addresses, device serials, or GPS coordinates — placeholders only.
+- [ ] **Lint passes** — `make lint` (ansible `--syntax-check`, `yamllint`, `shellcheck --severity=error`, and the real-data check). The **Lint** workflow runs this on the PR.
+- [ ] **Tests pass** — `make test` (the `kestrel_pi` pytest suite and the real-data check's tests). The **Test** workflow runs this on the PR.
+- [ ] **Nothing real: no secrets, no personal information, no real data.** This is a public repository. The diff contains no real account passwords or hashes, Wi-Fi passphrases, private keys, API tokens, `.env` files, real names, personal emails, device serials, and no real captured or device data: SSIDs, MAC addresses, GPS coordinates, capture files, diagnostics bundles, logs, or screenshots of a real device — placeholders only. The real-data check catches MACs, emails, keys and capture files; real SSIDs, coordinates and screenshots are on you.
+- [ ] **Consent gates intact.** Capture and network plugins still ship disabled, enabling them still takes the authorized-use acknowledgment (never pre-ticked or given by code), and the capture whitelist is still enforced.
 - [ ] **Docs updated in the same PR**, if this changes something an operator sees or configures: the README package table, the relevant page under `docs/`, and the on-device operator guide (`GUIDE_MD` in `kestrel_pi/userguide.py`) where it applies.
 - [ ] Commit messages are short and imperative.
 
