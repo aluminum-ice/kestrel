@@ -7,7 +7,7 @@
 # Interactive whiptail menus by default; flags do the same without prompts:
 #   kestrel setup
 #   kestrel network                       # menu
-#   sudo kestrel network wifi --ssid NAME [--psk PASS] [--hidden] [--country GB] [--band 2.4|5|any]
+#   sudo kestrel network wifi --ssid NAME [--psk-stdin | --psk PASS] [--hidden] [--country GB] [--band 2.4|5|any]
 #   sudo kestrel network wifi --band 2.4|5|any   # change the saved network's band
 #   kestrel network status
 #   sudo kestrel network bt-pair          # forget the phone, reopen onboarding
@@ -45,8 +45,10 @@ Usage: $PROG <command>
   setup              Guided first-time setup (network and capture)
   network            Network menu (Wi-Fi station, Bluetooth status, re-pair)
   network status     Show Bluetooth PAN and Wi-Fi state
-  network wifi ...    Set Wi-Fi station credentials (--ssid, --psk, --hidden, --country,
-                     --band 2.4|5|any); --band alone changes the saved network
+  network wifi ...    Set Wi-Fi station credentials (--ssid, --psk-stdin or --psk,
+                     --hidden, --country, --band 2.4|5|any); --band alone changes
+                     the saved network. The 'network' menu asks for the
+                     passphrase with the input hidden
   network bt-pair    Forget the paired phone and reopen Bluetooth onboarding
   capture            Capture menu (AngryOxide; opt-in, off by default)
   capture status     Show capture state, adapter and store
@@ -60,9 +62,11 @@ Usage: $PROG <command>
   plugins            Plugin menu (list, info, enable, disable)
   plugins list       List plugins and whether each is enabled
   plugins info NAME  Show a plugin's capabilities, options, deps and health
-  plugins enable NAME [--yes] [--set k=v ...]   Enable a plugin: asks the
-                     authorized-use ack for uploaders, then (in a terminal)
-                     walks its options (secrets masked); --set k=v is scriptable
+  plugins enable NAME [--yes] [--set k=v ...] [--set-stdin KEY]
+                     Enable a plugin: asks the authorized-use ack for
+                     uploaders, then (in a terminal) walks its options
+                     (secrets masked); --set k=v is scriptable, and
+                     --set-stdin KEY reads one secret from stdin instead
   plugins disable NAME   Disable a plugin
   web                Web page menu (address, login, plugin controls)
   web status         Show the web page address and whether plugin controls are on
@@ -146,7 +150,10 @@ cmd_wifi() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --ssid) ssid=$2; shift 2 ;;
-            --psk) psk=$2; shift 2 ;;
+            --psk) psk=$2; shift 2
+                   log "warning: a passphrase given with --psk is now in your shell history and the system journal (sudo logs the command line). Next time use the menu ('sudo $PROG network', input hidden) or --psk-stdin; consider changing this one." ;;
+            --psk-stdin) IFS= read -r psk || [ -n "$psk" ] || die "--psk-stdin: nothing on stdin"
+                   shift ;;
             --hidden) hidden=yes; shift ;;
             --country) country=$2; shift 2 ;;
             --band) band=$2; shift 2 ;;
@@ -195,7 +202,11 @@ menu_wifi() {
     [ -n "$ssid" ] || { whiptail --msgbox "No SSID entered." 8 50; return 0; }
     psk=$(whiptail --passwordbox "Passphrase (leave empty for an open network):" 9 60 3>&1 1>&2 2>&3) || return 0
     whiptail --yesno "Is this a hidden network?" 8 50 && hidden=yes || hidden=no
-    if cmd_wifi --ssid "$ssid" ${psk:+--psk "$psk"} $([ "$hidden" = yes ] && echo --hidden); then
+    # The passphrase goes in on stdin (a here-string), never as an argument.
+    local -a wifi_args=(--ssid "$ssid")
+    [ "$hidden" = yes ] && wifi_args+=(--hidden)
+    [ -n "$psk" ] && wifi_args+=(--psk-stdin)
+    if cmd_wifi "${wifi_args[@]}" <<<"$psk"; then
         whiptail --msgbox "Wi-Fi saved for \"$ssid\"." 8 50
     else
         whiptail --msgbox "Could not save Wi-Fi settings (see the terminal)." 8 60
@@ -699,21 +710,33 @@ else:
     fi
 }
 
+# Set a plugin option through plugins-ctl's stdin, so the value (a secret) is
+# never a process argument. printf is a builtin, so it never is one either.
+plugins_ctl_set_secret() {   # args: plugin key value
+    printf '%s\n' "$3" | plugins_ctl set-stdin "$1" "$2"
+}
+
 cmd_plugins_enable() {
     need_root
-    local name= yes=no
+    local name= yes=no stdin_key= stdin_val=
     declare -A preset
     while [ $# -gt 0 ]; do
         case "$1" in
             --yes|-y) yes=yes; shift ;;
             --set) [ $# -ge 2 ] || die "--set needs key=value"
                    preset["${2%%=*}"]="${2#*=}"; shift 2 ;;
+            --set-stdin) [ $# -ge 2 ] || die "--set-stdin needs an option name"
+                   [ -z "$stdin_key" ] || die "--set-stdin can be given once (stdin holds one value)"
+                   stdin_key=$2; shift 2 ;;
             --*) die "unknown option for 'plugins enable': $1" ;;
             *) [ -z "$name" ] || die "one plugin at a time"; name=$1; shift ;;
         esac
     done
-    [ -n "$name" ] || die "usage: $PROG plugins enable <name> [--yes] [--set k=v ...]"
+    [ -n "$name" ] || die "usage: $PROG plugins enable <name> [--yes] [--set k=v ...] [--set-stdin KEY]"
     plugins_ctl caps "$name" >/dev/null || die "cannot enable plugin '$name'"
+    if [ -n "$stdin_key" ]; then
+        IFS= read -r stdin_val || [ -n "$stdin_val" ] || die "--set-stdin $stdin_key: nothing on stdin"
+    fi
 
     echo "Enabling plugin '$name'. Declared capabilities:"
     plugins_ctl caps "$name" | sed 's/^/  - /'
@@ -721,23 +744,41 @@ cmd_plugins_enable() {
         plugins_network_ack "$yes" || { log "not enabled (acknowledgment declined)"; return 1; }
     fi
 
-    # Apply explicit --set overrides up front (any key, declared or not).
+    # Read the schema first (an array, so the prompts below never contend with
+    # the loop's stdin): it says which options are secrets.
+    local -a schema_lines=()
+    mapfile -t schema_lines < <(plugins_ctl schema "$name")
+    declare -A is_secret
+    local line opt typ required secret has_value current val
+    for line in "${schema_lines[@]}"; do
+        IFS=$'\t' read -r opt typ required secret has_value current <<<"$line"
+        [ "$secret" = 1 ] && is_secret["$opt"]=1
+    done
+
+    # Apply explicit --set / --set-stdin values up front (any key, declared or
+    # not). Secrets go through stdin; one given with --set is already in the
+    # shell history and the journal (sudo logs the command line), so say so.
     local key
     for key in "${!preset[@]}"; do
-        plugins_ctl set "$name" "$key" "${preset[$key]}"
+        if [ -n "${is_secret[$key]+x}" ]; then
+            log "warning: '$key' is a secret, and passed with --set it is now in your shell history and the system journal (sudo logs the command line). Next time leave it out to be asked for it (input hidden), or use --set-stdin $key; consider replacing this one."
+            plugins_ctl_set_secret "$name" "$key" "${preset[$key]}"
+        else
+            plugins_ctl set "$name" "$key" "${preset[$key]}"
+        fi
     done
+    if [ -n "$stdin_key" ]; then
+        plugins_ctl_set_secret "$name" "$stdin_key" "$stdin_val"
+        preset["$stdin_key"]=1
+    fi
 
     # Interactive = a terminal and not --yes. Then walk every declared option
     # (secrets masked, scalars prefilled with the current/default, bools as
     # yes/no); non-interactively, only enforce that required options have a
-    # value (pass the rest with --set). Read the schema into an array first so
-    # the prompts never contend with the loop's stdin.
+    # value (pass the rest with --set or --set-stdin).
     local interactive=no
     { [ "$yes" != yes ] && [ -t 0 ]; } && interactive=yes
-    local -a schema_lines=()
-    mapfile -t schema_lines < <(plugins_ctl schema "$name")
 
-    local line opt typ required secret has_value current val
     for line in "${schema_lines[@]}"; do
         IFS=$'\t' read -r opt typ required secret has_value current <<<"$line"
         [ -n "$opt" ] || continue
@@ -745,6 +786,7 @@ cmd_plugins_enable() {
         [ -n "${preset[$opt]+x}" ] && continue
         if [ "$interactive" != yes ]; then
             if [ "$required" = 1 ] && [ "$has_value" = 0 ]; then
+                [ "$secret" = 1 ] && die "plugin '$name' needs option '$opt' (a secret); run it in a terminal to be asked, or pass it on stdin with --set-stdin $opt"
                 die "plugin '$name' needs option '$opt'; pass --set $opt=VALUE"
             fi
             continue
@@ -764,7 +806,7 @@ cmd_plugins_enable() {
                     if [ -z "$val" ]; then
                         { [ "$required" = 1 ] && [ "$has_value" = 0 ]; } && die "option '$opt' is required"
                     else
-                        plugins_ctl set "$name" "$opt" "$val"
+                        plugins_ctl_set_secret "$name" "$opt" "$val"
                     fi
                 else
                     val=$(prompt_text "$name: $opt" "$current")

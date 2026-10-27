@@ -271,19 +271,21 @@ is listed roughly by impact.
   --no-same-permissions`, or accept regular files only.
 - **Pick up when:** any change to agent provisioning.
 
-### Keep secrets off command lines
+### Keep the Wi-Fi passphrase out of `nmcli`'s arguments
 
-- **What:** docs and `GUIDE_MD` show `--psk "..."`, `--set api_key=...` and
-  `--set token=...`. Those land in shell history, and sudo logs the full command
-  to the journal, which is persistent on the card and readable by `pi` (`adm`).
-  The diagnostics bundle from `pull-connectivity-diagnostics.sh` also carries
-  the Wi-Fi network name (its journal filter catches `wifi-provision` lines) and
-  each bundle's `MANIFEST.txt` records the raw `user@host`.
-- **Why deferred:** docs and diagnostics change, no code path at risk.
-- **What to do:** lead with the interactive prompts (they already mask input),
-  add a `--psk-stdin`/`--set-stdin` like `web auth --password-stdin`, redact
-  SSIDs and the target in the diagnostics bundles.
-- **Pick up when:** the next docs pass on onboarding or plugins.
+- **What:** `wifi_apply` (`common.sh`) passes the passphrase to `nmcli
+  connection add ... wifi-sec.psk` as an argument, so it shows in that root
+  process's command line, which any local user can read while it runs (a
+  fraction of a second). The CLI and the `plugins-ctl` hand-off no longer put
+  secrets in arguments (`--psk-stdin`, `--set-stdin`, `plugins-ctl set-stdin`).
+- **Why deferred:** a brief window on a device whose only local accounts are
+  `pi` and root; `nmcli` has no stdin option for a new profile's secret, so the
+  fix means writing the NetworkManager keyfile directly or using `nmcli
+  --ask`, which needs care with the provisioning path.
+- **What to do:** create the profile without the secret, then set it through
+  a `0600` keyfile or `nmcli connection modify ... passwd-file`, and test the
+  boot-partition provisioning path too.
+- **Pick up when:** any change to Wi-Fi provisioning.
 
 ### Smaller web and root-helper items
 

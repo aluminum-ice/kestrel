@@ -255,7 +255,9 @@ REMOTE
 # A small manifest naming what was collected and from where.
 {
   echo "collected: $stamp"
-  echo "target:    $target (port $port)"
+  # The device's address or name stays out of a bundle meant for sharing.
+  case "$target" in *@*) shown="${target%%@*}@<host>" ;; *) shown="<host>" ;; esac
+  echo "target:    $shown (port $port)"
   echo "contents:"
   echo "  web-report.txt   one labelled, MAC/IP-redacted read-only report:"
   echo "                   version, update status, update run-state + rollback"

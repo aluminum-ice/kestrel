@@ -561,7 +561,8 @@ Drop `my-plugin.py` in the operator directory and enable it from the dashboard
 **Plugins** page (with the login on) or the terminal:
 
 ```bash
-sudo kestrel plugins enable my-plugin --set api_key=... 
+sudo kestrel plugins enable my-plugin                # walks the options; secrets hidden
+printf '%s\n' "$KEY" | sudo kestrel plugins enable my-plugin --set-stdin api_key   # scripted
 sudo kestrel plugins info my-plugin     # capabilities, options, deps, health
 ```
 

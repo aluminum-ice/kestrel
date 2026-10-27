@@ -140,11 +140,14 @@ fork, give it a GitHub personal-access token.
 - Set it on the device (and point at your fork if its owner or name differs):
 
   ```bash
-  sudo kestrel plugins enable updates --set repo=you/your-fork --set token=ghp_xxx
+  sudo kestrel plugins enable updates --set repo=you/your-fork   # then asks for the token, hidden
+  # or from a script, the token on stdin (never --set token=..., which lands in
+  # your shell history and the system journal):
+  read -rs TOKEN; printf '%s\n' "$TOKEN" | sudo kestrel plugins enable updates --set-stdin token
   ```
 
 The token is stored only on your device and is never shown back to you afterwards.
-To change it, run the command again with the new token; to go back to the public
+To change it, run the command again and enter the new token; to go back to the public
 releases, clear it with `--set token=`. A wrong or expired token shows up as a
 sign-in error in the logs, and an unauthenticated check of a private fork looks
 like "no release found".

@@ -142,7 +142,7 @@ With no Ethernet, reach the device over Bluetooth PAN (primary) or Wi-Fi. The bu
 
 **Bluetooth PAN (phone tethering).** On first boot the device opens a 10-minute pairing window (adjustable in `/etc/default/kestrel`) and advertises as `kestrel-XXXX`. Turn on your phone's Bluetooth tethering, then pair; pairing uses Just Works (no PIN), and the window closes on the first pairing. The device then connects to the phone's network, gets an address by DHCP (falling back to the standard iPhone/Android tethering addresses), reconnects on every boot, and is reachable at `ssh pi@<address>`. To onboard a different phone later: `sudo kestrel network bt-pair`.
 
-**Wi-Fi station, at runtime.** `sudo kestrel network wifi --ssid "My Network" --psk "my-passphrase"` (add `--hidden`, `--country GB` or `--band 5` as needed), or run `kestrel network` for a menu.
+**Wi-Fi station, at runtime.** Run `sudo kestrel network` for a menu that asks for the passphrase with the input hidden, or from a script `printf '%s\n' "$PSK" | sudo kestrel network wifi --ssid "My Network" --psk-stdin` (add `--hidden`, `--country GB` or `--band 5` as needed). Avoid `--psk "..."`: it lands in your shell history and the system journal.
 
 **Wi-Fi band.** The built-in Wi-Fi joins on **2.4 GHz** by default: it works on every board (the Zero 2 W has no 5 GHz) and avoids mesh routers whose 5 GHz radios refuse the Pi. Choose per network with `band=` in the boot file or `--band` (`2.4`, `5` or `any`). To change the network already saved, without re-entering the passphrase: `sudo kestrel network wifi --band 5`. The default for newly saved networks is `WIFI_BAND` in `/etc/default/kestrel`.
 
@@ -208,11 +208,11 @@ Manage plugins with the `kestrel plugins` tool rather than editing `config.toml`
 kestrel plugins list                   # every plugin and whether it's enabled
 kestrel plugins info gps               # capabilities, options, deps, live health
 sudo kestrel plugins enable session-stats
-sudo kestrel plugins enable wpa-sec --set api_key=YOURKEY   # uploader: prompts/collects creds
+sudo kestrel plugins enable wpa-sec    # uploader: asks for the key (input hidden)
 sudo kestrel plugins disable wpa-sec
 ```
 
-Running `enable` in a terminal walks you through the plugin's declared options — secrets masked, scalars pre-filled with the current/default (press Enter to keep), and yes/no for toggles like wpa-sec's `download_results` — so everything can be set at enable time. `--set key=value` sets any option non-interactively (handy for scripting; note the value lands in shell history).
+Running `enable` in a terminal walks you through the plugin's declared options — secrets masked, scalars pre-filled with the current/default (press Enter to keep), and yes/no for toggles like wpa-sec's `download_results` — so everything can be set at enable time. `--set key=value` sets any option non-interactively (handy for scripting). For a secret use `--set-stdin KEY` and pass the value on stdin instead: anything on the command line lands in your shell history and in the system journal (sudo logs every command line), and the CLI warns if a secret is given with `--set`.
 
 Operator-added plugins drop a `.py` into `/etc/kestrel/plugins/` (which overrides a shipped plugin of the same name) and get a `[plugins.<name>]` table in `config.toml`. The web status page (and each web plugin's routes under `/plugins/<name>/…`) is served on the management interfaces and loopback only — `[web] bind = "management"`, default port 8080 — never on the capture dongle.
 

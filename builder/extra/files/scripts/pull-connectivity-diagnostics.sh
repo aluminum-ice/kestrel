@@ -11,7 +11,7 @@
 #   - Bluetooth PAN: whether a phone is paired (yes/no only), whether the PAN
 #     NetworkManager profiles exist and are up, and the bnep0 link;
 #   - Wi-Fi station: whether the kestrel-wifi profile exists and is connected,
-#     and its interface link (the SSID is never read);
+#     and its interface link (the network name is masked, see below);
 #   - interfaces, default routes and DNS resolvers as the device sees them;
 #   - what the device thinks of its own connectivity (NetworkManager's state
 #     and a name lookup), and the connectivity journal lines (bt-pan,
@@ -20,9 +20,11 @@
 #
 # Approach-A redaction: the whole report is passed through a MAC/IPv4/IPv6
 # masker ON THE DEVICE before it leaves, so the paired phone's address, link
-# IPs, gateway and resolver addresses are all masked. It never reads the Wi-Fi
-# SSID or passphrase, never dumps NetworkManager secrets and never touches
-# config.toml, capture output or keys, so the bundle is safe to share.
+# IPs, gateway and resolver addresses are all masked, and so is the Wi-Fi
+# network name wherever a log line or a connection name would show it. It
+# never reads the Wi-Fi passphrase, never dumps NetworkManager secrets and
+# never touches config.toml, capture output or keys, so the bundle is safe to
+# share.
 #
 # Usage (from a repo checkout, or a copy pulled off a unit):
 #   pull-connectivity-diagnostics.sh user@host [ssh-port]
@@ -77,11 +79,13 @@ if [ -r /usr/local/lib/kestrel/common ]; then
   WIFI_CON=${PWN_WIFI_CON:-$WIFI_CON}
 fi
 
-# Mask hardware (MAC) and peer (IPv4/IPv6) addresses. MAC first, then IPv6
-# (compressed :: and >=4-group forms, leaving HH:MM:SS clock times alone),
-# then IPv4.
+# Mask the Wi-Fi network name the provisioning and connect messages quote
+# ("created for", "set for", "connect to"), then hardware (MAC) and peer
+# (IPv4/IPv6) addresses: MAC first, then IPv6 (compressed :: and >=4-group
+# forms, leaving HH:MM:SS clock times alone), then IPv4.
 redact() {
   sed -E \
+    -e 's/(created for|station set for|connect to) "[^"]*"/\1 "<ssid>"/g' \
     -e 's/\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b/<mac>/g' \
     -e 's/\b([0-9A-Fa-f]{1,4}:){1,}:([0-9A-Fa-f]{1,4}:)*[0-9A-Fa-f]{1,4}\b/<ipv6>/g' \
     -e 's/\b([0-9A-Fa-f]{1,4}:){4,}[0-9A-Fa-f]{1,4}\b/<ipv6>/g' \
@@ -137,7 +141,11 @@ report() {
   echo "  name lookup (github.com): $(getent hosts github.com >/dev/null 2>&1 && echo ok || echo FAILED)"
 
   sec "NetworkManager device status"
-  nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>&1 || echo "(nmcli unavailable)"
+  # A Wi-Fi profile made outside kestrel (nmtui, nmcli) is named after its
+  # SSID, so mask a wifi row's connection name unless it is kestrel's own.
+  nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>&1 \
+    | awk -F: -v own="$WIFI_CON" 'BEGIN { OFS = ":" } $2 == "wifi" && $4 != "" && $4 != own { $4 = "<connection>" } { print }' \
+    || echo "(nmcli unavailable)"
 
   sec "BT PAN tunables (/etc/default/kestrel, non-secret)"
   grep -E '^(BT_ONBOARD_MINUTES|BT_PAN_DHCP_TIMEOUT|BT_PAN_RETRY_SECONDS|BT_PAN_STATIC_ADDRESSES|BT_PAN_FALLBACK_DNS|BT_PAN_STACK_RESET|BT_PAN_RESET_AFTER|WIFI_BAND)=' \
@@ -158,7 +166,9 @@ REMOTE
 # A small manifest naming what was collected and from where.
 {
   echo "collected: $stamp"
-  echo "target:    $target (port $port)"
+  # The device's address or name stays out of a bundle meant for sharing.
+  case "$target" in *@*) shown="${target%%@*}@<host>" ;; *) shown="<host>" ;; esac
+  echo "target:    $shown (port $port)"
   echo "contents:"
   echo "  connectivity-report.txt  one labelled, MAC/IP-redacted read-only"
   echo "                           report: BT PAN + Wi-Fi profile/link state,"

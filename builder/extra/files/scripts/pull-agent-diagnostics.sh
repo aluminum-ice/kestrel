@@ -81,7 +81,9 @@ $ssh_cmd "$target" \
 # 4. A small manifest naming what was collected and from where.
 {
   echo "collected: $stamp"
-  echo "target:    $target (port $port)"
+  # The device's address or name stays out of a bundle meant for sharing.
+  case "$target" in *@*) shown="${target%%@*}@<host>" ;; *) shown="<host>" ;; esac
+  echo "target:    $shown (port $port)"
   echo "agent_dir: $agent_dir"
   echo "contents:"
   echo "  agent-meta.tar.gz      model + staged sidecars, status.json, context.json"

@@ -12,11 +12,22 @@ it can never land on the capture dongle even if interface numbers change.
 ## Option A — add Wi-Fi from the device
 
 Once you're logged in (over Bluetooth, Ethernet, or a keyboard/monitor), the
-`kestrel` tool saves a network for you:
+`kestrel` tool saves a network for you. The menu asks for the passphrase with
+the input hidden:
 
 ```bash
-sudo kestrel network wifi --ssid "MyNetwork" --psk "MyPassword"
+sudo kestrel network      # choose Wi-Fi station
 ```
+
+From a script, pass the passphrase on stdin so it stays out of your shell
+history and the system journal (sudo logs every command line):
+
+```bash
+read -rs PSK    # type the passphrase (not echoed)
+printf '%s\n' "$PSK" | sudo kestrel network wifi --ssid "My Network" --psk-stdin
+```
+
+`--psk "..."` still works, but warns that the passphrase is now in both.
 
 Useful flags:
 

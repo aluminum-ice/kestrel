@@ -45,9 +45,16 @@ daemon restart needed.
 The same from the terminal:
 
 ```bash
-sudo kestrel plugins enable wigle \
-    --set api_name='AIDxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' \
-    --set api_token='your-long-api-token'
+sudo kestrel plugins enable wigle       # asks for the name, and the token with input hidden
+```
+
+From a script, pass the token on stdin; `--set api_token=...` would put it in
+your shell history and the system journal (sudo logs every command line):
+
+```bash
+read -rs TOKEN
+printf '%s\n' "$TOKEN" | sudo kestrel plugins enable wigle \
+    --set api_name='AIDxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' --set-stdin api_token
 ```
 
 Optional `--set` keys: `geolocate` (default `false`),

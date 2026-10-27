@@ -16,6 +16,8 @@ Usage:
   plugins-ctl missing <name>           required options with no value set
   plugins-ctl schema <name>            TSV of options for the interactive enable
   plugins-ctl set <name> <key> <val>   set a key in [plugins.<name>]
+  plugins-ctl set-stdin <name> <key>   the same, value read from stdin (one
+                                       line), so a secret is never an argument
   plugins-ctl apply                    one JSON plugin change on stdin, a JSON
                                        reply on stdout (the root side of the
                                        web page's plugin controls)
@@ -334,6 +336,17 @@ def cmd_set(name, key, raw):
         sys.stderr.write("plugins-ctl: %s\n" % exc)
         return 1
     return 0
+
+
+def cmd_set_stdin(name, key):
+    """``cmd_set`` with the value read from one line of stdin, so a secret
+    never shows in this process's arguments (visible to every local user)."""
+    raw = sys.stdin.readline()
+    if raw.endswith("\n"):
+        raw = raw[:-1]
+    if raw.endswith("\r"):
+        raw = raw[:-1]
+    return cmd_set(name, key, raw)
 
 
 # -- static plugin declarations ---------------------------------------------
@@ -1283,6 +1296,8 @@ def main(argv):
         return cmd_schema(argv[2])
     if cmd == "set" and len(argv) == 5:
         return cmd_set(argv[2], argv[3], argv[4])
+    if cmd == "set-stdin" and len(argv) == 4:
+        return cmd_set_stdin(argv[2], argv[3])
     if cmd == "apply" and len(argv) == 2:
         return cmd_apply()
     if cmd == "checkauth" and len(argv) == 2:
