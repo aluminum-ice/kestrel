@@ -682,6 +682,8 @@ Credentials, the number-one WiGLE issue. Re-check the API Name versus the API To
 
 Read the specific failing line on the backup card or from `sudo kestrel backup status`. The usual causes: running `backup now` before `backup setup` ("Permission denied (publickey)"); an absolute `path` the account cannot write to (rsync code 11); a remote without rsync; or the wrong `user`/`host` or port. Confirm `user@host` works in a normal SSH session first.
 
+"Host key verification failed" means the device doesn't know the backup host's SSH key, or the key has changed. Backup and remote training only ever connect to a host whose key was confirmed when you ran `backup setup` (or `remote-train setup`), so they never trust an unseen host. If you rebuilt or replaced the host, run `sudo kestrel backup setup` (or `sudo kestrel remote-train setup`) again and check the fingerprint it shows.
+
 ### The agent is set to "learned" but runs "baseline"
 
 That is the safe fallback, and `kestrel agent status` says why. Usually there is no model for the current algorithm yet (train or import one, or wait for an auto-train run), the model was trained under a different algorithm or an older spec version, or the model file is unreadable. Once a valid model is present it is adopted within about one decision window. If the agent does nothing at all, remember it runs only when both capture and the agent are enabled.

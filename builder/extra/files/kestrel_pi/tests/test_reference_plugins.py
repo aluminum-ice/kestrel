@@ -2330,3 +2330,16 @@ def test_backup_refused_without_passwordless_ssh(tmp_path):
     result = plugin.on_webhook("backup-now", _req(method="POST"))
     assert result.error and "passwordless SSH is not set up" in result.message
     assert sent == []
+
+
+def test_ssh_never_trusts_an_unseen_host_key():
+    # The host key is confirmed interactively once, at `backup setup` /
+    # `remote-train setup` (ssh-copy-id asks). Every other connection must
+    # require that recorded key, never record a new one on its own.
+    files = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    for relpath in ("plugins/backup.py", "plugins/remote-train.py", "kestrel.sh"):
+        with open(os.path.join(files, relpath), encoding="utf-8") as handle:
+            text = handle.read()
+        assert "StrictHostKeyChecking=accept-new" not in text, relpath
+        assert "StrictHostKeyChecking=no" not in text, relpath
+        assert "StrictHostKeyChecking=yes" in text, relpath

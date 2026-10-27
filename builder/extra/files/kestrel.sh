@@ -1024,7 +1024,7 @@ cmd_backup_setup() {
         || die "ssh-copy-id failed (wrong password, or the host refuses password login?)"
     echo "Verifying passwordless login..."
     if run_as_pi ssh -i "$key" -p "$port" -o BatchMode=yes \
-        -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "$user@$host" true; then
+        -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$user@$host" true; then
         log "passwordless SSH to $user@$host works; the backup plugin can now copy without a password"
     else
         die "key installed but the test login failed; check the remote account"
@@ -1050,7 +1050,7 @@ cmd_backup_status() {
         echo "  device key: $key.pub"
         if { [ -n "$host" ] && [ -n "$user" ]; } && run_as_pi ssh -i "$key" -p "$port" \
             -o BatchMode=yes -o ConnectTimeout=8 \
-            -o StrictHostKeyChecking=accept-new "$user@$host" true 2>/dev/null; then
+            -o StrictHostKeyChecking=yes "$user@$host" true 2>/dev/null; then
             echo "  passwordless SSH: working"
         else
             echo "  passwordless SSH: not set up (run 'sudo $PROG backup setup')"
@@ -1077,7 +1077,7 @@ cmd_backup_now() {
     # Same flags the plugin's rsync uses; a one-off manual sync now. --stats lets
     # us record how much moved so the web dashboard's backup card reflects this
     # manual run (the plugin adopts the shared state file on its next epoch).
-    ssh="ssh -i $key -p $port -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+    ssh="ssh -i $key -p $port -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
     local agent_dir out rc all_out
     agent_dir=$(cfg plugins.backup.agent_dir /var/lib/kestrel/agent)
     log "backing up $store -> $user@$host:$path"
@@ -1244,7 +1244,7 @@ cmd_backup_restore() {
     command -v rsync >/dev/null 2>&1 || die "rsync is required for restore"
     store=$PWN_CAPTURE_DIR
     agent=$PWN_AGENT_DIR
-    ssh="ssh -i $key -p $port -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+    ssh="ssh -i $key -p $port -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
     if [ "$yes" != yes ]; then
         printf 'Restore capture data and the agent model from %s@%s:%s\ninto %s and %s?\nExisting local files with the same names are overwritten (nothing on the remote is changed). [y/N] ' \
             "$user" "$host" "$path" "$store" "$agent"
@@ -1272,7 +1272,7 @@ cmd_backup_restore() {
     # Agent model + episode logs, when the remote has them (older backups, or the
     # CLI `backup now`, may not include the agent dir).
     if run_as_pi ssh -i "$key" -p "$port" -o BatchMode=yes \
-        -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
+        -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
         "$user@$host" test -d "$path/agent" 2>/dev/null; then
         log "restoring agent model/logs <- $user@$host:$path/agent"
         out=$(_rsync_retry -az --partial --mkpath --stats \
@@ -1659,7 +1659,7 @@ cmd_remote_train_setup() {
         || die "ssh-copy-id failed (wrong password, or the host refuses password login?)"
     echo "Verifying passwordless login..."
     run_as_pi ssh -i "$key" -p "$port" -o BatchMode=yes \
-        -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "$user@$host" true \
+        -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$user@$host" true \
         || die "key installed but the test login failed; check the remote account"
     log "passwordless SSH to the training host works"
     # Nudge the plugin so host preparation (venv + ML stack) starts now, if it is
@@ -1709,7 +1709,7 @@ cmd_remote_train_status() {
         return 0
     fi
     if run_as_pi ssh -i "$key" -p "$port" -o BatchMode=yes \
-        -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "$user@$host" true 2>/dev/null; then
+        -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$user@$host" true 2>/dev/null; then
         echo "  passwordless SSH: works"
     else
         echo "  passwordless SSH: not set up (run 'sudo $PROG remote-train setup')"
@@ -1717,7 +1717,7 @@ cmd_remote_train_status() {
     fi
     # Peek at the host's job markers so a stuck run is visible from the device.
     run_as_pi ssh -i "$key" -p "$port" -o BatchMode=yes \
-        -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "$user@$host" \
+        -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$user@$host" \
         "cd $(shell_quote "$path") 2>/dev/null || exit 0; \
          if [ -f .stack-ready ]; then echo '  host stack: ready'; \
          elif [ -f .stack-installing ]; then echo '  host stack: installing'; \

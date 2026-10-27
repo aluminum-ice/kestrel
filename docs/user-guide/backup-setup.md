@@ -186,8 +186,10 @@ usually points straight at which mistake above applies.
 
 - The remote path is created automatically where the account has permission
   (rsync `--mkpath`; scp runs `mkdir -p` first).
-- First connection to a new host is trusted automatically
-  (`StrictHostKeyChecking=accept-new`), and `backup setup` records the host key so
-  later connections verify against it.
+- The host key is confirmed once, when `backup setup` runs `ssh-copy-id` (it
+  shows the fingerprint and asks). Every later connection requires that recorded
+  key (`StrictHostKeyChecking=yes`), so a backup never trusts a host it hasn't
+  seen: if the host's key is unknown or has changed, the backup fails with
+  "Host key verification failed" until you run `backup setup` again.
 - The transfer runs on its own thread, so a large first backup never blocks the
   daemon or the other plugins.

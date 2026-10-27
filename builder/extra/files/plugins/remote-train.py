@@ -451,13 +451,13 @@ class RemoteTrain(Plugin):
         # Keepalives so a quiet/flaky tether is detected within ~a minute and an
         # idle control link isn't dropped by the phone's power-save.
         return ["-i", self._key(), "-p", str(self._port()),
-                "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
                 "-o", "ConnectTimeout=20",
                 "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
 
     def _ssh_e(self):
         return ("ssh -i %s -p %d -o BatchMode=yes "
-                "-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 "
+                "-o StrictHostKeyChecking=yes -o ConnectTimeout=20 "
                 "-o ServerAliveInterval=15 -o ServerAliveCountMax=4"
                 % (shlex.quote(self._key()), self._port()))
 
