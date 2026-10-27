@@ -38,7 +38,7 @@ the equivalent is `sudo apt-get install libgtk-4-1 libmanette-0.2-0 libenchant-2
    ```bash
    mkdir -p ~/.config
    (umask 077; cat > ~/.config/kestrel-ghost.env <<'EOF'
-   GHOST_URL=https://www.3ntropy.io
+   GHOST_URL=https://blog.example.com
    GHOST_ADMIN_API_KEY=REPLACE_WITH_ADMIN_API_KEY
    EOF
    )
@@ -49,21 +49,29 @@ the equivalent is `sudo apt-get install libgtk-4-1 libmanette-0.2-0 libenchant-2
 
 ## 2. In every new terminal
 
-Shell variables don't carry over to a new terminal, so set these each time:
+Shell variables and functions don't carry over to a new terminal, so set these
+each time:
 
 ```bash
 cd path/to/kestrel                                     # the repository root
 PY=~/.venvs/kestrel-guide/bin/python                   # the environment's Python
-set -a; . ~/.config/kestrel-ghost.env; set +a          # load the key (only `push` needs it)
+ghost_push() { (set -a; . ~/.config/kestrel-ghost.env; set +a; "$PY" tools/ghost-guide/ghost_guide.py push "$@"); }
 ```
 
-Always run the tool as `$PY tools/ghost-guide/ghost_guide.py ...`. Running the
-script directly uses the system Python, which lacks the tool's packages.
+Always run the tool as `$PY tools/ghost-guide/ghost_guide.py ...`, and publish
+with `ghost_push`. Running the script directly uses the system Python, which
+lacks the tool's packages.
 
-To check the key loaded, without printing it:
+Only `push` needs the key, so don't load it into your shell. `ghost_push` loads
+it into a subshell that ends with the command: `status`, `diff`, `build` and
+anything else you run in the terminal never see it. If a terminal still has the
+key from an older version of this runbook (`set -a; . ~/.config/kestrel-ghost.env`),
+close it.
+
+To check the key file, without printing the key:
 
 ```bash
-$PY -c 'import os;k=os.environ.get("GHOST_ADMIN_API_KEY","");i,_,s=k.partition(":");print("set:",bool(k),"| placeholder:",k.startswith("REPLACE"),"| colon:",":" in k,"| id length:",len(i),"| secret length:",len(s),"| secret is hex:",bool(s) and all(c in "0123456789abcdefABCDEF" for c in s))'
+(set -a; . ~/.config/kestrel-ghost.env; set +a; $PY -c 'import os;k=os.environ.get("GHOST_ADMIN_API_KEY","");i,_,s=k.partition(":");print("set:",bool(k),"| placeholder:",k.startswith("REPLACE"),"| colon:",":" in k,"| id length:",len(i),"| secret length:",len(s),"| secret is hex:",bool(s) and all(c in "0123456789abcdefABCDEF" for c in s))')
 ```
 
 A good key prints `set: True | placeholder: False | colon: True | id length: 24 | secret length: 64 | secret is hex: True`.
@@ -75,8 +83,8 @@ A good key prints `set: True | placeholder: False | colon: True | id length: 24 
 | `$PY tools/ghost-guide/ghost_guide.py status` | Which release the live page matches, and the latest stable release. | No |
 | `$PY tools/ghost-guide/ghost_guide.py diff` | The text and figure changes publishing would make. Add `--shots` to also take the screenshots. | No |
 | `$PY tools/ghost-guide/ghost_guide.py build` | Renders the page and screenshots into `tools/ghost-guide/out/<tag>/` (`preview.html`, `shots/`). | No |
-| `$PY tools/ghost-guide/ghost_guide.py push --preview` | Publishes to a draft page, `kestrel-user-guide-preview`, to inspect in Ghost. | Yes |
-| `$PY tools/ghost-guide/ghost_guide.py push` | Publishes the live page. | Yes |
+| `ghost_push --preview` | Publishes to a draft page, `kestrel-user-guide-preview`, to inspect in Ghost. | Yes |
+| `ghost_push` | Publishes the live page. | Yes |
 
 Options: `--tag X.Y.Z` targets a specific stable release instead of the latest;
 `--no-fetch` skips fetching release tags first; `push --force` publishes over
@@ -93,17 +101,17 @@ The live page predates this tool, so `push` refuses until it is adopted once.
 ```bash
 $PY tools/ghost-guide/ghost_guide.py status
 $PY tools/ghost-guide/ghost_guide.py diff --shots     # read the changes; open out/<tag>/preview.html and out/<tag>/shots/
-$PY tools/ghost-guide/ghost_guide.py push --preview   # then open the draft in Ghost Admin (link printed)
+ghost_push --preview                                  # then open the draft in Ghost Admin (link printed)
 ```
 
 In the draft, check the release-notice callout under the subtitle, the tables,
 a few contents links, and the screenshots. Then:
 
 ```bash
-$PY tools/ghost-guide/ghost_guide.py push --force
+ghost_push --force
 ```
 
-From then on, plain `push` is enough. You can delete the
+From then on, plain `ghost_push` is enough. You can delete the
 `kestrel-user-guide-preview` draft in Ghost, or keep it for the next preview.
 
 ## 5. After each stable release
@@ -111,7 +119,7 @@ From then on, plain `push` is enough. You can delete the
 ```bash
 $PY tools/ghost-guide/ghost_guide.py status    # confirms the page is behind the new release
 $PY tools/ghost-guide/ghost_guide.py diff      # should show exactly the release's GUIDE_MD changes
-$PY tools/ghost-guide/ghost_guide.py push
+ghost_push
 ```
 
 Never edit the page in Ghost: the next publish would overwrite it, so `push`
@@ -123,9 +131,10 @@ blog-only text and screenshot placement).
 | Error | Cause and fix |
 | --- | --- |
 | `bash: tools/ghost-guide/ghost_guide.py: Permission denied` | `$PY` is empty in this terminal. Set it again (section 2). Don't make the script executable; it needs the environment's Python. |
+| `bash: ghost_push: command not found` | The function isn't defined in this terminal. Define it again (section 2). |
 | `bash: .../kestrel-ghost.env: No such file or directory` | The env file hasn't been created yet (section 1). |
-| `GHOST_ADMIN_API_KEY must look like <id>:<hex secret>` | The shell still has the placeholder (re-run the `set -a` line after saving the file), or the Content API key was copied instead of the Admin one, or the copy picked up extra characters. Run the key check in section 2. |
-| `set GHOST_URL and GHOST_ADMIN_API_KEY in the environment` | The env file wasn't loaded in this terminal. Run the `set -a` line. |
+| `GHOST_ADMIN_API_KEY must look like <id>:<hex secret>` | The env file still has the placeholder, or the Content API key was copied instead of the Admin one, or the copy picked up extra characters. Run the key check in section 2. |
+| `set GHOST_URL and GHOST_ADMIN_API_KEY in the environment` | `push` was run as `$PY ... push` rather than `ghost_push`, or the env file is missing one of the two lines. |
 | `HTTP 401` / `HTTP 403` from Ghost | The key is wrong or its integration was deleted, or `GHOST_URL` doesn't point at the site. |
 | `Host system is missing dependencies to run browsers` | Run the `install-deps` line in section 1 (needs sudo). |
 | `the page has no publish marker yet` | Expected before the first publish (section 4). |

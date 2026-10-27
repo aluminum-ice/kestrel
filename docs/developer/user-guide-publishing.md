@@ -71,8 +71,9 @@ keep operational steps there, not here.
 
 The key belongs to a dedicated Ghost Custom Integration so it can be revoked on
 its own. It has full admin rights, so it lives only in an env file outside the
-repo (`~/.config/kestrel-ghost.env`, mode 600) and in the shell that runs
-`push`; the tool never prints it.
+repo (`~/.config/kestrel-ghost.env`, mode 600) and is loaded only into the
+subshell that runs `push`, never into the operator's shell; the tool never
+prints it.
 
 ### Adding or moving a screenshot
 
