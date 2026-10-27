@@ -187,3 +187,66 @@ def test_every_algorithm_instantiates_against_the_env_spaces(algorithm, tmp_path
                      {"decision_seconds": 1}, wait=lambda _s: None)
     model = policies.make_algorithm(algorithm, env)
     assert model is not None
+
+
+# -- models load as weights only ----------------------------------------------
+
+def _ml_stack(algorithm):
+    pytest.importorskip("stable_baselines3")
+    if policies.ALGORITHMS[algorithm][0] == "sb3_contrib":
+        pytest.importorskip("sb3_contrib")
+    pytest.importorskip("gymnasium")
+
+
+def _saved_model(algorithm, tmp_path):
+    # Built the way training builds it (make_algorithm's network defaults; the
+    # DQN buffer is shrunk only to keep the test light - it holds no weights).
+    extra = {"buffer_size": 1000} if algorithm in ("DQN", "QR-DQN") else {}
+    model = policies.make_algorithm(algorithm, policies._spaces_env(), verbose=0, **extra)
+    path = str(tmp_path / policies.model_name_for(algorithm))
+    model.save(path)
+    return model, path
+
+
+@pytest.mark.parametrize("algorithm", ["RecurrentPPO", "PPO", "DQN", "QR-DQN"])
+def test_a_saved_model_loads_as_weights_only(algorithm, tmp_path, monkeypatch):
+    _ml_stack(algorithm)
+    trained, path = _saved_model(algorithm, tmp_path)
+    # SB3's cls.load restores pickled objects from the file; it must never run.
+    cls = policies._algo_class(algorithm)
+
+    def _refuse(*_a, **_kw):
+        raise AssertionError("cls.load must not be used")
+
+    monkeypatch.setattr(cls, "load", _refuse)
+    policy, reason = policies.load_learned(algorithm, path)
+    assert reason == "" and isinstance(policy, policies.LearnedPolicy)
+
+    import torch
+    for name, tensor in trained.policy.state_dict().items():
+        assert torch.equal(tensor, policy._model.policy.state_dict()[name]), name
+    action, _state = policy.predict(spec.empty_observation())
+    assert 0 <= action < spec.ACTION_N
+
+
+def test_load_policy_uses_the_weights_only_loader(tmp_path):
+    _ml_stack("PPO")
+    _trained, _path = _saved_model("PPO", tmp_path)
+    policies.write_meta(str(tmp_path), "PPO")
+    pol, name, detail = policies.load_policy("learned", "PPO", str(tmp_path))
+    assert name == "learned" and detail == "" and isinstance(pol, policies.LearnedPolicy)
+
+
+def test_a_model_whose_networks_dont_fit_falls_back(tmp_path):
+    _ml_stack("DQN")
+    _trained, path = _saved_model("PPO", tmp_path)
+    policy, reason = policies.load_learned("DQN", path)
+    assert policy is None and reason
+
+
+def test_a_corrupt_model_file_falls_back_to_the_baseline(tmp_path):
+    _ml_stack("PPO")
+    (tmp_path / policies.model_name_for("PPO")).write_bytes(b"not a zip")
+    policies.write_meta(str(tmp_path), "PPO")
+    pol, name, detail = policies.load_policy("learned", "PPO", str(tmp_path))
+    assert name == "baseline" and "failed to load" in detail
