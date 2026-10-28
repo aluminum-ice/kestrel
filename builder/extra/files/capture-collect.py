@@ -5,9 +5,10 @@ The capture launcher runs this alongside AngryOxide. AngryOxide writes its
 per-run artifacts (pcapng, hashlines, logs) into the run directory; this watches
 for *.hc22000 files there and appends each unique hashline to the persistent
 store, routing by SSID in "per-ssid" mode (one <ssid>.hc22000 per network), by
-access point in "per-ap" mode (one <ssid>_<bssid>.hc22000 per AP, keyed on the
-BSSID so unrelated APs that share a name never merge), or to one combined file
-in "single" mode.
+access point in "per-ap" mode (one <ssid>_<bssid>.hc22000 per network+radio,
+keyed on the BSSID so unrelated APs that share a name never merge), or to one
+combined file in "single" mode. (This is a file-layout choice only; the
+dashboard's "access points" count is distinct radios regardless of layout.)
 
 The store is only ever appended to and de-duplicated, never truncated, so
 handshakes survive reboots and attack restarts. Dedup is exact-line and seeded
