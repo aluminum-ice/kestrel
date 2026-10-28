@@ -253,14 +253,20 @@ class Demo:
     def ui_state(self):
         d = self.daemon
         cfg = d._fresh_config()
+        # Lifetime totals come straight from the capture store (the same
+        # capture_counts() the daemon and dashboard read), so the demo's e-ink
+        # face and dashboard navcard can't disagree. The session counts are
+        # tracked separately and shown alongside.
+        counts = d.capture.capture_counts()
         return self.ui_mod.UIState(
             online=True, epoch=EPOCH, capture_active=True, agent=self.agent,
             battery=dict(BATTERY), position=dict(POSITION, ts=self.now),
             paths=dict(d.connectivity.paths),
-            capture_total=d._capture_total_base + SESSION_HANDSHAKES,
+            capture_total=counts["handshakes"],
             capture_session=SESSION_HANDSHAKES, uptime=UPTIME_S,
-            aps_total=len(d._ap_base | d._session_bssids),
+            aps_total=counts["access_points"],
             aps_session=len(d._session_bssids),
+            networks_total=counts["networks"],
             channel=d._scan_channel(self.agent, True),
             env=d._environment_state(cfg, True))
 
