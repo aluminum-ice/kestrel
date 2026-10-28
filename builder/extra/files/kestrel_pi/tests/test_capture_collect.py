@@ -73,6 +73,48 @@ def test_environment_snapshot_none_when_no_packets(mod):
     assert mod.environment_snapshot(60) is None
 
 
+def _aged(path, seconds_ago):
+    stamp = time.time() - seconds_ago
+    os.utime(path, (stamp, stamp))
+
+
+def test_environment_snapshot_reads_the_previous_run_while_the_new_db_is_empty(mod):
+    # A relaunch for a new agent plan starts an empty DB but keeps the previous
+    # run's: the reading comes from the previous run instead of going stale.
+    old = _make_kismet(mod.RUN_DIR, [(1000, "aa:00"), (990, "aa:01")], name="kestrel-1-000001.kismet")
+    _aged(old, 120)
+    _make_kismet(mod.RUN_DIR, [], name="kestrel-2-000002.kismet")
+    assert mod.environment_snapshot(60) == (2, 1000)
+
+
+def test_environment_snapshot_counts_across_dbs_from_the_newest_packet(mod):
+    old = _make_kismet(mod.RUN_DIR, [(990, "aa:01"), (995, "aa:02"), (900, "aa:09")],
+                       name="kestrel-1-000001.kismet")
+    _aged(old, 120)
+    _make_kismet(mod.RUN_DIR, [(1000, "aa:01"), (998, "aa:03")], name="kestrel-2-000002.kismet")
+    # Window [940, 1000] over both DBs: aa:01 (in both, counted once), aa:02,
+    # aa:03; aa:09 is too old.
+    assert mod.environment_snapshot(60) == (3, 1000)
+
+
+def test_environment_snapshot_reads_the_others_when_one_db_is_locked(mod, monkeypatch):
+    locked = _make_kismet(mod.RUN_DIR, [(1000, "aa:00")], name="kestrel-2-000002.kismet")
+    old = _make_kismet(mod.RUN_DIR, [(990, "aa:01")], name="kestrel-1-000001.kismet")
+    _aged(old, 120)
+    real = mod._read_kismet_db
+    monkeypatch.setattr(mod, "_read_kismet_db",
+                        lambda path, *a: mod._BUSY if path == locked else real(path, *a))
+    assert mod.environment_snapshot(60) == (1, 990)
+
+
+def test_environment_snapshot_reads_at_most_env_max_dbs(mod, monkeypatch):
+    old = _make_kismet(mod.RUN_DIR, [(1000, "aa:00")], name="kestrel-1-000001.kismet")
+    _aged(old, 120)
+    _make_kismet(mod.RUN_DIR, [], name="kestrel-2-000002.kismet")
+    monkeypatch.setattr(mod, "ENV_MAX_DBS", 1)
+    assert mod.environment_snapshot(60) is None
+
+
 def test_update_environment_writes_counts(mod):
     now = int(time.time())
     _make_kismet(mod.RUN_DIR, [(now, "aa:00"), (now, "cc:00")])

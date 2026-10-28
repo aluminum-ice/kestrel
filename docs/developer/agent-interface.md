@@ -181,8 +181,17 @@ the controller writes an **override** to `<agent dir>/scan-override.json`
 - `kind` / `band` / `channels` come from `posture_to_plan` (above); `dwell` is
   the decoded dwell seconds; `transmit` is `active` | `passive`.
 - The Phase 2 capture launcher reads the override and relaunches AngryOxide
-  pinned to that plan for the window. Control is **launch-time**, matching the
-  capture contract: a change takes effect on the next relaunch, not mid-run.
+  pinned to that plan. Control is **launch-time**, matching the capture
+  contract: a change takes effect on the next relaunch, not mid-run.
+- The agent rewrites the override **only when the plan, dwell or transmit mode
+  changes**, and the launcher relaunches only when the file's **content**
+  changes (a SHA-256 fingerprint, not the timestamp), because every relaunch
+  restarts the scan. A relaunch for a new plan keeps the previous run's raw
+  files, so the collector's in-range reading still has recent packets while
+  the new run's kismet DB fills; a capture start or a size-cap roll clears them.
+- The override is the `pi` agent's file and the launcher is root, so the
+  launcher opens it without following a symlink or blocking on a FIFO, and
+  reads only a small regular file.
 - The launcher honours the override **only** while `[agent] enabled` is true.
   The agent never starts AngryOxide itself and never rewrites `config.toml`, so
   disabling the agent makes the launcher ignore the override and capture returns

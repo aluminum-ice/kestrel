@@ -196,6 +196,13 @@ class LauncherSurface:
     def apply(self, plan, dwell, transmit):
         override = {"dwell": int(dwell), "transmit": transmit}
         override.update(plan)
+        # Normalised through JSON so it compares equal to what was written.
+        override = json.loads(json.dumps(override))
+        # The launcher relaunches AngryOxide whenever this file's content
+        # changes, and a relaunch restarts the scan, so a window that keeps the
+        # same plan leaves the file alone.
+        if self._written() == override:
+            return
         tmp = self._override + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as handle:
@@ -204,6 +211,15 @@ class LauncherSurface:
         except OSError as exc:
             if self.log:
                 self.log.warning("could not write scan override: %s", exc)
+
+
+    def _written(self):
+        """The override currently on disk, or None if absent or unreadable."""
+        try:
+            with open(self._override, encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            return None
 
 
 def resolve_capture_iface(want="auto"):

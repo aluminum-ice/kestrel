@@ -194,22 +194,30 @@ def seen_lines(path):
     return lines
 
 
-def _newest_kismet_db():
-    """Path of the most recent ``*.kismet`` (kismetdb) in the run dir, or None.
+# At most this many kismet DBs are read, newest first. The launcher keeps the
+# current run's DB and, across a relaunch for a new agent plan, the previous
+# run's, so two is normal; the cap only bounds a run dir someone filled by hand.
+ENV_MAX_DBS = 4
+
+
+def _kismet_dbs():
+    """Paths of the run dir's ``*.kismet`` (kismetdb) files, newest first.
 
     AngryOxide writes the kismet DB (and pcapng) into the run dir under the
-    ``--output`` prefix. It is transient (the run dir is size-bounded and
-    cleared), so this is best-effort by design."""
+    ``--output`` prefix, one per launch. They are transient (the run dir is
+    size-bounded and cleared), so this is best-effort by design."""
     try:
         dbs = glob.glob(os.path.join(RUN_DIR, "*.kismet"))
     except OSError:
-        return None
-    if not dbs:
-        return None
-    try:
-        return max(dbs, key=os.path.getmtime)
-    except OSError:
-        return None
+        return []
+    stamped = []
+    for path in dbs:
+        try:
+            stamped.append((os.path.getmtime(path), path))
+        except OSError:
+            continue
+    stamped.sort(reverse=True)
+    return [path for _mtime, path in stamped[:ENV_MAX_DBS]]
 
 
 # A sourcemac that carries no real transmitter (null or the all-zero address) is
@@ -230,45 +238,23 @@ ENV_DB_RETRIES = int(os.environ.get("PWN_CAPTURE_DB_RETRIES", "3"))
 _BUSY = object()
 
 
-def environment_snapshot(window_s, now=None, timeout=None, retries=None):
-    """Distinct transmitting radios seen in the most recent ``window_s`` seconds
-    of capture data.
-
-    AngryOxide fills the kismet DB's ``packets`` table (it leaves ``devices``
-    empty) and flushes it in bursts, so this counts distinct ``sourcemac`` within
-    ``window_s`` of the DB's OWN newest packet timestamp - never wall-clock
-    ``now`` - so a flush lag reads as "recent" rather than zero. Returns
-    ``(radios_recent, data_ts)`` where ``data_ts`` is that newest packet's epoch
-    (so the reader can judge freshness); ``None`` when there is no DB/packets yet
-    or the DB is structurally unreadable; or the ``_BUSY`` sentinel when the DB
-    exists but AngryOxide held it locked for the whole retry budget. Opened
-    read-only with a busy timeout (retried on a lock) so it tolerates AngryOxide
-    writing without ever blocking it; ``now`` is accepted for tests but unused."""
-    db_path = _newest_kismet_db()
-    if not db_path:
-        return None
-    if timeout is None:
-        timeout = ENV_DB_TIMEOUT
-    if retries is None:
-        retries = ENV_DB_RETRIES
-    attempts = max(1, retries)
+def _read_kismet_db(path, timeout, attempts):
+    """``(newest_ts, {sourcemac: newest ts})`` from one kismet DB; None when it
+    has no packets or is structurally unreadable; ``_BUSY`` when AngryOxide
+    held it locked for every attempt. Opened read-only with a busy timeout, so
+    it never blocks AngryOxide's writing."""
     for attempt in range(attempts):
         conn = None
         try:
-            conn = sqlite3.connect(
-                "file:%s?mode=ro" % db_path, uri=True, timeout=timeout
-            )
-            data_ts = conn.execute(
-                "SELECT MAX(ts_sec) FROM packets").fetchone()[0]
-            if data_ts is None:
+            conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=timeout)
+            newest = conn.execute("SELECT MAX(ts_sec) FROM packets").fetchone()[0]
+            if newest is None:
                 return None
-            cutoff = int(data_ts) - window_s
-            radios = conn.execute(
-                "SELECT COUNT(DISTINCT sourcemac) FROM packets "
-                "WHERE ts_sec >= ? AND sourcemac IS NOT NULL AND sourcemac != ?",
-                (cutoff, _ZERO_MAC),
-            ).fetchone()[0]
-            return int(radios or 0), int(data_ts)
+            radios = dict(conn.execute(
+                "SELECT sourcemac, MAX(ts_sec) FROM packets "
+                "WHERE sourcemac IS NOT NULL AND sourcemac != ? GROUP BY sourcemac",
+                (_ZERO_MAC,)).fetchall())
+            return int(newest), radios
         except sqlite3.OperationalError as exc:
             # A busy/locked DB is transient: AngryOxide holds the write lock
             # only while committing. Back off and retry rather than give up.
@@ -284,6 +270,46 @@ def environment_snapshot(window_s, now=None, timeout=None, retries=None):
             if conn is not None:
                 conn.close()
     return _BUSY
+
+
+def environment_snapshot(window_s, now=None, timeout=None, retries=None):
+    """Distinct transmitting radios seen in the most recent ``window_s`` seconds
+    of capture data.
+
+    AngryOxide fills the kismet DB's ``packets`` table (it leaves ``devices``
+    empty) and flushes it in bursts. This reads every kismet DB in the run dir
+    (the current run's and, across an agent relaunch, the previous run's) and
+    counts distinct ``sourcemac`` within ``window_s`` of the newest packet in
+    any of them - never wall-clock ``now`` - so a flush lag reads as "recent"
+    rather than zero, and a relaunch's empty new DB doesn't hide the minutes of
+    packets just before it. Returns ``(radios_recent, data_ts)`` where
+    ``data_ts`` is that newest packet's epoch (so the reader can judge
+    freshness); ``None`` when there is no DB or packet yet, or every DB is
+    structurally unreadable; or the ``_BUSY`` sentinel when no DB could be read
+    and at least one stayed locked for the whole retry budget. ``now`` is
+    accepted for tests but unused."""
+    if timeout is None:
+        timeout = ENV_DB_TIMEOUT
+    if retries is None:
+        retries = ENV_DB_RETRIES
+    attempts = max(1, retries)
+    newest, seen, busy = None, {}, False
+    for path in _kismet_dbs():
+        result = _read_kismet_db(path, timeout, attempts)
+        if result is _BUSY:
+            busy = True
+            continue
+        if result is None:
+            continue
+        db_newest, radios = result
+        newest = db_newest if newest is None else max(newest, db_newest)
+        for mac, ts in radios.items():
+            if ts is not None and ts > seen.get(mac, -1):
+                seen[mac] = ts
+    if newest is None:
+        return _BUSY if busy else None
+    cutoff = newest - window_s
+    return sum(1 for ts in seen.values() if ts >= cutoff), newest
 
 
 def write_status(payload):
@@ -370,11 +396,10 @@ def update_environment(window_s):
     the DB is momentarily locked by AngryOxide's writing (``_BUSY``), or it is
     empty/rotated (``None``) - the previous reading is carried through (only its
     freshness ages, via ``data_ts``), so the card does not blank to "scanning"
-    on every transient gap. The empty/rotated case is the common one: the
-    launcher clears the run dir and starts a fresh kismet DB on every AngryOxide
-    relaunch, and the learning agent relaunches it each time it picks a new scan
-    plan, so a brand-new DB with no packets yet is routine and must not flap the
-    card. The carried reading still ages out to "unknown" once ``data_ts`` passes
+    on every transient gap. The empty/rotated case follows a capture start or a
+    roll, when the launcher clears the run dir and AngryOxide starts a fresh
+    kismet DB (a relaunch for a new agent plan keeps the previous run's DB, which
+    environment_snapshot still reads). The carried reading still ages out to "unknown" once ``data_ts`` passes
     the reader's ``max_age_s`` (so a capture that truly stopped is not shown as a
     stale count). Only a cold start with no prior reading writes the
     scanning-but-no-count marker."""
