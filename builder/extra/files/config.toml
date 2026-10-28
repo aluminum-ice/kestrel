@@ -66,9 +66,10 @@ archive_dir = "/var/lib/kestrel/capture/archive"
 keep_archives = 0   # 0 = keep every archive set; N = keep only the newest N
 # Run-dir safety cap, enforced live by the capture service (not the timer, and
 # ON by default unlike the policy above). AngryOxide's raw pcapng + kismet DB in
-# .run/ grow for the whole session and can fill the card; the hashline store
-# does not. When .run/ reaches this many MB the capture rolls (restarts) and the
-# raw files are deleted -- captured hashlines are always kept in the store.
+# /var/lib/kestrel/capture-run/ grow for the whole session and can fill the card;
+# the hashline store does not. When that dir reaches this many MB the capture
+# rolls (restarts) and the raw files are deleted -- captured hashlines are
+# always kept in the store.
 #   0 = no cap (keep every packet capture; may fill the card on a long session)
 max_run_mb = 512
 

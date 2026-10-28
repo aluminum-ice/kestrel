@@ -1022,9 +1022,29 @@ def test_config_set_daemon_change_asks_for_a_restart(env):
 
 def test_config_set_capture_change_does_not_restart(env):
     _auth_on(env)
-    reply = ctl.apply_change(_set_config("capture", "max_run_mb", 256))
+    reply = ctl.apply_change(_set_config("capture.housekeeping", "max_run_mb", 256))
     assert reply["ok"] and reply["restart"] is False
     assert "capture" in reply["restart_hint"].lower()
+    assert _config(env)["capture"]["housekeeping"]["max_run_mb"] == 256
+
+
+def test_config_settable_capture_keys_match_what_capture_reads():
+    # The page once wrote [capture] max_run_mb while the launcher reads
+    # [capture.housekeeping] max_run_mb, so the setting silently did nothing.
+    # Any key the capture scripts read by a name the page also offers must be
+    # offered under the same table.
+    import re
+    read = set()
+    for script in ("capture-launch.sh", "kestrel.sh"):
+        with open(os.path.join(FILES, script), encoding="utf-8") as handle:
+            read |= set(re.findall(r"\bcfg (capture\.[a-z_.]+)", handle.read()))
+    settable = {k for k in ctl.CONFIG_SETTABLE if k.startswith("capture.")}
+    for key in sorted(read):
+        leaf = key.rsplit(".", 1)[1]
+        if leaf == "enabled":   # every table has one; they are different keys
+            continue
+        offered = {k for k in settable if k.rsplit(".", 1)[1] == leaf}
+        assert not offered or key in offered, (key, offered)
 
 
 # -- what root acts on stays root's to set -----------------------------------

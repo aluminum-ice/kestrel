@@ -136,8 +136,8 @@ SECTIONS = [
             _edit("capture.housekeeping", "keep_archives", "int", 0,
                   "Keep only the newest N archive sets (0 = keep all).",
                   RESTART_CAPTURE, min=0),
-            _edit("capture", "max_run_mb", "int", 512,
-                  "Live cap on the raw .run/ dir (not hashlines); at the cap "
+            _edit("capture.housekeeping", "max_run_mb", "int", 512,
+                  "Live cap on the raw capture-run/ dir (not hashlines); at the cap "
                   "capture rolls and raw files drop. 0 can fill the card on a "
                   "long session.", RESTART_CAPTURE, min=0),
             _edit("capture.environment", "enabled", "bool", True,
