@@ -19,6 +19,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import sys
 import time
 
@@ -441,7 +442,138 @@ def main():
         time.sleep(POLL_SECONDS)
 
 
+# -- adopt-store: hand an older release's root-owned files to the collector --
+# Up to 1.0.5 the collector ran as root, so the per-network files it created,
+# the legacy .run/ and the archive sets `capture archive` made are root-owned;
+# the collector now runs as pi and can't append to them. The launcher (root)
+# runs `capture-collect --adopt-store pi` before starting the collector. Root
+# acting in the pi-owned store must not be redirectable, so every step works on
+# a descriptor opened relative to its parent's descriptor with O_NOFOLLOW, the
+# entry is re-checked through that descriptor, and the owner change is fchown
+# on it: a symlink, or an entry swapped in mid-run, can't point it elsewhere.
+# Only regular files and directories owned by root, with one link (so not a
+# system file hard-linked in) and on the store's filesystem, are handed over.
+# Nothing is logged but counts: file names here are network names.
+ADOPT_MAX_DEPTH = 4   # store/archive/<set>/<file>, with room for a nested archive_dir
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
+
+
+def adopt_store(store_dir, uid, gid, from_uid=0, chown=os.fchown):
+    """Give ``from_uid``'s files and folders in the store to ``uid:gid``.
+    Returns ``{"files", "dirs", "skipped"}`` counts. Does nothing unless the
+    store itself belongs to ``uid``."""
+    counts = {"files": 0, "dirs": 0, "skipped": 0}
+    try:
+        top = os.open(store_dir, _DIR_FLAGS)
+    except OSError as exc:
+        sys.stderr.write("capture-collect: adopt: store not opened (%s)\n"
+                         % exc.__class__.__name__)
+        return counts
+    try:
+        st = os.fstat(top)
+        if st.st_uid != uid:
+            sys.stderr.write("capture-collect: adopt: store is not the collector's; "
+                             "left alone\n")
+            return counts
+        _adopt_dir(top, st.st_dev, uid, gid, from_uid, chown, ADOPT_MAX_DEPTH, counts)
+    finally:
+        os.close(top)
+    return counts
+
+
+def _adopt_dir(dfd, dev, uid, gid, from_uid, chown, depth, counts):
+    try:
+        names = os.listdir(dfd)
+    except OSError:
+        return
+    for name in names:
+        try:
+            st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+        except OSError:
+            continue
+        if st.st_dev != dev:
+            counts["skipped"] += 1
+            continue
+        if stat.S_ISREG(st.st_mode):
+            if st.st_uid == from_uid:
+                _adopt_file(dfd, name, st, uid, gid, from_uid, chown, counts)
+        elif stat.S_ISDIR(st.st_mode):
+            if depth > 0:
+                _adopt_subdir(dfd, name, st, dev, uid, gid, from_uid, chown,
+                              depth, counts)
+        elif st.st_uid == from_uid:
+            counts["skipped"] += 1   # symlink, fifo, socket, device: never touched
+
+
+def _same(st, fst):
+    return (fst.st_dev, fst.st_ino) == (st.st_dev, st.st_ino)
+
+
+def _adopt_file(dfd, name, st, uid, gid, from_uid, chown, counts):
+    try:
+        fd = os.open(name, _FILE_FLAGS, dir_fd=dfd)
+    except OSError:
+        counts["skipped"] += 1
+        return
+    try:
+        fst = os.fstat(fd)
+        if not (_same(st, fst) and stat.S_ISREG(fst.st_mode)
+                and fst.st_uid == from_uid and fst.st_nlink == 1):
+            counts["skipped"] += 1
+            return
+        chown(fd, uid, gid)
+        counts["files"] += 1
+    except OSError:
+        counts["skipped"] += 1
+    finally:
+        os.close(fd)
+
+
+def _adopt_subdir(dfd, name, st, dev, uid, gid, from_uid, chown, depth, counts):
+    try:
+        fd = os.open(name, _DIR_FLAGS, dir_fd=dfd)
+    except OSError:
+        counts["skipped"] += 1
+        return
+    try:
+        fst = os.fstat(fd)
+        if not (_same(st, fst) and stat.S_ISDIR(fst.st_mode)):
+            counts["skipped"] += 1
+            return
+        _adopt_dir(fd, dev, uid, gid, from_uid, chown, depth - 1, counts)
+        if fst.st_uid == from_uid:
+            chown(fd, uid, gid)
+            counts["dirs"] += 1
+    except OSError:
+        counts["skipped"] += 1
+    finally:
+        os.close(fd)
+
+
+def adopt_main(user):
+    """``capture-collect --adopt-store USER``: run by the launcher as root."""
+    import pwd
+
+    if os.geteuid() != 0:
+        sys.stderr.write("capture-collect: --adopt-store needs root\n")
+        return 2
+    try:
+        account = pwd.getpwnam(user)
+    except KeyError:
+        sys.stderr.write("capture-collect: adopt: no such user\n")
+        return 2
+    counts = adopt_store(STORE_DIR, account.pw_uid, account.pw_gid)
+    if counts["files"] or counts["dirs"] or counts["skipped"]:
+        sys.stderr.write("capture-collect: adopt: handed %d file(s) and %d folder(s) "
+                         "to the collector, skipped %d\n"
+                         % (counts["files"], counts["dirs"], counts["skipped"]))
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--adopt-store":
+        sys.exit(adopt_main(sys.argv[2]))
     try:
         main()
     except KeyboardInterrupt:

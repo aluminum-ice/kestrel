@@ -219,6 +219,12 @@ mkdir -p "$PWN_CAPTURE_DIR"
 install -d -o root -g pi -m 0750 "$PWN_CAPTURE_RUN_DIR"
 "$PWN_CONFIG_GET" capture.whitelist "" | sed '/^$/d' > "$PWN_WHITELIST_FILE"
 
+# An older release ran the collector as root, so files it left in the store are
+# root's and the pi collector below can't append to them. Hand them to pi first
+# (descriptor-based and symlink-safe; see adopt_store in capture-collect). A
+# no-op once done; a failure here must not stop capture.
+PWN_CAPTURE_DIR="$PWN_CAPTURE_DIR" python3 -I "$COLLECT" --adopt-store pi || true
+
 # Start the collector that merges run-dir hashlines into the append-only store.
 # It runs as pi: it only reads the run dir and writes the pi-owned store, so a
 # symlink planted in the store can't make it write anywhere as root. setpriv
