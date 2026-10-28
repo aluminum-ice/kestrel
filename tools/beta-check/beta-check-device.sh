@@ -176,7 +176,7 @@ text = ("0123456789abcdef0123456789abcdef:00005e0053aa:00005e005301:My Network:c
 res = recovered.ingest_text(store, text)
 counts = recovered.RecoveredStore(store).counts()
 pots = [f for f in os.listdir(os.path.join(store, "cracked")) if f.endswith(".potfile")]
-mode = stat.S_IMODE(os.stat(os.path.join(store, "recovered", pots[0])).st_mode) if pots else -1
+mode = stat.S_IMODE(os.stat(os.path.join(store, "cracked", pots[0])).st_mode) if pots else -1
 ok = (res == {"imported": 2, "skipped": 1}
       and counts == {"recovered_aps": 2, "recovered_essids": 2} and mode == 0o600)
 print("OK" if ok else "BAD", res, counts, oct(mode))
