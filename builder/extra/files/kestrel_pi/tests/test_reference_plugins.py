@@ -334,6 +334,45 @@ def test_wigle_upload_honors_response_success(tmp_path, monkeypatch):
     assert plugin._observations == []       # accepted -> dequeued
 
 
+def test_wigle_upload_survives_results_as_a_dict(tmp_path, monkeypatch):
+    # WiGLE returns the upload ``results`` as a single object on some responses,
+    # not a list. The old code did results[0] and died with KeyError: 0, killing
+    # the worker thread (so wigle silently stopped uploading). A dict results
+    # must dequeue cleanly and never raise.
+    import requests
+
+    fix = {"lat": 40.0, "lon": -73.0, "alt": None}
+    plugin = _make_wigle(tmp_path, position=fix, online=False)
+    plugin.on_handshake(types.SimpleNamespace(bssid="AA:BB:CC:DD:EE:F1", essid="a"))
+
+    class _Resp(_Streamable):
+        status_code = 200
+
+        def json(self):
+            return {"success": True, "results": {"transId": "20261027-00001"}}
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp())
+    plugin._upload()                         # must not raise
+    assert plugin._observations == []        # accepted -> dequeued
+
+
+def test_wigle_first_record_tolerates_shapes():
+    from kestrel_pi.loader import Loader  # noqa: F401 - ensure package importable
+    import importlib.util, os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                        "plugins", "wigle.py")
+    spec = importlib.util.spec_from_file_location("wigle_under_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    f = mod._first_record
+    assert f([{"transid": "a"}, {"transid": "b"}]) == {"transid": "a"}
+    assert f({"transId": "c"}) == {"transId": "c"}
+    assert f([]) is None
+    assert f(None) is None
+    assert f("nope") is None
+    assert f([1, 2, {"x": 1}]) == {"x": 1}   # first dict item
+
+
 def test_wigle_401_latches_and_stops_retrying(tmp_path, monkeypatch):
     # A 401 is bad credentials, not a transient error: latch so the retry stops
     # hammering WiGLE and name the fix on the card. The observation stays queued

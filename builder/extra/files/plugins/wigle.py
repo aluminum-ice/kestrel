@@ -172,7 +172,10 @@ class Wigle(Plugin):
                 return
             force = self._force_next
             self._force_next = False
-            self._tick(force=force)
+            try:
+                self._tick(force=force)
+            except Exception as exc:  # noqa: BLE001 - a tick bug must not kill the worker
+                self.log.warning("wigle worker tick failed: %s", exc)
 
     def _poll_interval(self):
         # Periodic nudge so a queued observation retries even with the link up
@@ -377,11 +380,10 @@ class Wigle(Plugin):
             self._last_status = "ok"
             self._rate_limited_until = 0.0   # a success clears any 429 backoff
         self._save_state()
-        results = payload.get("results") or []
-        trans = ""
-        if results and isinstance(results[0], dict) and results[0].get("transid"):
-            trans = " (transid %s)" % results[0]["transid"]
-        self.log.info("wigle uploaded %d observation(s)%s", len(batch), trans)
+        rec = _first_record(payload.get("results"))
+        trans = str(rec.get("transid") or rec.get("transId") or "") if rec else ""
+        self.log.info("wigle uploaded %d observation(s)%s", len(batch),
+                      (" (transid %s)" % trans) if trans else "")
 
     # -- geolocate fallback (search API; display only, never uploaded) --
     def _geolocate(self, bssid):
@@ -420,9 +422,9 @@ class Wigle(Plugin):
         except Exception as exc:  # noqa: BLE001
             self.log.debug("wigle search failed: %s", exc)
             return
-        if not results:
+        top = _first_record(results)
+        if not top:
             return
-        top = results[0]
         cache[bssid] = {
             "bssid": bssid,
             "lat": top.get("trilat"),
@@ -466,6 +468,23 @@ class Wigle(Plugin):
             os.replace(tmp, self._state_path)
         except OSError as exc:
             self.log.warning("could not save wigle state: %s", exc)
+
+
+def _first_record(results):
+    """The first record dict from a WiGLE ``results`` field, or ``None``.
+
+    WiGLE has returned ``results`` as a list of objects on some responses and as
+    a single object on others, so accept either (a dict is the record itself; a
+    list yields its first dict item). Anything else gives ``None``. This keeps a
+    shape surprise from crashing the upload worker -- the old code did
+    ``results[0]`` on a dict and died with ``KeyError: 0``, killing the thread."""
+    if isinstance(results, dict):
+        return results
+    if isinstance(results, (list, tuple)):
+        for item in results:
+            if isinstance(item, dict):
+                return item
+    return None
 
 
 def _retry_after_seconds(value):
