@@ -52,8 +52,8 @@ plugin, set `[agent] use_gps = false`.
 - It never attacks whitelisted networks (they are excluded from every signal it
   learns from).
 - It never starts or stops AngryOxide itself, and never edits `config.toml`. It
-  writes a per-window scan plan that the existing capture service reads; capture
-  stays in charge of the radio.
+  writes a scan plan, whenever it picks a different one, that the existing
+  capture service reads; capture stays in charge of the radio.
 - It does nothing at all unless **both** capture and the agent are enabled.
 
 ## Requirements

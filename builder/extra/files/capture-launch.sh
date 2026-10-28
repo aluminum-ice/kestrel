@@ -76,10 +76,27 @@ agent_active() {
     [ "$(cfg agent.enabled false)" = true ] && [ -f "$PWN_AGENT_OVERRIDE" ]
 }
 
-# Modification time of the agent override (0 if absent), so the supervise loop
-# can relaunch AngryOxide the moment the agent picks a new plan.
-agent_override_mtime() {
-    stat -c %Y "$PWN_AGENT_OVERRIDE" 2>/dev/null || echo 0
+# A fingerprint of the agent override's content ("none" if absent or not a
+# small regular file), so the supervise loop relaunches AngryOxide only when the
+# agent's plan actually changes - every relaunch restarts the scan. The file is
+# pi's, so root opens it without following a symlink and without blocking on a
+# FIFO, and reads only a small regular file.
+agent_override_sum() {
+    PWN_AGENT_OVERRIDE="$PWN_AGENT_OVERRIDE" python3 -I - <<'PY' 2>/dev/null || echo none
+import hashlib, os, stat
+data = None
+try:
+    fd = os.open(os.environ["PWN_AGENT_OVERRIDE"], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        st = os.fstat(fd)
+        if stat.S_ISREG(st.st_mode) and st.st_size <= 65536:
+            data = os.read(fd, 65537)
+    finally:
+        os.close(fd)
+except OSError:
+    pass
+print(hashlib.sha256(data).hexdigest() if data is not None else "none")
+PY
 }
 
 # Read the agent override JSON into the scan flags in the global `args`, and set
@@ -88,10 +105,19 @@ agent_override_mtime() {
 build_agent_args() {
     local parsed kind band channels transmit dwell
     parsed=$(PWN_AGENT_OVERRIDE="$PWN_AGENT_OVERRIDE" python3 -I - <<'PY' 2>/dev/null
-import json, os
+import json, os, stat
+# pi's file: no symlink, no FIFO, only a small regular file (see agent_override_sum).
 try:
-    with open(os.environ["PWN_AGENT_OVERRIDE"], encoding="utf-8") as fh:
-        o = json.load(fh)
+    fd = os.open(os.environ["PWN_AGENT_OVERRIDE"], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > 65536:
+            raise SystemExit(1)
+        o = json.loads(os.read(fd, 65537))
+    finally:
+        os.close(fd)
+except SystemExit:
+    raise
 except Exception:
     raise SystemExit(1)
 kind = str(o.get("kind", ""))
@@ -146,7 +172,7 @@ build_args() {
     [[ $dwell_sec =~ ^[0-9]+$ ]] && [ "$dwell_sec" -ge 1 ] || dwell_sec=5
 
     args=(--interface "$iface"
-        --output "$PWN_CAPTURE_RUN_DIR/kestrel" --notar)
+        --output "$PWN_CAPTURE_RUN_DIR/$ao_base" --notar)
 
     # The learning agent drives the scan when enabled; otherwise the configured
     # [capture.scan] sweep/autohunt/fixed profile does (the Phase 2 behaviour).
@@ -258,10 +284,26 @@ fast_failures=0
 
 # Remove raw artifacts left by earlier runs (one pcapng per previous start, the
 # kismet DB, tars, logs). Their hashlines are already in the store; the per-AP
-# *.hc22000 here are left for the collector to drain.
+# *.hc22000 here are left for the collector to drain. With a launch's output
+# base as $1, that launch's files are kept: a relaunch for a new agent plan
+# keeps the previous run's kismet DB so the collector's in-range reading has
+# recent packets while the new DB fills (the size cap still bounds them all).
 clear_raw_artifacts() {
-    find "$PWN_CAPTURE_RUN_DIR" -maxdepth 1 -type f ! -name '*.hc22000' -delete 2>/dev/null || true
+    if [ -n "${1:-}" ]; then
+        find "$PWN_CAPTURE_RUN_DIR" -maxdepth 1 -type f ! -name '*.hc22000' ! -name "$1*" \
+            -delete 2>/dev/null || true
+    else
+        find "$PWN_CAPTURE_RUN_DIR" -maxdepth 1 -type f ! -name '*.hc22000' -delete 2>/dev/null || true
+    fi
 }
+
+# Each launch writes its pcapng / kismet DB under its own output base, so a
+# relaunch never reuses (or truncates) the previous run's files. The sequence
+# is zero-padded, so no base is a prefix of another.
+launch_seq=0
+ao_base=
+prev_base=
+replan=no
 
 # Total bytes of the raw working files -- everything a roll would delete, i.e.
 # not the *.hc22000 the collector keeps. The cap bounds this, not the whole run
@@ -290,6 +332,9 @@ while :; do
     # relaunch because NM may have re-grabbed the dongle when it re-enumerated.
     nmcli device set "$iface" managed no >/dev/null 2>&1 || true
 
+    prev_base=$ao_base
+    launch_seq=$(( launch_seq + 1 ))
+    ao_base=$(printf 'kestrel-%s-%06d' "$(date +%s)" "$launch_seq")
     build_args
 
     # AngryOxide writes the per-AP hc22000 files (<essid>_<bssid>.hc22000) into
@@ -298,11 +343,15 @@ while :; do
     # collector never sees them. Running here puts them in the run dir the
     # collector watches. Clear stale raw first (hashlines are kept).
     cd "$PWN_CAPTURE_RUN_DIR"
-    clear_raw_artifacts
+    if [ "$replan" = yes ] && [ -n "$prev_base" ]; then
+        clear_raw_artifacts "$prev_base"
+    else
+        clear_raw_artifacts
+    fi
 
     log "starting: $ANGRYOXIDE ${args[*]}"
     ao_started=$(date +%s)
-    ao_override_mtime=$(agent_override_mtime)
+    ao_override_sum=$(agent_override_sum)
     "$ANGRYOXIDE" "${args[@]}" &
     ao_pid=$!
     rolling=no
@@ -313,7 +362,7 @@ while :; do
         # The agent picked a new scan plan: relaunch AngryOxide with it. The
         # extracted hashlines are already in the append-only store, so a
         # controlled restart loses packet history, never handshakes.
-        if agent_active && [ "$(agent_override_mtime)" != "$ao_override_mtime" ]; then
+        if agent_active && [ "$(agent_override_sum)" != "$ao_override_sum" ]; then
             log "agent updated the scan plan; relaunching AngryOxide"
             replan=yes
             kill -TERM "$ao_pid" 2>/dev/null || true

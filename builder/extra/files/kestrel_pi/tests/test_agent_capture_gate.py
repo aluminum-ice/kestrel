@@ -5,6 +5,7 @@ publishes "running" while driving a stopped capture. Pure-stdlib: the env and
 policies are stubbed, so no torch/gymnasium is needed."""
 
 import json
+import os
 import sys
 import threading
 import time
@@ -108,6 +109,26 @@ def test_clear_override_removes_a_stale_plan(tmp_path):
     c._clear_override()
     assert not override.exists()
     c._clear_override()   # absent is fine (best-effort)
+
+
+def test_launcher_surface_rewrites_the_override_only_when_the_plan_changes(tmp_path, monkeypatch):
+    """The capture launcher relaunches AngryOxide whenever the override's
+    content changes, so a window that keeps the same plan must not rewrite it."""
+    surface = ctrl_mod.LauncherSurface(agent_dir=str(tmp_path))
+    writes = []
+    real_replace = ctrl_mod.os.replace
+    monkeypatch.setattr(ctrl_mod.os, "replace",
+                        lambda a, b: (writes.append(b), real_replace(a, b)))
+    plan = {"kind": "channels", "channels": (1, 6, 11)}
+    surface.apply(plan, 2, "passive")
+    surface.apply(dict(plan), 2, "passive")              # same plan: no write
+    assert len(writes) == 1
+    surface.apply(plan, 5, "passive")                    # dwell changed
+    surface.apply({"kind": "autohunt"}, 5, "passive")    # plan changed
+    assert len(writes) == 3
+    os.remove(tmp_path / OVERRIDE_NAME)                  # cleared while idle
+    surface.apply({"kind": "autohunt"}, 5, "passive")
+    assert len(writes) == 4
 
 
 class _FakePolicy:
