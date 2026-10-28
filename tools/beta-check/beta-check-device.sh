@@ -85,8 +85,8 @@ echo "uptime:     $(uptime -p 2>/dev/null)"
 echo "python3:    $(/usr/bin/python3 -V 2>&1)"
 echo "web auth:   $web_auth"
 
-# ================================================================ 1.0.7-beta.1 checks (#36)
-# Cracked networks: surface known passphrases for captured networks (display
+# ================================================================ 1.0.7-beta.2 checks (#36 rename #39)
+# Recovered networks: surface known passphrases for captured networks (display
 # + import). CHECK ids match the checklist issue.
 pid=$(systemctl show -p MainPID --value kestrel-daemon.service 2>/dev/null)
 cap_state=$(svc_active kestrel-capture.service)
@@ -151,14 +151,14 @@ else
   check 1.5 SKIP "settings unchanged by the update" "no in-place update recorded"
 fi
 
-# ---------------------------------------------------------------- 2. cracked-networks core service (#36)
-sec "2. cracked-networks core service (#36)"
-imp=$(as_dev "$VENV_PY" -I -c 'import kestrel_pi.cracked as c
-print(all(hasattr(c, n) for n in ("CrackedStore", "ingest_text", "parse_potfile_line")))' 2>&1)
+# ---------------------------------------------------------------- 2. recovered-networks core service (#36)
+sec "2. recovered-networks core service (#36)"
+imp=$(as_dev "$VENV_PY" -I -c 'import kestrel_pi.recovered as c
+print(all(hasattr(c, n) for n in ("RecoveredStore", "ingest_text", "parse_potfile_line")))' 2>&1)
 if [ "$imp" = True ]; then
-  check 2.1 PASS "installed package provides kestrel_pi.cracked" "CrackedStore + ingest_text + parser"
+  check 2.1 PASS "installed package provides kestrel_pi.recovered" "RecoveredStore + ingest_text + parser"
 else
-  check 2.1 FAIL "installed package provides kestrel_pi.cracked" "$(printf '%s' "$imp" | tr '\n' ' ' | cut -c1-120)"
+  check 2.1 FAIL "installed package provides kestrel_pi.recovered" "$(printf '%s' "$imp" | tr '\n' ' ' | cut -c1-120)"
 fi
 # Round-trip through a throwaway store the device user owns (placeholder data
 # only; never the real store): proves the installed parser reads both formats,
@@ -167,18 +167,18 @@ dtmp=$(as_dev mktemp -d 2>/dev/null)
 if [ -n "$dtmp" ]; then
   rt=$(as_dev "$VENV_PY" -I - "$dtmp" <<'PY' 2>&1
 import os, stat, sys
-from kestrel_pi import cracked
+from kestrel_pi import recovered
 store = sys.argv[1]
 text = ("0123456789abcdef0123456789abcdef:00005e0053aa:00005e005301:My Network:correct-horse\n"
         "00005e0053bb:00005e005302:Cafe Guest:s3cret\n"
         "00005e0053aa:00005e005301:My Network:correct-horse\n"
         "garbage line\n")
-res = cracked.ingest_text(store, text)
-counts = cracked.CrackedStore(store).counts()
+res = recovered.ingest_text(store, text)
+counts = recovered.RecoveredStore(store).counts()
 pots = [f for f in os.listdir(os.path.join(store, "cracked")) if f.endswith(".potfile")]
-mode = stat.S_IMODE(os.stat(os.path.join(store, "cracked", pots[0])).st_mode) if pots else -1
+mode = stat.S_IMODE(os.stat(os.path.join(store, "recovered", pots[0])).st_mode) if pots else -1
 ok = (res == {"imported": 2, "skipped": 1}
-      and counts == {"cracked_aps": 2, "cracked_essids": 2} and mode == 0o600)
+      and counts == {"recovered_aps": 2, "recovered_essids": 2} and mode == 0o600)
 print("OK" if ok else "BAD", res, counts, oct(mode))
 PY
 )
@@ -191,42 +191,42 @@ PY
 else
   check 2.2 SKIP "parser + store round-trip" "could not make a throwaway dir"
 fi
-# 2.3 (cracked_aps in /status.json) is emitted from the dashboard section below
+# 2.3 (recovered_aps in /status.json) is emitted from the dashboard section below
 # when the optional login is given.
-check 2.4 MANUAL "/networks shows a cracked badge and the card shows cracked N of M" "by hand"
+check 2.4 MANUAL "/networks shows a recovered badge and the card shows recovered N of M" "by hand"
 
 # ---------------------------------------------------------------- 3. passphrase visibility (#36)
 sec "3. passphrase visibility (#36)"
-check 3.1 MANUAL "with the web login on, a cracked row reveals its passphrase" "by hand"
+check 3.1 MANUAL "with the web login on, a recovered row reveals its passphrase" "by hand"
 check 3.2 MANUAL "show_passphrases=false hides the passphrase; badge+count stay; login off never shows it" "by hand"
 # 3.3 (saved live, no restart) is in the config-tests section below.
 
-# ---------------------------------------------------------------- 5. cracked import: CLI (#36)
-sec "5. cracked import - CLI (#36)"
-if grep -q 'cmd_cracked()' "$CLI" && grep -q 'cracked) cmd_cracked' "$CLI"; then
-  check 5.1 PASS "installed CLI has the cracked subcommand" "import | list | clear"
+# ---------------------------------------------------------------- 5. recovered import: CLI (#36)
+sec "5. recovered import - CLI (#36)"
+if grep -q 'cmd_recovered()' "$CLI" && grep -q 'recovered) cmd_recovered' "$CLI"; then
+  check 5.1 PASS "installed CLI has the recovered subcommand" "import | list | clear"
 else
-  check 5.1 FAIL "installed CLI has the cracked subcommand" ""
+  check 5.1 FAIL "installed CLI has the recovered subcommand" ""
 fi
-clist=$(as_dev "$CLI" cracked list 2>&1)
-if printf '%s\n' "$clist" | grep -qi 'cracked record'; then
-  check 5.2 PASS "kestrel cracked list prints counts only (no passphrase)" "$(printf '%s' "$clist" | head -1 | cut -c1-80)"
+clist=$(as_dev "$CLI" recovered list 2>&1)
+if printf '%s\n' "$clist" | grep -qi 'recovered record'; then
+  check 5.2 PASS "kestrel recovered list prints counts only (no passphrase)" "$(printf '%s' "$clist" | head -1 | cut -c1-80)"
 else
-  check 5.2 INFO "kestrel cracked list" "ran; output not shown (it can name imported files)"
+  check 5.2 INFO "kestrel recovered list" "ran; output not shown (it can name imported files)"
 fi
-check 5.3 MANUAL "the web Import cracked results upload accepts a potfile and shows the summary" "by hand"
+check 5.3 MANUAL "the web Import recovered results upload accepts a potfile and shows the summary" "by hand"
 
-# ---------------------------------------------------------------- 6. cracked store privacy (#36)
-sec "6. cracked store privacy (#36)"
+# ---------------------------------------------------------------- 6. recovered store privacy (#36)
+sec "6. recovered store privacy (#36)"
 crkdir=$STORE/cracked
 if [ -d "$crkdir" ]; then
   dp=$(stat -c '%a' "$crkdir")
   nbad=$(find "$crkdir" -maxdepth 1 -type f -name '*.potfile' ! -perm 600 2>/dev/null | wc -l)
   { [ "$dp" = 700 ] && [ "$nbad" -eq 0 ]; } \
-    && check 6.1 PASS "cracked dir 0700, potfiles 0600" "dir=$dp potfiles ok" \
-    || check 6.1 FAIL "cracked dir 0700, potfiles 0600" "dir=$dp not-0600=$nbad"
+    && check 6.1 PASS "recovered dir 0700, potfiles 0600" "dir=$dp potfiles ok" \
+    || check 6.1 FAIL "recovered dir 0700, potfiles 0600" "dir=$dp not-0600=$nbad"
 else
-  check 6.1 SKIP "cracked dir 0700, potfiles 0600" "no cracked store yet"
+  check 6.1 SKIP "recovered dir 0700, potfiles 0600" "no recovered store yet"
 fi
 
 # ---------------------------------------------------------------- config tests (throwaway copy)
@@ -256,7 +256,7 @@ def check(cid, ok, what, detail=""): print("CHECK %-5s %-6s %s :: %s" % (cid, "P
 def apply(ch):
     try: return ctl.apply_change(ch)
     except Exception as e: return {"ok": False, "error": "exc %s" % type(e).__name__}
-# cracked networks (#36): the passphrase-visibility toggle and the import caps.
+# recovered networks (#36): the passphrase-visibility toggle and the import caps.
 # 3.3: show_passphrases saves live via the socket (not root_only, no restart)
 r = apply({"target":"config-set","table":"web","key":"show_passphrases","value":False})
 check("3.3", bool(r.get("ok")) and read("web.show_passphrases") is False and not r.get("restart"),
@@ -264,15 +264,15 @@ check("3.3", bool(r.get("ok")) and read("web.show_passphrases") is False and not
 # 4.1: the new keys are in the root allow-list with the right specs
 spec = getattr(ctl, "CONFIG_SETTABLE", {})
 want = {"web.show_passphrases": {"type": "bool"},
-        "cracked.max_import_mb": {"type": "int", "min": 1},
-        "cracked.max_import_lines": {"type": "int", "min": 1}}
+        "recovered.max_import_mb": {"type": "int", "min": 1},
+        "recovered.max_import_lines": {"type": "int", "min": 1}}
 check("4.1", all(spec.get(k) == v for k, v in want.items()),
-      "show_passphrases + [cracked] caps settable in the allow-list", "")
-# 4.2: the apply socket saves the [cracked] import caps
-cur = read("cracked.max_import_mb", 2); want2 = int(cur) + 1
-r = apply({"target":"config-set","table":"cracked","key":"max_import_mb","value":want2})
-check("4.2", bool(r.get("ok")) and read("cracked.max_import_mb") == want2,
-      "apply socket saves [cracked] max_import_mb", "ok=%s" % r.get("ok"))
+      "show_passphrases + [recovered] caps settable in the allow-list", "")
+# 4.2: the apply socket saves the [recovered] import caps
+cur = read("recovered.max_import_mb", 2); want2 = int(cur) + 1
+r = apply({"target":"config-set","table":"recovered","key":"max_import_mb","value":want2})
+check("4.2", bool(r.get("ok")) and read("recovered.max_import_mb") == want2,
+      "apply socket saves [recovered] max_import_mb", "ok=%s" % r.get("ok"))
 PY
 [ "$(sha256sum "$CONFIG" | awk '{print $1}')" = "$cfg_sum_before" ] \
   && check 0.1 PASS "real config.toml untouched by the tests" "checksum identical" \
@@ -314,8 +314,8 @@ except Exception as exc:
     sys.exit(0)
 print("version:", s.get("version"))
 cap = s.get("capture", {}) or {}
-print("capture:", {k: cap.get(k) for k in ("state", "enabled", "hashline_files", "cracked_aps")})
-print("CHECK %-5s %-6s %s :: %s" % ("2.3", "PASS" if "cracked_aps" in cap else "FAIL", "cracked_aps present in /status.json capture", cap.get("cracked_aps")))
+print("capture:", {k: cap.get(k) for k in ("state", "enabled", "hashline_files", "recovered_aps")})
+print("CHECK %-5s %-6s %s :: %s" % ("2.3", "PASS" if "recovered_aps" in cap else "FAIL", "recovered_aps present in /status.json capture", cap.get("recovered_aps")))
 print("environment:", s.get("environment"))
 ag = s.get("agent", {}) or {}
 print("agent:", {k: v for k, v in ag.items() if isinstance(v, (str, int, float, bool)) or v is None})
