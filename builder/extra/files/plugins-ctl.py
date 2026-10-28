@@ -109,7 +109,7 @@ CONFIG_SETTABLE = {
     "capture.housekeeping.archive_dir": {"type": "str", "maxlen": 256,
                                          "under": "/var/lib/kestrel/capture"},
     "capture.housekeeping.keep_archives": {"type": "int", "min": 0},
-    "capture.max_run_mb": {"type": "int", "min": 0},
+    "capture.housekeeping.max_run_mb": {"type": "int", "min": 0},
     "capture.environment.enabled": {"type": "bool"},
     "capture.environment.window_s": {"type": "int", "min": 1},
     "capture.environment.max_age_s": {"type": "int", "min": 1},
