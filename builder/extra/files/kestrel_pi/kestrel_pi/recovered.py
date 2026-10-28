@@ -1,6 +1,6 @@
-"""The cracked-networks core service: known Wi-Fi passphrases, from potfiles.
+"""The recovered-networks core service: known Wi-Fi passphrases, from potfiles.
 
-When a captured network's passphrase is known -- because it was cracked, wherever
+When a captured network's passphrase is known -- because it was recovered, wherever
 the crack happened -- this surfaces it so the UI can annotate that network. The
 feature is **plugin-agnostic**: the contribution point is the directory
 ``<store>/cracked/``, and *any* ``*.potfile`` in it is a source. The ``wpa-sec``
@@ -12,7 +12,7 @@ plugin being loaded.
 This is strictly for the documented offline analysis of networks you own or are
 authorized to test (see ``CLAUDE.md``, "Authorized use only"): it displays
 results the operator already produced and never cracks, deauthenticates, or acts
-on a network. Passphrases are secrets -- the cracked dir is ``0700``, every file
+on a network. Passphrases are secrets -- the recovered dir is ``0700``, every file
 ``0600``, owned by ``pi`` -- so the daemon (also ``pi``) reads them and no root
 step is involved.
 
@@ -44,12 +44,14 @@ from dataclasses import dataclass
 from .capture import _format_mac
 
 # Where sources live, relative to the capture store, and the suffix that marks
-# one. Kept in step with the wpa-sec plugin, which writes wpa-sec.potfile here.
-CRACKED_DIRNAME = "cracked"
+# one. The on-disk directory name stays ``cracked/`` even though the feature is
+# "recovered networks": the wpa-sec plugin already writes wpa-sec.potfile there,
+# so renaming the directory would be a capture-store layout change for no gain.
+STORE_SUBDIR = "cracked"
 POTFILE_SUFFIX = ".potfile"
 
 # Default ingest/parse caps. The web upload and CLI import make these
-# configurable via the ``[cracked]`` config table and pass the resolved values
+# configurable via the ``[recovered]`` config table and pass the resolved values
 # in; the module itself reads no config, so it stays pure and unit-testable.
 DEFAULT_IMPORT_MB = 2
 DEFAULT_IMPORT_LINES = 50_000
@@ -76,7 +78,7 @@ def _normalize_mac(field):
 
 
 @dataclass
-class CrackedRecord:
+class RecoveredRecord:
     """One known passphrase. ``source`` is the potfile basename it came from, for
     display/debugging -- never a secret."""
 
@@ -87,7 +89,7 @@ class CrackedRecord:
 
 
 def parse_potfile_line(line):
-    """Parse one potfile line into a :class:`CrackedRecord` (``source`` left
+    """Parse one potfile line into a :class:`RecoveredRecord` (``source`` left
     blank; the caller fills it). Returns ``None`` for a blank/garbage line or one
     with no adjacent MAC pair / nothing after the station MAC.
 
@@ -117,7 +119,7 @@ def parse_potfile_line(line):
     essid = ":".join(rest[:-1])
     if not psk and not essid:
         return None
-    return CrackedRecord(bssid=bssid, essid=essid, psk=psk, source="")
+    return RecoveredRecord(bssid=bssid, essid=essid, psk=psk, source="")
 
 
 def _dedup_key(rec):
@@ -127,8 +129,8 @@ def _dedup_key(rec):
     return (rec.bssid, rec.essid, rec.psk)
 
 
-class CrackedStore:
-    """Read-only view of the cracked potfiles under ``<store>/cracked/``.
+class RecoveredStore:
+    """Read-only view of the recovered potfiles under ``<store>/cracked/``.
 
     Owned by the daemon and read by the web layer; never imports a plugin. The
     data is the directory, not any plugin API, so the feature does not depend on
@@ -140,7 +142,7 @@ class CrackedStore:
 
     def __init__(self, store_dir, max_bytes=None, max_lines=None):
         self.store_dir = store_dir
-        self.cracked_dir = os.path.join(store_dir, CRACKED_DIRNAME)
+        self.recovered_dir = os.path.join(store_dir, STORE_SUBDIR)
         self._max_bytes = (DEFAULT_IMPORT_MB * 1024 * 1024
                            if max_bytes is None else int(max_bytes))
         self._max_lines = (DEFAULT_IMPORT_LINES
@@ -151,12 +153,12 @@ class CrackedStore:
         self._lock = threading.Lock()
 
     def _potfiles(self):
-        """Every ``*.potfile`` in the cracked dir (sorted), or ``[]``."""
+        """Every ``*.potfile`` in the recovered dir (sorted), or ``[]``."""
         try:
-            names = os.listdir(self.cracked_dir)
+            names = os.listdir(self.recovered_dir)
         except OSError:
             return []
-        return sorted(os.path.join(self.cracked_dir, n)
+        return sorted(os.path.join(self.recovered_dir, n)
                       for n in names if n.endswith(POTFILE_SUFFIX))
 
     def _read_lines(self, path):
@@ -218,7 +220,7 @@ class CrackedStore:
         return by_bssid, by_essid, records
 
     def lookup_bssid(self, bssid):
-        """The :class:`CrackedRecord` for ``bssid`` (normalized before lookup),
+        """The :class:`RecoveredRecord` for ``bssid`` (normalized before lookup),
         or ``None``. The exact, unambiguous by-AP join."""
         if not bssid:
             return None
@@ -229,8 +231,8 @@ class CrackedStore:
         return by_bssid.get(key)
 
     def lookup_essid(self, essid):
-        """The list of :class:`CrackedRecord`\\ s whose ESSID matches ``essid``
-        exactly (empty list if none). The by-network fallback for a cracked
+        """The list of :class:`RecoveredRecord`\\ s whose ESSID matches ``essid``
+        exactly (empty list if none). The by-network fallback for a recovered
         record whose BSSID matches no captured AP; a list because one name may
         span several BSSIDs with different passphrases."""
         if not essid:
@@ -239,21 +241,21 @@ class CrackedStore:
         return list(by_essid.get(essid, ()))
 
     def counts(self):
-        """``{"cracked_aps", "cracked_essids"}`` -- distinct cracked BSSIDs and
-        distinct non-empty cracked ESSIDs across every potfile. A diagnostic
+        """``{"recovered_aps", "recovered_essids"}`` -- distinct recovered BSSIDs and
+        distinct non-empty recovered ESSIDs across every potfile. A diagnostic
         total (it counts records with no matching captured AP too); the
-        dashboard's "cracked N of M" N is computed at the capture join, not
+        dashboard's "recovered N of M" N is computed at the capture join, not
         here."""
         by_bssid, by_essid, _records = self._parse()
-        return {"cracked_aps": len(by_bssid), "cracked_essids": len(by_essid)}
+        return {"recovered_aps": len(by_bssid), "recovered_essids": len(by_essid)}
 
     def all(self):
-        """Every distinct cracked record (deduped, first-seen order)."""
+        """Every distinct recovered record (deduped, first-seen order)."""
         _by_bssid, _by_essid, records = self._parse()
         return list(records)
 
     def ingest(self, text, *, max_lines=None):
-        """Parse ``text`` and merge its records into the cracked dir, returning
+        """Parse ``text`` and merge its records into the recovered dir, returning
         ``{"imported": N, "skipped": M}`` (see :func:`ingest_text`). The caller
         (web upload / CLI) has already enforced the byte cap; ``max_lines`` falls
         back to this store's configured line cap. The next read re-parses, since
@@ -263,7 +265,7 @@ class CrackedStore:
             max_lines=self._max_lines if max_lines is None else max_lines)
 
 
-def _unique_import_path(cracked_dir):
+def _unique_import_path(recovered_dir):
     """A fresh ``imported-<UTC-stamp>.potfile`` path opened ``O_EXCL`` so a
     concurrent import can never clobber another's file. Returns the open fd and
     the path; the caller writes and closes. The name is device-generated, never
@@ -271,14 +273,14 @@ def _unique_import_path(cracked_dir):
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     for attempt in range(100):
         suffix = "" if attempt == 0 else "-%d" % attempt
-        path = os.path.join(cracked_dir, "imported-%s%s%s"
+        path = os.path.join(recovered_dir, "imported-%s%s%s"
                             % (stamp, suffix, POTFILE_SUFFIX))
         try:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
             continue
         return fd, path
-    raise OSError("could not create a unique import file in %s" % cracked_dir)
+    raise OSError("could not create a unique import file in %s" % recovered_dir)
 
 
 def ingest_text(store_dir, text, *, source_label="imported",
@@ -291,7 +293,7 @@ def ingest_text(store_dir, text, *, source_label="imported",
     ``M`` non-blank lines that did not parse (including lines past ``max_lines``).
     Nothing is written when no line parses. The record set is deduped and written
     in canonical 4-field form (``<bssid>:<zero-sta>:<essid>:<psk>``, bare-hex
-    MACs) so :class:`CrackedStore` re-parses it identically. ``source_label`` is
+    MACs) so :class:`RecoveredStore` re-parses it identically. ``source_label`` is
     accepted for symmetry with future sources but the on-disk name is always
     ``imported-<stamp>.potfile``.
     """
@@ -317,10 +319,10 @@ def ingest_text(store_dir, text, *, source_label="imported",
     if not records:
         return {"imported": 0, "skipped": skipped}
 
-    cracked_dir = os.path.join(store_dir, CRACKED_DIRNAME)
-    os.makedirs(cracked_dir, mode=0o700, exist_ok=True)
-    os.chmod(cracked_dir, 0o700)
-    fd, _path = _unique_import_path(cracked_dir)
+    recovered_dir = os.path.join(store_dir, STORE_SUBDIR)
+    os.makedirs(recovered_dir, mode=0o700, exist_ok=True)
+    os.chmod(recovered_dir, 0o700)
+    fd, _path = _unique_import_path(recovered_dir)
     os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         for rec in records:

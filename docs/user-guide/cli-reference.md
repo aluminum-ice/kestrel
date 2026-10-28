@@ -62,7 +62,7 @@ See [Connecting over Wi-Fi](wifi-setup.md) and [over Bluetooth](bluetooth-setup.
 
 See [Setting up capture](capture-setup.md) and [the capture whitelist](capture-whitelist.md).
 
-## Cracked networks
+## Recovered networks
 
 Known passphrases for captured networks, parsed from potfiles in the store's
 `cracked/` directory. Display and import only — the device never cracks anything,
@@ -70,11 +70,11 @@ and these commands run unprivileged (no `sudo`).
 
 | Command | What it is for |
 | --- | --- |
-| `kestrel cracked import <file>` | Parse a wpa-sec or hashcat **separated** potfile and merge its records into the store. Size/line-capped by `[cracked]`. |
-| `kestrel cracked list` | Show how many cracked records you hold, by source. Counts only — never prints a passphrase. |
-| `kestrel cracked clear --yes [--source <name>]` | Remove imported potfiles (all `imported-*.potfile`, or one named source). |
+| `kestrel recovered import <file>` | Parse a wpa-sec or hashcat **separated** potfile and merge its records into the store. Size/line-capped by `[recovered]`. |
+| `kestrel recovered list` | Show how many recovered records you hold, by source. Counts only — never prints a passphrase. |
+| `kestrel recovered clear --yes [--source <name>]` | Remove imported potfiles (all `imported-*.potfile`, or one named source). |
 
-See [Working with your captures](working-with-captures.md#seeing-which-networks-are-cracked).
+See [Working with your captures](working-with-captures.md#seeing-which-networks-are-recovered).
 
 ## Plugins
 

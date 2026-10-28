@@ -263,8 +263,8 @@ SECTIONS = [
                   "epoch_seconds just re-renders the same numbers.",
                   RESTART_DAEMON, min=0),
             _edit("web", "show_passphrases", "bool", True,
-                  "Show a cracked network's passphrase in its Captured-networks "
-                  "card (needs the web login). Off keeps the 'cracked' badge and "
+                  "Show a recovered network's passphrase in its Captured-networks "
+                  "card (needs the web login). Off keeps the 'recovered' badge and "
                   "count but hides the passphrase -- for screen-sharing or "
                   "shoulder-surfing. Takes effect immediately, no restart.",
                   RESTART_NONE),
@@ -287,17 +287,17 @@ SECTIONS = [
         ],
     },
     {
-        "title": "Cracked networks",
-        "anchor": "cracked",
+        "title": "Recovered networks",
+        "anchor": "recovered",
         "intro": "Known passphrases imported for captured networks. These caps "
                  "bound a web upload or CLI import of a potfile; the passphrases "
                  "themselves show on the Captured networks page when the web "
                  "login is on and 'show_passphrases' is true.",
         "entries": [
-            _edit("cracked", "max_import_mb", "int", 2,
+            _edit("recovered", "max_import_mb", "int", 2,
                   "Largest potfile accepted by an import, in MB.",
                   RESTART_NONE, min=1),
-            _edit("cracked", "max_import_lines", "int", 50000,
+            _edit("recovered", "max_import_lines", "int", 50000,
                   "Most lines read from an imported potfile; any beyond this are "
                   "skipped.", RESTART_NONE, min=1),
         ],

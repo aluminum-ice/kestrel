@@ -34,7 +34,7 @@ from .config import (
 )
 from .connectivity import ConnectivityMonitor, http_probe, nmcli_connectivity_online
 from .context import ServiceRegistry
-from .cracked import CrackedStore
+from .recovered import RecoveredStore
 from .dispatch import Dispatcher
 from .loader import Loader
 from .ui import StubUI, UIState
@@ -157,7 +157,7 @@ class Daemon:
         # Known passphrases for captured networks, parsed from any *.potfile an
         # operator or plugin drops in <store>/cracked/. Owned here, read by the
         # web layer to annotate /networks; its own mtime cache keeps it cheap.
-        self.cracked = CrackedStore(capture_store)
+        self.recovered = RecoveredStore(capture_store)
         # Short-TTL cache of `systemctl is-active` results (see _service_state),
         # keyed by service name. Guarded because status() runs on web request
         # threads (the server is threaded).
@@ -175,10 +175,10 @@ class Daemon:
         # via ``__optional_requires__ = ("agent",)`` and degrades when it is None.
         self.services.provide(
             "agent", lambda: agent_readout.read_status(), owner="daemon")
-        # The cracked-networks store as a service, so a plugin can read known
+        # The recovered-networks store as a service, so a plugin can read known
         # passphrases without importing the daemon; the registry getter swallows
         # a read failure to None, so a broken potfile never breaks a consumer.
-        self.services.provide("cracked", lambda: self.cracked, owner="daemon")
+        self.services.provide("recovered", lambda: self.recovered, owner="daemon")
         self.ui = StubUI(self.log.getChild("ui"))
 
         self.dispatcher = Dispatcher(
@@ -630,18 +630,18 @@ class Daemon:
         if agent_elements:
             widgets[agent_readout.CARD_NAME] = agent_elements
         # How many captured access points have a known passphrase, for the
-        # dashboard's "cracked N of M" figure (N of M captured APs). Join each
-        # captured BSSID to the cracked store; both sides are mtime-cached so
+        # dashboard's "recovered N of M" figure (N of M captured APs). Join each
+        # captured BSSID to the recovered store; both sides are mtime-cached so
         # this stays cheap on a repeat render. A store-read failure omits the
-        # key (the navcard then shows no cracked figure) rather than breaking
+        # key (the navcard then shows no recovered figure) rather than breaking
         # status(); the key is never a secret, so it is always safe to include.
-        cracked_aps = None
+        recovered_aps = None
         try:
-            cracked_aps = sum(
+            recovered_aps = sum(
                 1 for ap in self.capture.captured_access_points()
-                if ap.get("bssid") and self.cracked.lookup_bssid(ap["bssid"]))
-        except Exception:  # noqa: BLE001 - a cracked-store read must never break status()
-            cracked_aps = None
+                if ap.get("bssid") and self.recovered.lookup_bssid(ap["bssid"]))
+        except Exception:  # noqa: BLE001 - a recovered-store read must never break status()
+            recovered_aps = None
         return {
             "version": __version__,
             "hook_api": HOOK_API_VERSION,
@@ -659,9 +659,9 @@ class Daemon:
                 # together on the dashboard navcard. Derived from one cached
                 # store parse.
                 **self.capture.capture_counts(),
-                # cracked APs of the captured APs above; omitted on a store-read
-                # failure so the navcard simply shows no cracked figure.
-                **({"cracked_aps": cracked_aps} if cracked_aps is not None else {}),
+                # recovered APs of the captured APs above; omitted on a store-read
+                # failure so the navcard simply shows no recovered figure.
+                **({"recovered_aps": recovered_aps} if recovered_aps is not None else {}),
                 "state": capture_state,
                 # config intent (``[capture] enabled``), separate from the live
                 # service state above; the web toggle reads this to know which

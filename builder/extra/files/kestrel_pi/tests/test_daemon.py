@@ -417,15 +417,15 @@ def test_ui_state_counts_match_capture_counts(tmp_path):
         "handshakes": 3, "access_points": 2, "networks": 3}
 
 
-def test_status_reports_cracked_aps_joined_to_captured(tmp_path, monkeypatch):
-    # Two captured radios; a cracked potfile that knows one of them.
+def test_status_reports_recovered_aps_joined_to_captured(tmp_path, monkeypatch):
+    # Two captured radios; a recovered potfile that knows one of them.
     cfg = tmp_path / "config.toml"
     cfg.write_text("[web]\nenabled = false\n"
                    "[capture]\nenabled = false\nwhitelist = []\n")
     (tmp_path / "store.hc22000").write_text("\n".join([_R1_HOME, _R2_CAFE]) + "\n")
-    cracked_dir = tmp_path / "cracked"
-    cracked_dir.mkdir()
-    (cracked_dir / "wpa-sec.potfile").write_text(
+    recovered_dir = tmp_path / "cracked"
+    recovered_dir.mkdir()
+    (recovered_dir / "wpa-sec.potfile").write_text(
         "aabbccddeeff:112233445566:Home:correct-horse\n")   # knows radio 1 only
     d = daemon_mod.Daemon(config_path=str(cfg), capture_store=str(tmp_path))
     monkeypatch.setattr(d, "_capture_state", lambda: "stopped")
@@ -433,12 +433,12 @@ def test_status_reports_cracked_aps_joined_to_captured(tmp_path, monkeypatch):
 
     cap = d.status()["capture"]
     assert cap["access_points"] == 2     # M: both captured radios
-    assert cap["cracked_aps"] == 1       # N: one of them has a known passphrase
+    assert cap["recovered_aps"] == 1       # N: one of them has a known passphrase
 
 
-def test_status_omits_cracked_aps_when_the_store_read_fails(tmp_path, monkeypatch):
-    # A cracked-store read failure must not break status(); the key is omitted
-    # so the navcard simply shows no cracked figure.
+def test_status_omits_recovered_aps_when_the_store_read_fails(tmp_path, monkeypatch):
+    # A recovered-store read failure must not break status(); the key is omitted
+    # so the navcard simply shows no recovered figure.
     cfg = tmp_path / "config.toml"
     cfg.write_text("[web]\nenabled = false\n"
                    "[capture]\nenabled = false\nwhitelist = []\n")
@@ -450,7 +450,7 @@ def test_status_omits_cracked_aps_when_the_store_read_fails(tmp_path, monkeypatc
     def _boom(_bssid):
         raise RuntimeError("potfile unreadable")
 
-    monkeypatch.setattr(d.cracked, "lookup_bssid", _boom)
+    monkeypatch.setattr(d.recovered, "lookup_bssid", _boom)
     cap = d.status()["capture"]
-    assert "cracked_aps" not in cap
+    assert "recovered_aps" not in cap
     assert cap["access_points"] == 1     # the rest of the capture card is intact

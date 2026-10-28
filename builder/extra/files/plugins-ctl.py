@@ -139,9 +139,9 @@ CONFIG_SETTABLE = {
     "web.refresh_seconds": {"type": "int", "min": 0},
     "web.show_passphrases": {"type": "bool"},
     "web.probe_url": {"type": "str", "maxlen": 256},
-    # cracked networks (import caps; read live, so no restart)
-    "cracked.max_import_mb": {"type": "int", "min": 1},
-    "cracked.max_import_lines": {"type": "int", "min": 1},
+    # recovered networks (import caps; read live, so no restart)
+    "recovered.max_import_mb": {"type": "int", "min": 1},
+    "recovered.max_import_lines": {"type": "int", "min": 1},
 }
 
 # [web] keys the dashboard reads live on each render, so a change takes effect
