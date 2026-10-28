@@ -291,3 +291,130 @@ def test_single_file_must_be_a_plain_name_in_the_store(mod, tmp_path, value, exp
     config.write_text('[capture.output]\nmode = "single"\nsingle_file = "%s"\n' % value)
     mod.CONFIG = str(config)
     assert mod.output_config() == ("single", expected)
+
+
+# -- adopt-store: root hands an older release's files to the pi collector ----
+# The tests run unprivileged, so "root" is the test's own uid (from_uid) and the
+# owner change is recorded instead of made.
+
+def _adopt(store, uid=None, **kwargs):
+    m = _load()
+    me = os.getuid()
+    changed = set()
+
+    def record(fd, new_uid, new_gid):
+        changed.add(os.fstat(fd).st_ino)
+
+    counts = m.adopt_store(str(store), me if uid is None else uid, os.getgid(),
+                           from_uid=me, chown=record, **kwargs)
+    return counts, changed
+
+
+def _ino(path):
+    return os.lstat(path).st_ino
+
+
+def test_adopt_hands_over_store_files_legacy_run_and_archive_sets(tmp_path):
+    store = tmp_path / "store"
+    (store / ".run").mkdir(parents=True)
+    (store / "archive" / "20261027T000000").mkdir(parents=True)
+    paths = [store / "My Network.hc22000", store / ".run" / "a.hc22000",
+             store / "archive" / "20261027T000000" / "b.hc22000"]
+    for path in paths:
+        path.write_text("line\n")
+    counts, changed = _adopt(store)
+    dirs = [store / ".run", store / "archive", store / "archive" / "20261027T000000"]
+    assert changed == {_ino(p) for p in paths + dirs}
+    assert counts == {"files": 3, "dirs": 3, "skipped": 0}
+
+
+def test_adopt_never_follows_a_symlink(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "shadow").write_text("secret\n")
+    store = tmp_path / "store"
+    store.mkdir()
+    os.symlink(outside / "shadow", store / "x.hc22000")
+    os.symlink(outside, store / ".run")
+    counts, changed = _adopt(store)
+    assert _ino(outside / "shadow") not in changed and _ino(outside) not in changed
+    assert changed == set()
+
+
+def test_adopt_skips_a_hard_linked_file(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "shadow").write_text("secret\n")
+    store = tmp_path / "store"
+    store.mkdir()
+    os.link(outside / "shadow", store / "x.hc22000")
+    counts, changed = _adopt(store)
+    assert changed == set() and counts["skipped"] == 1
+
+
+def test_adopt_skips_fifos_without_blocking(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    os.mkfifo(store / "x.hc22000")
+    counts, changed = _adopt(store)
+    assert changed == set() and counts["skipped"] == 1
+
+
+def test_adopt_stops_at_the_depth_limit(tmp_path):
+    m = _load()
+    store = tmp_path / "store"
+    deep = store.joinpath(*["d"] * (m.ADOPT_MAX_DEPTH + 1))
+    deep.mkdir(parents=True)
+    (deep / "x.hc22000").write_text("line\n")
+    counts, changed = _adopt(store)
+    assert _ino(deep / "x.hc22000") not in changed
+    assert _ino(store.joinpath(*["d"] * m.ADOPT_MAX_DEPTH)) in changed
+
+
+def test_adopt_leaves_a_store_that_is_not_the_collectors(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "x.hc22000").write_text("line\n")
+    counts, changed = _adopt(store, uid=os.getuid() + 1)
+    assert changed == set() and counts == {"files": 0, "dirs": 0, "skipped": 0}
+
+
+def test_adopt_skips_an_entry_swapped_after_it_was_listed(tmp_path, monkeypatch):
+    # The listing saw a regular file; by the time it is opened a symlink to a
+    # file outside has taken its place. O_NOFOLLOW refuses the open, so nothing
+    # outside is handed over.
+    m = _load()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "shadow").write_text("secret\n")
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "x.hc22000").write_text("line\n")
+    real_open = os.open
+
+    def swapping_open(path, flags, *args, dir_fd=None, **kwargs):
+        if path == "x.hc22000" and dir_fd is not None:
+            os.unlink(store / "x.hc22000")
+            os.symlink(outside / "shadow", store / "x.hc22000")
+        return real_open(path, flags, *args, dir_fd=dir_fd, **kwargs)
+
+    monkeypatch.setattr(m.os, "open", swapping_open)
+    changed = set()
+    counts = m.adopt_store(str(store), os.getuid(), os.getgid(), from_uid=os.getuid(),
+                           chown=lambda fd, u, g: changed.add(os.fstat(fd).st_ino))
+    assert changed == set() and counts["skipped"] == 1
+
+
+def test_adopt_needs_root(monkeypatch, capsys):
+    m = _load()
+    monkeypatch.setattr(m.os, "geteuid", lambda: 1000)
+    assert m.adopt_main("pi") == 2
+    assert "needs root" in capsys.readouterr().err
+
+
+def test_launcher_adopts_the_store_before_starting_the_collector():
+    with open(os.path.join(os.path.dirname(_HERE), "capture-launch.sh"), encoding="utf-8") as h:
+        text = h.read()
+    adopt = text.index('python3 -I "$COLLECT" --adopt-store pi')
+    start = text.index('setpriv --reuid=pi --regid=pi --init-groups -- "$COLLECT"')
+    assert adopt < start

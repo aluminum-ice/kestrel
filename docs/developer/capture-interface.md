@@ -67,7 +67,11 @@ This file is the normative reference.
   per-run artifacts) stay in the run directory
   `/var/lib/kestrel/capture-run/` (root-owned, outside the store, so the
   root-run AngryOxide never writes into a pi-owned directory; releases before
-  this used the store's `.run/`, which the collector still drains). The run
+  this used the store's `.run/`, which the collector still drains). Those
+  releases also ran the collector as root, so on its first start the launcher
+  hands their root-owned store files, `.run/` and archive sets to `pi`
+  (`capture-collect --adopt-store`), letting the `pi` collector append to
+  them. The run
   directory is an implementation
   detail, not part of the stable surface; only the store above is contractual.
   It is also **size-bounded** (`[capture.housekeeping] max_run_mb`, on by
