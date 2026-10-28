@@ -157,7 +157,7 @@ The page is plain HTTP on the management link, so a login travels unencrypted th
 - Environment: how busy the air is around you — a density word and count (for example "Moderate, 23 radios nearby", counting access points and clients together) with how much you have caught this session, so a target-rich spot and an empty one do not look the same. It reads the air only while capture is running (with capture off it says "unknown", not a misleading zero). The capture data lags a little (the radio flushes it in bursts), so the card says "as of N ago" when the reading is not fresh and falls back to "unknown" when it goes stale; it is a density reading over a window, not an instant count. Tune or disable it under `[capture.environment]`.
 - Plugin cards: each enabled readout plugin contributes a card (battery, memory and temperature, upload status, and so on). Drag cards to reorder them; the order is remembered in your browser.
 - AI Agent: a compact card showing whether the learning agent is on and which policy it uses. Tap it to open the agent page.
-- Captured networks: a searchable, paginated page with two views you can toggle between — **by network** (one row per SSID, with its distinct-BSSID count and handshakes) and **by access point** (one row per BSSID, so APs that reuse a name stay separate; search also matches a pasted BSSID). It opens on the view matching your `[capture.output] mode` and reads the whole store either way, so it scales to thousands of networks. Sort by name (default) or by most recently captured; a **last seen** column shows when each last produced a new handshake (captures from before this feature show the file's time, or "never").
+- Captured networks: a searchable, paginated page with two views you can toggle between — **by network** (one row per SSID, with its distinct-BSSID count and handshakes) and **by access point** (one row per BSSID, so APs that reuse a name stay separate; search also matches a pasted BSSID). It opens on the view matching your `[capture.output] mode` and reads the whole store either way, so it scales to thousands of networks. Sort by name (default) or by most recently captured; a **last seen** column shows when each last produced a new handshake (captures from before this feature show the file's time, or "never"). A network whose passphrase is known shows a **cracked** badge, and the card shows a **cracked N of M access points** count; with a login on, expand a cracked row to see the passphrase (hidden if `[web] show_passphrases` is off). See *Cracked networks* below.
 - Whitelist: directly below Captured networks, the APs that are never actively attacked. It is searchable, and with a login you can add an AP (an ESSID, or a BSSID like `AA:BB:CC:DD:EE:FF`) or remove one straight from the page; a change takes effect the next time capture starts.
 
 The read-only view auto-refreshes every `refresh_seconds` (default 30; set 0 to disable) and will not reload a form under you.
@@ -274,6 +274,15 @@ It shows whether capture is enabled and running, the resolved dongle and driver,
 - `sudo kestrel capture archive`: move the current store into a timestamped archive set and start fresh. Capture keeps running. Non-destructive, and the default.
 - `sudo kestrel capture rotate`: archive only if a size or age limit is exceeded (what the optional daily timer runs; ships off).
 - `sudo kestrel capture clear --yes`: delete the live store (add `--purge` to drop archives too). The only action that deletes, and it needs the explicit `--yes`.
+
+### Cracked networks
+
+The device never cracks anything — but once you recover a passphrase (with the `wpa-sec` plugin, or hashcat on your own machine), it can show it against the matching captured network. It reads **potfiles** from `cracked/` in the store; a cracked network then shows a **cracked** badge and the Captured networks card shows a **cracked N of M** count. With the web login on, expand a cracked row to see the passphrase; set `[web] show_passphrases = false` to keep the badge and count but hide the passphrase (for screen-sharing). It never shows with the login off.
+
+Import a potfile you produced elsewhere — the **wpa-sec download** (`bssid:station:essid:psk`) or the **hashcat separated** format (`hash:bssid:station:essid:psk`); the default `hashcat.potfile` is not supported:
+
+- Dashboard: **Import cracked results** on the Captured networks page (login required).
+- Terminal: `kestrel cracked import <file>` (merge), `kestrel cracked list` (counts by source, no passphrases), `kestrel cracked clear --yes` (remove imports). Imports are bounded by `[cracked] max_import_mb` and `max_import_lines`. Only import passphrases for networks you are authorized to test.
 
 ---
 
