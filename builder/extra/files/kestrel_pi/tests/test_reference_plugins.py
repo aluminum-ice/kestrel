@@ -2220,7 +2220,7 @@ def test_wpa_sec_cracked_page_requires_login(tmp_path):
     plugin = _wpa_sec_for_webhook(tmp_path, web_authed=False)
     _write_potfile(plugin, "001122334455:66778899aabb:HomeNet:SECRET\n")
     page = plugin.on_webhook("cracked", _req())
-    assert page.title.startswith("cracked networks")
+    assert page.title.startswith("recovered networks")
     assert "SECRET" not in page.body
     assert "signed in" in page.body or "web login" in page.body
 
@@ -2229,10 +2229,10 @@ def test_wpa_sec_cracked_page_lists_and_escapes(tmp_path):
     plugin = _wpa_sec_for_webhook(tmp_path, web_authed=True)
     _write_potfile(plugin, "001122334455:66778899aabb:Home<&>Net:p@ss<x>\n")
     page = plugin.on_webhook("cracked", _req())
-    assert "Cracked networks" in page.body
+    assert "Recovered networks" in page.body
     assert "Home&lt;&amp;&gt;Net" in page.body and "Home<&>Net" not in page.body
     assert "p@ss&lt;x&gt;" in page.body                   # passphrase shown, escaped
-    assert "1 cracked network(s)" in page.body
+    assert "1 recovered network(s)" in page.body
 
 
 def test_wpa_sec_cracked_page_search_filters_by_ssid(tmp_path):
@@ -2242,7 +2242,7 @@ def test_wpa_sec_cracked_page_search_filters_by_ssid(tmp_path):
                    "cc:dd:Beta:2\n")
     page = plugin.on_webhook("cracked", _req(args={"q": "alph"}))
     assert "Alpha" in page.body and "Beta" not in page.body
-    assert "1 of 2 cracked networks match" in page.body
+    assert "1 of 2 recovered networks match" in page.body
 
 
 def test_wpa_sec_unknown_path_is_404(tmp_path):

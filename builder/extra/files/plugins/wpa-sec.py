@@ -52,7 +52,7 @@ class WpaSec(Plugin):
     __author__ = "kestrel"
     __version__ = "0.2.0"
     __license__ = "GPL3"
-    __description__ = "Upload hashlines to wpa-sec; fetch your cracked results."
+    __description__ = "Upload hashlines to wpa-sec; fetch your recovered results."
 
     __target_api__ = 2
     __capabilities__ = ("capture-read", "network", "ui")
@@ -144,7 +144,9 @@ class WpaSec(Plugin):
     def on_ui_setup(self, ui):
         ui.add_element("uploaded", "0", label="Uploaded", kind="number")
         ui.add_element("queued", "0", label="Queued", kind="number")
-        ui.add_element("cracked", "0", label="Cracked", kind="number")
+        # The widget label is the operator-facing term ("Recovered"); the
+        # element key stays "cracked" to match the on-disk store dir.
+        ui.add_element("cracked", "0", label="Recovered", kind="number")
 
     def on_ui_update(self, ui, state):
         with self._lock:
@@ -308,8 +310,8 @@ class WpaSec(Plugin):
                 + '">&larr; Plugins</a></p>')
         if not self.context.web_authed:
             return self.context.page(
-                "cracked networks - kestrel",
-                back + "<h1>Cracked networks</h1>"
+                "recovered networks - kestrel",
+                back + "<h1>Recovered networks</h1>"
                 + '<p class="notice">These are recovered Wi-Fi passphrases, so '
                 "the list is shown only with the web login on and you signed in. "
                 "Turn on <code>[web] auth</code> to view them.</p>")
@@ -342,19 +344,19 @@ class WpaSec(Plugin):
                 '<td data-label="passphrase"><code>' + esc(rec.get("psk") or "")
                 + "</code></td></tr>")
         body_rows = "".join(rows) or (
-            "<tr><td colspan='3'>" + ("no cracked networks match that search"
-                                      if needle else "no cracked networks yet")
+            "<tr><td colspan='3'>" + ("no recovered networks match that search"
+                                      if needle else "no recovered networks yet")
             + "</td></tr>")
 
         if matched:
             if needle:
-                count = ("%d of %d cracked networks match &ldquo;%s&rdquo;"
+                count = ("%d of %d recovered networks match &ldquo;%s&rdquo;"
                          % (matched, total, esc(query)))
             else:
-                count = "%d cracked network(s)" % total
+                count = "%d recovered network(s)" % total
         else:
-            count = (("no match in %d cracked network(s)" % total) if total
-                     else "no cracked networks yet")
+            count = (("no match in %d recovered network(s)" % total) if total
+                     else "no recovered networks yet")
 
         hidden_token = ('<input type="hidden" name="token" value="' + esc(token)
                         + '">' if token else "")
@@ -379,8 +381,8 @@ class WpaSec(Plugin):
                 + '">Next &rarr;</a></div>')
 
         return self.context.page(
-            "cracked networks - kestrel",
-            back + "<h1>Cracked networks</h1>" + search
+            "recovered networks - kestrel",
+            back + "<h1>Recovered networks</h1>" + search
             + '<p class="count">' + count + "</p>"
             + "<div class='wrap'><table><thead><tr><th>network</th><th>bssid</th>"
             "<th>passphrase</th></tr></thead><tbody>" + body_rows

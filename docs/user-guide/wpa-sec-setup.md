@@ -65,13 +65,13 @@ The `wpa-sec` card shows:
 
 - **Uploaded** — hashlines uploaded this daemon session (resets on restart).
 - **Queued** — captured but not yet uploaded.
-- **Cracked** — networks in your downloaded potfile.
+- **Recovered** — networks in your downloaded potfile.
 
-## Viewing cracked networks
+## Viewing recovered networks
 
 With the web login on (`[web] auth`), the `wpa-sec` row on the **Plugins** page
 has a **Show** button. It opens a page listing the **SSID and recovered
-passphrase** of every cracked network from your downloaded potfile, with:
+passphrase** of every recovered network from your downloaded potfile, with:
 
 - a **search box** that filters by SSID, and
 - **paging** (100 per page), so the list stays fast even with thousands of results.
@@ -88,7 +88,7 @@ list. The passphrases otherwise live only on the device, in
   reconnect. Check the dashboard's Internet row.
 - **"already submitted"** in the log is harmless — wpa-sec de-duplicates
   server-side, so re-uploading the same capture is a no-op.
-- **Cracked stays 0** — wpa-sec cracks over time; the count updates as results
+- **Recovered stays 0** — wpa-sec cracks over time; the count updates as results
   arrive for your key. The potfile is
   `/var/lib/kestrel/capture/cracked/wpa-sec.potfile`.
 - **Live state**: `sudo kestrel plugins info wpa-sec`, and the daemon log
