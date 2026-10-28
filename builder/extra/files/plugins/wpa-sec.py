@@ -454,7 +454,7 @@ class WpaSec(Plugin):
             # dl=1 is keyed by the API key, so this returns every network
             # cracked under your key, however it was submitted - not just this
             # device's.
-            self.log.info("wpa-sec: fetching cracked results from %s", endpoint)
+            self.log.info("wpa-sec: fetching recovered results from %s", endpoint)
             resp = requests.get(
                 endpoint + "/?api&dl=1",
                 cookies={"key": key},
@@ -479,11 +479,11 @@ class WpaSec(Plugin):
             with self._lock:
                 self._cracked = networks
             if networks:
-                self.log.info("wpa-sec: %d cracked network(s) in %s",
+                self.log.info("wpa-sec: %d recovered network(s) in %s",
                               networks, potfile)
             else:
-                self.log.info("wpa-sec: reached the service; no cracked results "
-                              "yet for your key")
+                self.log.info("wpa-sec: reached the service; no recovered "
+                              "results yet for your key")
         except Exception as exc:  # noqa: BLE001
             self.log.warning("wpa-sec results download failed: %s", exc)
 
