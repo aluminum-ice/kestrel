@@ -689,6 +689,13 @@ def main(argv=None):
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
+    # Never die on a terminal hangup. The always-on daemon has no controlling
+    # terminal by design, but a plugin that opens a serial/tty device (e.g. gps
+    # on a USB receiver) could accidentally acquire one, and then unplugging the
+    # device would SIGHUP the whole daemon. Plugins must open tty devices with
+    # O_NOCTTY; ignoring SIGHUP here is the backstop so a stray open can never
+    # take the daemon down.
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
     daemon.run_forever()
     # Exit now, without the interpreter's shutdown joins: concurrent.futures

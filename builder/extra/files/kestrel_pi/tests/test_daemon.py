@@ -374,6 +374,25 @@ def test_fresh_config_reparses_only_when_the_file_changes(tmp_path, monkeypatch)
     assert len(parses) == 2
 
 
+def test_main_ignores_sighup(tmp_path, monkeypatch):
+    """A terminal hangup must never kill the always-on daemon: main() sets
+    SIGHUP to SIG_IGN (the backstop for a plugin that opens a tty device)."""
+    import signal
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[web]\nenabled = false\n")
+    # Don't actually run the loop; we only care that the handlers are installed.
+    monkeypatch.setattr(daemon_mod.Daemon, "run_forever", lambda self: None)
+    prev = signal.getsignal(signal.SIGHUP)
+    try:
+        rc = daemon_mod.main(["--config", str(cfg),
+                              "--capture-store", str(tmp_path)])
+        assert rc in (None, 0)
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGHUP, prev)
+
+
 # A radio (BSSID) advertising two names, plus a second radio, so distinct
 # radios (2) and the old ESSID+BSSID pair count (3) diverge.
 _WPA = "WPA*02*0123456789abcdef0123456789abcdef*%s*112233445566*%s*0*0*00"

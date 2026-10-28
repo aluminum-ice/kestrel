@@ -425,29 +425,41 @@ class GPS(Plugin):
         device = self._resolve_serial_device()
         if device is None:
             return
-        # Read raw bytes with a liveness timeout, mirroring _read_gpsd's
-        # settimeout. A blocking readline() with no timeout wedges forever when
-        # the USB CDC-ACM link stalls or suspends (the indoor no-fix case): the
-        # reader parks inside the read, so _run never gets to re-open and the
-        # fix sentences that appear once outdoors are never read - only a reboot
-        # (re-enumerating the device) frees it. On a long silence we return so
-        # _run re-opens and re-resolves the node. A healthy receiver streams
-        # NMEA about once a second even with no fix, so the timeout never trips
-        # in normal use and the cold-start clock is uninterrupted.
-        with open(device, "rb", buffering=0) as port:
-            fd = port.fileno()
+        # O_NOCTTY is essential: the daemon is a systemd session leader with no
+        # controlling terminal, so opening a tty without it makes this serial
+        # port the daemon's controlling terminal -- and then unplugging the USB
+        # receiver triggers a tty hangup that sends SIGHUP to the whole daemon,
+        # killing it (systemd counts SIGHUP as a clean exit, so Restart=on-failure
+        # does not bring it back). O_NONBLOCK keeps the open itself from blocking
+        # in the tty layer on a half-present node. The daemon also ignores SIGHUP
+        # as a backstop, but no serial open here may ever acquire a controlling
+        # terminal. Read with a liveness timeout (via select), mirroring
+        # _read_gpsd's settimeout: a stalled/suspended CDC-ACM link (the indoor
+        # no-fix case) would otherwise wedge the reader inside the read so _run
+        # never re-opens; on a long silence we return and _run re-resolves the
+        # node. A healthy receiver streams NMEA about once a second even with no
+        # fix, so the timeout never trips in normal use.
+        fd = os.open(device, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK | os.O_CLOEXEC)
+        try:
             buf = b""
             while not self._stop.is_set():
                 ready, _, _ = select.select([fd], [], [], 20)
                 if not ready:
                     return  # no NMEA for 20s: stalled link; reopen next pass
-                chunk = os.read(fd, 4096)
+                try:
+                    chunk = os.read(fd, 4096)
+                except BlockingIOError:
+                    continue  # select raced; nothing to read yet
+                except OSError:
+                    return    # device went away mid-read; reopen next pass
                 if not chunk:
                     return  # EOF
                 buf += chunk
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
                     self._handle_nmea(line.decode("ascii", "replace").strip())
+        finally:
+            os.close(fd)
 
     def _handle_nmea(self, sentence):
         if not sentence:
