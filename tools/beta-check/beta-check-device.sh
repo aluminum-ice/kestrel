@@ -9,8 +9,7 @@
 #
 # The CHECK ids match the numbered items of the beta's checklist issue. The
 # generic parts (device info, the throwaway-config harness, the dashboard
-# readout, redaction) stay; the per-release checks cover the whole 1.0.6 beta
-# line (beta.1 through beta.4), so one run verifies every 1.0.6 change.
+# readout, redaction) stay; the per-release checks below are this beta's.
 
 set -u
 
@@ -86,8 +85,9 @@ echo "uptime:     $(uptime -p 2>/dev/null)"
 echo "python3:    $(/usr/bin/python3 -V 2>&1)"
 echo "web auth:   $web_auth"
 
-# ================================================================ 1.0.6 checks (beta.1 - beta.4)
-# One script for the whole 1.0.6 beta line. CHECK ids match the checklist issue.
+# ================================================================ 1.0.7-beta.1 checks (#36)
+# Cracked networks: surface known passphrases for captured networks (display
+# + import). CHECK ids match the checklist issue.
 pid=$(systemctl show -p MainPID --value kestrel-daemon.service 2>/dev/null)
 cap_state=$(svc_active kestrel-capture.service)
 cap_since=$(systemctl show -p ActiveEnterTimestamp --value kestrel-capture.service 2>/dev/null)
@@ -151,234 +151,82 @@ else
   check 1.5 SKIP "settings unchanged by the update" "no in-place update recorded"
 fi
 
-# ---------------------------------------------------------------- 2. update settings terminal-only (#15)
-sec "2. update settings are terminal-only (#15)"
-info=$(timeout 20 /usr/bin/python3 -I "$CTL" info updates 2>&1)
-n=$(printf '%s\n' "$info" | grep -E '^  (repo|host|token) ' | grep -c 'terminal only' || true)
-if [ "${n:-0}" -eq 3 ]; then
-  check 2.1 PASS "repo/host/token marked terminal only" "web shows them read-only (by hand)"
+# ---------------------------------------------------------------- 2. cracked-networks core service (#36)
+sec "2. cracked-networks core service (#36)"
+imp=$(as_dev "$VENV_PY" -I -c 'import kestrel_pi.cracked as c
+print(all(hasattr(c, n) for n in ("CrackedStore", "ingest_text", "parse_potfile_line")))' 2>&1)
+if [ "$imp" = True ]; then
+  check 2.1 PASS "installed package provides kestrel_pi.cracked" "CrackedStore + ingest_text + parser"
 else
-  check 2.1 FAIL "repo/host/token marked terminal only" "$n of 3"
+  check 2.1 FAIL "installed package provides kestrel_pi.cracked" "$(printf '%s' "$imp" | tr '\n' ' ' | cut -c1-120)"
 fi
-
-# ---------------------------------------------------------------- 3. capture folder, collector, hand-over, relaunch
-sec "3. capture run folder, collector, hand-over and relaunch (#15 #24 #27)"
-echo "capture enabled=$(cfg capture.enabled false) service=$cap_state since=${cap_since:-?} (${cap_age}s)"
-if [ -d "$RUNDIR" ]; then
-  perm=$(stat -c '%U:%G %a' "$RUNDIR")
-  [ "$perm" = "root:$DEV_USER 750" ] && check 3.1 PASS "capture-run ownership" "$perm" \
-    || check 3.1 FAIL "capture-run ownership" "$perm (expected root:<device user> 750)"
-else
-  check 3.1 SKIP "capture-run ownership" "folder not created yet"
-fi
-if [ "$cap_state" = active ]; then
-  npi=$(pgrep -c -u "$DEV_USER" -f capture-collect || true)
-  nrt=$(pgrep -c -u root -f capture-collect || true)
-  [ "${npi:-0}" -ge 1 ] && [ "${nrt:-0}" -eq 0 ] \
-    && check 3.2 PASS "collector runs as the device user" "user=$npi root=$nrt" \
-    || check 3.2 FAIL "collector runs as the device user" "user=$npi root=$nrt"
-  nk=$(find "$RUNDIR" -maxdepth 1 -name '*.kismet' 2>/dev/null | wc -l)
-  np=$(find "$RUNDIR" -maxdepth 1 -name '*.pcapng' 2>/dev/null | wc -l)
-  if [ -f "$upd" ]; then nnew=$(find "$LEGACY_RUN" -maxdepth 1 -type f -newer "$upd" 2>/dev/null | wc -l); else nnew=0; fi
-  [ "$((nk + np))" -ge 1 ] && [ "$nnew" -eq 0 ] \
-    && check 3.3 PASS "raw files go to capture-run, nothing new in .run" "kismet=$nk pcapng=$np new-in-legacy=$nnew" \
-    || check 3.3 FAIL "raw files go to capture-run, nothing new in .run" "kismet=$nk pcapng=$np new-in-legacy=$nnew"
-else
-  check 3.2 SKIP "collector runs as the device user" "capture not running"
-  check 3.3 SKIP "raw files go to capture-run" "capture not running"
-fi
-nroot=$(find "$STORE" -mindepth 1 -maxdepth 5 ! -type l -user root 2>/dev/null | wc -l)
-[ "$nroot" -eq 0 ] && check 3.4 PASS "no root-owned files/folders left in the store (#24)" "" \
-  || check 3.4 FAIL "no root-owned files/folders left in the store (#24)" "$nroot"
-if [ "$cap_state" = active ] && [ -n "$cap_since" ]; then
-  pd=$(journalctl -q --no-pager -u kestrel-capture --since "$cap_since" 2>/dev/null | grep -c 'Permission denied' || true)
-  [ "${pd:-0}" -eq 0 ] && check 3.5 PASS "no 'Permission denied' from the collector since start" "" \
-    || check 3.5 FAIL "no 'Permission denied' from the collector since start" "$pd line(s)"
-else
-  check 3.5 SKIP "no 'Permission denied' from the collector since start" "capture not running"
-fi
-if [ -d "$LEGACY_RUN" ]; then
-  lown=$(stat -c '%U' "$LEGACY_RUN" 2>/dev/null)
-  lres=$(as_dev /usr/bin/python3 -I -c 'import glob
-bad=0
-for n in glob.glob("/var/lib/kestrel/capture/.run/*.hc22000"):
-    try: open(n,"rb").read(1)
-    except OSError: bad+=1
-print("files=%d unreadable=%d"%(len(glob.glob("/var/lib/kestrel/capture/.run/*.hc22000")),bad))' 2>&1)
-  [ "$lown" = "$DEV_USER" ] && printf '%s' "$lres" | grep -q 'unreadable=0' \
-    && check 3.6 PASS "legacy .run owned+readable by the device user" "$lres (kept by design)" \
-    || check 3.6 FAIL "legacy .run owned+readable by the device user" "owner=$lown $lres"
-else
-  check 3.6 PASS "legacy .run owned+readable by the device user" "no legacy folder"
-fi
-adir=$(cfg capture.housekeeping.archive_dir "$STORE/archive")
-if [ -d "$adir" ]; then
-  nnp=$(find "$adir" ! -type l ! -user "$DEV_USER" 2>/dev/null | wc -l)
-  [ "$nnp" -eq 0 ] && check 3.7 PASS "archive sets owned by the device user" "" \
-    || check 3.7 FAIL "archive sets owned by the device user" "$nnp entr(ies) not owned by the device user"
-else
-  check 3.7 SKIP "archive sets owned by the device user" "no archive folder"
-fi
-nre=$(journalctl -q --no-pager -u kestrel-capture --since "-30 min" 2>/dev/null | grep -c 'agent updated the scan plan' || true)
-if [ "$cap_state" != active ]; then
-  check 3.8 SKIP "relaunches for a new plan, last 30 min (#27)" "capture not running"
-elif [ "$cap_age" -lt 1800 ]; then
-  check 3.8 SKIP "relaunches for a new plan, last 30 min (#27)" "capture up only ${cap_age}s; re-run after 30 min ($nre so far)"
-elif [ "${nre:-0}" -lt 17 ]; then
-  check 3.8 PASS "relaunches for a new plan, last 30 min (#27)" "$nre (beta.2 was 17)"
-else
-  check 3.8 FAIL "relaunches for a new plan, last 30 min (#27)" "$nre (beta.2 was 17)"
-fi
-nkd=$(find "$RUNDIR" -maxdepth 1 -type f -name '*.kismet' 2>/dev/null | wc -l)
-nnamed=$(find "$RUNDIR" -maxdepth 1 -type f -regextype posix-extended -regex '.*/kestrel-[0-9]+-[0-9]{6}[^/]*\.kismet' 2>/dev/null | wc -l)
-if [ "$cap_state" != active ]; then
-  check 3.9 SKIP "run dir holds this run's DB + at most the previous (#27)" "capture not running"
-elif [ "$nkd" -ge 1 ] && [ "$nkd" -le 2 ] && [ "$nnamed" -eq "$nkd" ]; then
-  check 3.9 PASS "run dir holds this run's DB + at most the previous (#27)" "$nkd DB(s), per-launch names"
-else
-  check 3.9 FAIL "run dir holds this run's DB + at most the previous (#27)" "$nkd DB(s), $nnamed per-launch names"
-fi
-envstat=$(as_dev /usr/bin/python3 -I -c 'import json,time
-try: s=json.load(open("/var/lib/kestrel/capture/capture-status.json"))
-except Exception as e: print("unreadable",type(e).__name__); raise SystemExit
-now=time.time()
-for k in ("scanning","radios_recent","window_s"): print(k,s.get(k))
-dt=s.get("data_ts")
-print("data_age", "%d s"%(now-dt) if isinstance(dt,(int,float)) else dt)
-if isinstance(s.get("radios_recent"),int) and isinstance(dt,(int,float)) and now-dt<900: print("ENV fresh")' 2>&1)
-printf '%s\n' "$envstat" | grep -v '^ENV ' | sed 's/^/  /'
-if [ "$cap_state" != active ]; then
-  check 3.10 SKIP "Environment reading is fresh (#27)" "capture not running"
-elif [ "$cap_age" -lt 600 ]; then
-  check 3.10 SKIP "Environment reading is fresh (#27)" "capture up only ${cap_age}s; re-run after 10 min"
-elif printf '%s\n' "$envstat" | grep -q '^ENV fresh'; then
-  check 3.10 PASS "Environment reading is fresh (#27)" "read within 15 min"
-else
-  check 3.10 FAIL "Environment reading is fresh (#27)" "no fresh reading after ${cap_age}s"
-fi
-
-# ---------------------------------------------------------------- 5. model loading (#16)
-sec "5. learning-agent model loading (#16)"
-echo "agent unit: enabled=$(systemctl is-enabled kestrel-agent 2>/dev/null) active=$(svc_active kestrel-agent) policy=$(cfg agent.policy baseline)"
-find "$AGENT_DIR" -maxdepth 1 -name 'model*' -printf '  %f  %s bytes\n' 2>/dev/null | sort
-agerr=$(journalctl -b -q --no-pager -u kestrel-agent 2>/dev/null | grep -ciE 'error|traceback|could not load|fall(ing)? ?back' || true)
-[ "${agerr:-0}" -eq 0 ] && check 5.1 PASS "no agent load errors this boot" "" \
-  || check 5.1 FAIL "agent errors this boot" "$agerr line(s)"
-shkbad=""
-for f in "$LIBDIR/plugins/backup.py" "$LIBDIR/plugins/remote-train.py" "$CLI"; do
-  grep -q 'StrictHostKeyChecking=accept-new' "$f" 2>/dev/null && shkbad="$shkbad $(basename "$f")"
-done
-[ -z "$shkbad" ] && check 5.2 PASS "no StrictHostKeyChecking=accept-new in installed ssh callers" "" \
-  || check 5.2 FAIL "accept-new still present" "$shkbad"
-check 5.3 MANUAL "an existing learned model still loads (policy=learned, /agent not baseline)" "by hand"
-
-# ---------------------------------------------------------------- 6. ssh host keys (#16)
-sec "6. known SSH host keys (#16)"
-for spec in "6.1 backup host port" "6.2 remote-train train_host train_port"; do
-  set -- $spec; cid=$1 plugin=$2 hkey=$3 pkey=$4
-  en=$(cfg "plugins.$plugin.enabled" false); host=$(cfg "plugins.$plugin.$hkey" ""); port=$(cfg "plugins.$plugin.$pkey" 22)
-  if [ "$en" != true ] || [ -z "$host" ]; then
-    check "$cid" SKIP "$plugin host key known" "enabled=$en host set=$([ -n "$host" ] && echo yes || echo no)"; continue
-  fi
-  name=$host; [ "$port" != 22 ] && name="[$host]:$port"
-  as_dev ssh-keygen -F "$name" -f "$DEV_HOME/.ssh/known_hosts" >/dev/null 2>&1 \
-    && check "$cid" PASS "$plugin host key known" "in the device user's known_hosts" \
-    || check "$cid" FAIL "$plugin host key known" "not in known_hosts; re-run 'sudo kestrel $plugin setup'"
-done
-hkv=$(journalctl -q --no-pager -u kestrel-daemon --since "-7 days" 2>/dev/null | grep -c 'Host key verification failed' || true)
-check 6.3 INFO "'Host key verification failed' in the daemon journal, 7 days" "$hkv"
-
-# ---------------------------------------------------------------- 7. uploaders https-only (#18)
-sec "7. uploaders: https only (#18)"
-for spec in "7.1 wpa-sec https://wpa-sec.stanev.org" "7.2 wigle https://api.wigle.net"; do
-  set -- $spec; ep=$(cfg "plugins.$2.endpoint" "$3")
-  case "$ep" in https://*) check "$1" PASS "$2 endpoint is https" "enabled=$(cfg plugins.$2.enabled false)" ;;
-    *) check "$1" FAIL "$2 endpoint is https" "endpoint not https://" ;; esac
-done
-hs=$(as_dev "$VENV_PY" -I -c 'from kestrel_pi import httpsafe
-try: httpsafe.https_endpoint("http://example.com",""); print("http accepted")
-except httpsafe.UnsafeResponse: print("http refused")
-try: httpsafe.https_endpoint("https://example.com/",""); print("https accepted")
-except httpsafe.UnsafeResponse: print("https refused")' 2>&1)
-printf '%s' "$hs" | grep -q 'http refused' && printf '%s' "$hs" | grep -q 'https accepted' \
-  && check 7.3 PASS "installed httpsafe refuses http://" "" \
-  || check 7.3 FAIL "installed httpsafe refuses http://" "$(printf '%s' "$hs" | tr '\n' ' ' | cut -c1-120)"
-if [ -e "$STORE/cracked/wpa-sec.potfile" ] || [ -d "$STORE/cracked" ]; then
-  dp=$(stat -c '%U %a' "$STORE/cracked" 2>/dev/null); fp=$(stat -c '%U %a' "$STORE/cracked/wpa-sec.potfile" 2>/dev/null || echo absent)
-  { [ "$dp" = "$DEV_USER 700" ] && { [ "$fp" = "$DEV_USER 600" ] || [ "$fp" = absent ]; }; } \
-    && check 7.4 PASS "cracked dir 0700, potfile 0600" "dir=$dp potfile=$fp" \
-    || check 7.4 FAIL "cracked dir 0700, potfile 0600" "dir=$dp potfile=$fp"
-else
-  check 7.4 SKIP "cracked dir 0700, potfile 0600" "no cracked results yet"
-fi
-
-# ---------------------------------------------------------------- 8. secrets off the command line (#19)
-sec "8. secrets off the command line (#19)"
-if grep -q -- '--set-stdin' "$CLI" && grep -q 'set-stdin' "$CTL" && grep -q -- '--psk-stdin' "$CLI"; then
-  check 8.1 PASS "installed CLI has --set-stdin and --psk-stdin" "hidden prompts are by hand"
-else
-  check 8.1 FAIL "installed CLI has --set-stdin and --psk-stdin" ""
-fi
-grep -q 'shell history' "$CLI" && check 8.2 PASS "installed CLI warns about secrets on the command line" "" \
-  || check 8.2 FAIL "installed CLI warns about secrets on the command line" ""
-since_upd=$(date -u -r "$upd" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "")
-sj=$(journalctl -q --no-pager _COMM=sudo ${since_upd:+--since "$since_upd"} 2>/dev/null \
-      | grep -E 'COMMAND=' | grep -cE -- '(api_key|api_token|token|password)=|--psk( |=)' || true)
-[ "${sj:-0}" -eq 0 ] && check 8.3 PASS "no secrets in sudo journal since the update" "lines not shown" \
-  || check 8.3 FAIL "secrets in sudo journal since the update" "$sj line(s) (not shown; rotate journal + change them)"
-f=$SCRIPTS_DIR/pull-connectivity-diagnostics.sh
-{ [ -f "$f" ] && grep -q '<ssid>' "$f" && grep -q '@<host>' "$f"; } \
-  && check 8.4 PASS "installed connectivity diag redacts SSIDs + host" "running it is by hand" \
-  || check 8.4 FAIL "installed connectivity diag redacts SSIDs + host" ""
-
-# ---------------------------------------------------------------- 9. one definition for the counts (#30)
-sec "9. handshakes / access points / networks, one definition (#30)"
-cnt=$(as_dev "$VENV_PY" -I -c 'from kestrel_pi.capture import CaptureInterface
-c=CaptureInterface("/var/lib/kestrel/capture")
-counts=c.capture_counts()
-aps=[a for a in c.captured_access_points() if a.get("bssid")]
-print("counts", counts)
-print("ap_rows", len(aps))
-print("OK" if counts["access_points"]==len(aps) else "MISMATCH")' 2>&1)
-printf '%s\n' "$cnt" | grep -v '^OK$\|^MISMATCH$' | sed 's/^/  /'
-printf '%s\n' "$cnt" | grep -q '^OK$' \
-  && check 9.1 PASS "access points == distinct radios == by-AP row count" "navcard and page agree" \
-  || check 9.1 FAIL "access points == distinct radios == by-AP row count" "$(printf '%s' "$cnt" | tr '\n' ' ' | cut -c1-160)"
-check 9.2 MANUAL "the e-ink shows PWND / AP / NET and they match the dashboard" "by hand"
-
-# ---------------------------------------------------------------- 10. GPS unplug resilience (#31)
-sec "10. GPS unplug does not kill the daemon (#31)"
-if [ -n "${pid:-}" ] && [ -r "/proc/$pid/status" ]; then
-  sigign=$(awk '/^SigIgn:/{print $2}' "/proc/$pid/status")
-  # SIGHUP is signal 1 -> bit 0 of the ignore mask.
-  if [ -n "$sigign" ] && [ $(( 0x$sigign & 0x1 )) -ne 0 ]; then
-    check 10.1 PASS "running daemon ignores SIGHUP" "SigIgn=$sigign"
+# Round-trip through a throwaway store the device user owns (placeholder data
+# only; never the real store): proves the installed parser reads both formats,
+# dedups, and writes a 0600 potfile.
+dtmp=$(as_dev mktemp -d 2>/dev/null)
+if [ -n "$dtmp" ]; then
+  rt=$(as_dev "$VENV_PY" -I - "$dtmp" <<'PY' 2>&1
+import os, stat, sys
+from kestrel_pi import cracked
+store = sys.argv[1]
+text = ("0123456789abcdef0123456789abcdef:00005e0053aa:00005e005301:My Network:correct-horse\n"
+        "00005e0053bb:00005e005302:Cafe Guest:s3cret\n"
+        "00005e0053aa:00005e005301:My Network:correct-horse\n"
+        "garbage line\n")
+res = cracked.ingest_text(store, text)
+counts = cracked.CrackedStore(store).counts()
+pots = [f for f in os.listdir(os.path.join(store, "cracked")) if f.endswith(".potfile")]
+mode = stat.S_IMODE(os.stat(os.path.join(store, "cracked", pots[0])).st_mode) if pots else -1
+ok = (res == {"imported": 2, "skipped": 1}
+      and counts == {"cracked_aps": 2, "cracked_essids": 2} and mode == 0o600)
+print("OK" if ok else "BAD", res, counts, oct(mode))
+PY
+)
+  as_dev rm -rf "$dtmp" 2>/dev/null
+  if printf '%s\n' "$rt" | grep -q '^OK'; then
+    check 2.2 PASS "parser + store round-trip (both formats, dedup, 0600)" "imported 2, skipped 1, 2 APs"
   else
-    check 10.1 FAIL "running daemon ignores SIGHUP" "SigIgn=${sigign:-?}"
+    check 2.2 FAIL "parser + store round-trip" "$(printf '%s' "$rt" | tr '\n' ' ' | cut -c1-160)"
   fi
 else
-  check 10.1 SKIP "running daemon ignores SIGHUP" "daemon not running"
+  check 2.2 SKIP "parser + store round-trip" "could not make a throwaway dir"
 fi
-grep -q 'O_NOCTTY' "$LIBDIR/plugins/gps.py" 2>/dev/null \
-  && check 10.2 PASS "installed gps opens the serial port with O_NOCTTY" "" \
-  || check 10.2 FAIL "installed gps opens the serial port with O_NOCTTY" ""
-check 10.3 MANUAL "unplug the GPS live: card goes to no-signal, daemon + dashboard stay up" "by hand"
+# 2.3 (cracked_aps in /status.json) is emitted from the dashboard section below
+# when the optional login is given.
+check 2.4 MANUAL "/networks shows a cracked badge and the card shows cracked N of M" "by hand"
 
-# ---------------------------------------------------------------- 11. wigle response crash fix (#32)
-sec "11. wigle survives a dict-shaped response (#32)"
-grep -q '_first_record' "$LIBDIR/plugins/wigle.py" 2>/dev/null \
-  && check 11.1 PASS "installed wigle has the results-shape fix (_first_record)" "" \
-  || check 11.1 FAIL "installed wigle has the results-shape fix (_first_record)" ""
-wke=$(journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null | grep -c 'wigle-worker' || true)
-[ "${wke:-0}" -eq 0 ] && check 11.2 PASS "no wigle-worker crash this boot" "" \
-  || check 11.2 INFO "wigle-worker lines this boot" "$wke (check it is not a crash)"
+# ---------------------------------------------------------------- 3. passphrase visibility (#36)
+sec "3. passphrase visibility (#36)"
+check 3.1 MANUAL "with the web login on, a cracked row reveals its passphrase" "by hand"
+check 3.2 MANUAL "show_passphrases=false hides the passphrase; badge+count stay; login off never shows it" "by hand"
+# 3.3 (saved live, no restart) is in the config-tests section below.
 
-# ---------------------------------------------------------------- 12. open question
-sec "12. passwordless sudo for the device user (deferred review item)"
-if sudo -l -U "$DEV_USER" 2>/dev/null | grep -q 'NOPASSWD'; then
-  check 12.1 INFO "device user has passwordless sudo" "YES - $(ls /etc/sudoers.d 2>/dev/null | tr '\n' ' ')"
+# ---------------------------------------------------------------- 5. cracked import: CLI (#36)
+sec "5. cracked import - CLI (#36)"
+if grep -q 'cmd_cracked()' "$CLI" && grep -q 'cracked) cmd_cracked' "$CLI"; then
+  check 5.1 PASS "installed CLI has the cracked subcommand" "import | list | clear"
 else
-  check 12.1 INFO "device user has passwordless sudo" "no - $(ls /etc/sudoers.d 2>/dev/null | tr '\n' ' ')"
+  check 5.1 FAIL "installed CLI has the cracked subcommand" ""
+fi
+clist=$(as_dev "$CLI" cracked list 2>&1)
+if printf '%s\n' "$clist" | grep -qi 'cracked record'; then
+  check 5.2 PASS "kestrel cracked list prints counts only (no passphrase)" "$(printf '%s' "$clist" | head -1 | cut -c1-80)"
+else
+  check 5.2 INFO "kestrel cracked list" "ran; output not shown (it can name imported files)"
+fi
+check 5.3 MANUAL "the web Import cracked results upload accepts a potfile and shows the summary" "by hand"
+
+# ---------------------------------------------------------------- 6. cracked store privacy (#36)
+sec "6. cracked store privacy (#36)"
+crkdir=$STORE/cracked
+if [ -d "$crkdir" ]; then
+  dp=$(stat -c '%a' "$crkdir")
+  nbad=$(find "$crkdir" -maxdepth 1 -type f -name '*.potfile' ! -perm 600 2>/dev/null | wc -l)
+  { [ "$dp" = 700 ] && [ "$nbad" -eq 0 ]; } \
+    && check 6.1 PASS "cracked dir 0700, potfiles 0600" "dir=$dp potfiles ok" \
+    || check 6.1 FAIL "cracked dir 0700, potfiles 0600" "dir=$dp not-0600=$nbad"
+else
+  check 6.1 SKIP "cracked dir 0700, potfiles 0600" "no cracked store yet"
 fi
 
 # ---------------------------------------------------------------- config tests (throwaway copy)
@@ -408,45 +256,27 @@ def check(cid, ok, what, detail=""): print("CHECK %-5s %-6s %s :: %s" % (cid, "P
 def apply(ch):
     try: return ctl.apply_change(ch)
     except Exception as e: return {"ok": False, "error": "exc %s" % type(e).__name__}
-# 2.2: root_only options refused via the socket, then the terminal path sets one
-res = []
-for opt, val in (("host","https://git.example.com"),("repo","example/kestrel"),("token","example-not-a-token")):
-    before = read("plugins.updates."+opt)
-    r = apply({"plugin":"updates","set":{opt:val}})
-    res.append((not r.get("ok")) and read("plugins.updates."+opt)==before)
-check("2.2", all(res), "socket refuses updates repo/host/token", "%d/3 refused" % sum(res))
-cur = read("plugins.updates.check_interval_seconds", 21600); want = int(cur)+1
-r = apply({"plugin":"updates","set":{"check_interval_seconds":want}})
-check("2.3", bool(r.get("ok")) and read("plugins.updates.check_interval_seconds")==want, "socket saves a normal updates option", "ok=%s"%r.get("ok"))
-try: rc = ctl.cmd_set("updates","host","https://git.example.com")
-except Exception as e: rc = "exc %s"%type(e).__name__
-check("2.4", rc==0 and read("plugins.updates.host")=="https://git.example.com", "terminal sets updates.host", "rc=%s"%rc)
-# 3.11/3.12: archive_dir + single_file constraints
-before = read("capture.housekeeping.archive_dir"); ok=True
-for val in ("/","/tmp/kbc-x","/var/lib/kestrel","/var/lib/kestrel/capture/../x"):
-    r = apply({"target":"config-set","table":"capture.housekeeping","key":"archive_dir","value":val})
-    ok = ok and (not r.get("ok")) and read("capture.housekeeping.archive_dir")==before
-r = apply({"target":"config-set","table":"capture.housekeeping","key":"archive_dir","value":"/var/lib/kestrel/capture/archive-kbc"})
-check("3.11", ok and bool(r.get("ok")), "archive_dir restricted to the capture store", "")
-before = read("capture.output.single_file"); ok=True
-for val in ("../x","a/b",".hidden","/etc/passwd"):
-    r = apply({"target":"config-set","table":"capture.output","key":"single_file","value":val})
-    ok = ok and (not r.get("ok")) and read("capture.output.single_file")==before
-r = apply({"target":"config-set","table":"capture.output","key":"single_file","value":"handshakes"})
-check("3.12", ok and bool(r.get("ok")), "single_file must be a plain file name", "")
-# 4.1: raw-data cap saves under [capture.housekeeping], not [capture]
-cur = read("capture.housekeeping.max_run_mb",512); want = 511 if cur!=511 else 513
-r = apply({"target":"config-set","table":"capture.housekeeping","key":"max_run_mb","value":want})
-rold = apply({"target":"config-set","table":"capture","key":"max_run_mb","value":want})
-check("4.1", bool(r.get("ok")) and read("capture.housekeeping.max_run_mb")==want and not rold.get("ok"),
-      "raw-data cap saves under [capture.housekeeping] (#22)", "old [capture] key accepted=%s"%rold.get("ok"))
+# cracked networks (#36): the passphrase-visibility toggle and the import caps.
+# 3.3: show_passphrases saves live via the socket (not root_only, no restart)
+r = apply({"target":"config-set","table":"web","key":"show_passphrases","value":False})
+check("3.3", bool(r.get("ok")) and read("web.show_passphrases") is False and not r.get("restart"),
+      "web.show_passphrases saved live, no daemon restart", "ok=%s restart=%s" % (r.get("ok"), r.get("restart")))
+# 4.1: the new keys are in the root allow-list with the right specs
+spec = getattr(ctl, "CONFIG_SETTABLE", {})
+want = {"web.show_passphrases": {"type": "bool"},
+        "cracked.max_import_mb": {"type": "int", "min": 1},
+        "cracked.max_import_lines": {"type": "int", "min": 1}}
+check("4.1", all(spec.get(k) == v for k, v in want.items()),
+      "show_passphrases + [cracked] caps settable in the allow-list", "")
+# 4.2: the apply socket saves the [cracked] import caps
+cur = read("cracked.max_import_mb", 2); want2 = int(cur) + 1
+r = apply({"target":"config-set","table":"cracked","key":"max_import_mb","value":want2})
+check("4.2", bool(r.get("ok")) and read("cracked.max_import_mb") == want2,
+      "apply socket saves [cracked] max_import_mb", "ok=%s" % r.get("ok"))
 PY
 [ "$(sha256sum "$CONFIG" | awk '{print $1}')" = "$cfg_sum_before" ] \
   && check 0.1 PASS "real config.toml untouched by the tests" "checksum identical" \
   || check 0.1 FAIL "real config.toml untouched by the tests" "checksum changed - tell Claude"
-stray=$(cfg capture.max_run_mb "")
-[ -z "$stray" ] && check 4.2 PASS "no stray [capture] max_run_mb (#22)" "" \
-  || check 4.2 FAIL "no stray [capture] max_run_mb (#22)" "[capture] max_run_mb=$stray set and ignored; remove it"
 
 } >"$raw" 2>&1
 
@@ -484,7 +314,8 @@ except Exception as exc:
     sys.exit(0)
 print("version:", s.get("version"))
 cap = s.get("capture", {}) or {}
-print("capture:", {k: cap.get(k) for k in ("state", "enabled", "hashline_files")})
+print("capture:", {k: cap.get(k) for k in ("state", "enabled", "hashline_files", "cracked_aps")})
+print("CHECK %-5s %-6s %s :: %s" % ("2.3", "PASS" if "cracked_aps" in cap else "FAIL", "cracked_aps present in /status.json capture", cap.get("cracked_aps")))
 print("environment:", s.get("environment"))
 ag = s.get("agent", {}) or {}
 print("agent:", {k: v for k, v in ag.items() if isinstance(v, (str, int, float, bool)) or v is None})
