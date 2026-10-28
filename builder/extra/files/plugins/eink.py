@@ -7,7 +7,7 @@ while moving, and a battery gauge); the mascot face offset to the left with its
 voice line - a short mood-matched phrase - beside it; a compact symbol-led status
 row (a chip glyph + agent mode, an antenna glyph + capture state); an info row
 (uptime and, while capturing, the channel plan); a bottom counter row (captured
-handshakes and distinct access points, each lifetime total + session in parens);
+handshakes with session count, then distinct access points and distinct networks);
 and the Kestrel mark once in the lower-right corner, its pose doubling as the
 motion readout (parked/walking/driving). The face's mood is
 driven from live device and learning-agent state via the shared UI model
@@ -741,8 +741,9 @@ class EinkFace(Plugin):
         it; a compact symbol-led status row (a chip glyph + the agent's mode, an
         antenna glyph + capture state); an info row (``UP`` uptime and ``CH`` the
         channel plan while capturing); a bottom counter row (``PWND`` captured
-        handshakes and ``AP`` distinct access points, each lifetime total with the
-        session count in parens); and the Kestrel brand mark once in the
+        handshakes with this session's count in parens, then ``AP`` distinct
+        radios and ``NET`` distinct networks, both lifetime); and the Kestrel
+        brand mark once in the
         lower-right - stooping when moving, hovering when parked. Also used for the
         web mirror, so it runs with no panel present."""
         from PIL import Image, ImageDraw
@@ -833,23 +834,34 @@ class EinkFace(Plugin):
             draw.text((ix + 22, iy), "NEAR %d" % int(env.get("radios_recent") or 0),
                       font=small, fill=0)
 
-        # bottom counter row, on the Kestrel's baseline: captured handshakes
-        # (PWND, a key glyph) and distinct captured APs (AP), each the lifetime
-        # total with this session's count in parens, e.g. "200 (30)".
+        # bottom counter row, on the Kestrel's baseline: the plain-English trio
+        # "N handshakes from M access points across K networks". Handshakes
+        # (PWND, a key glyph) carry this session's count in parens, e.g.
+        # "240 (30)" - the one session delta worth watching; AP (distinct
+        # radios/BSSIDs) and NET (distinct names/ESSIDs) are lifetime only, so
+        # all three fit one row left of the brand mark. Segments advance by
+        # measured width and stop before the mark so a big count can't overlap it.
         by = 146
+        right_limit = PANEL_W - 40   # keep clear of the lower-right brand glyph
+        x = 14
         total = state.capture_total if state is not None else None
         if total is not None:
             sess = (state.capture_session
                     if state is not None and state.capture_session is not None else 0)
-            _draw_key(draw, 14, by + 2, 13, 11)
-            draw.text((32, by), "%d (%d)" % (int(total), int(sess)),
-                      font=small, fill=0)
-        aps = state.aps_total if state is not None else None
-        if aps is not None:
-            aps_sess = (state.aps_session
-                        if state is not None and state.aps_session is not None else 0)
-            draw.text((128, by), "AP %d (%d)" % (int(aps), int(aps_sess)),
-                      font=small, fill=0)
+            _draw_key(draw, x, by + 2, 13, 11)
+            x += 18
+            seg = "%d (%d)" % (int(total), int(sess))
+            draw.text((x, by), seg, font=small, fill=0)
+            x += _text_w(draw, seg, small) + 16
+        for value, label in ((state.aps_total if state is not None else None, "AP"),
+                             (state.networks_total if state is not None else None, "NET")):
+            if value is None:
+                continue
+            seg = "%s %d" % (label, int(value))
+            if x + _text_w(draw, seg, small) > right_limit:
+                break
+            draw.text((x, by), seg, font=small, fill=0)
+            x += _text_w(draw, seg, small) + 16
 
         # the Kestrel brand mark, once, lower-right corner; its pose doubles as
         # the motion readout - stooping (diving) when moving, hovering when not.

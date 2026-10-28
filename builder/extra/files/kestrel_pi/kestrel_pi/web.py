@@ -2407,9 +2407,10 @@ def _render_status(status, control=None, message=None, error=False, addresses=No
         + _agent_nav(status.get("agent"), cap, control)
         + '<a class="navcard" href="' + _esc(_url("/networks", control)) + '">'
         '<div class="scol"><span class="skey">Captured networks</span>'
-        '<span class="sval">' + _esc(cap.get("networks", 0))
-        + " network(s) &middot; " + _esc(cap.get("access_points", 0))
-        + ' AP(s)</span>'
+        '<span class="sval">' + _esc(cap.get("handshakes", 0))
+        + " handshake(s) &middot; " + _esc(cap.get("access_points", 0))
+        + " access point(s) &middot; " + _esc(cap.get("networks", 0))
+        + ' network(s)</span>'
         '<span class="smeta">Browse by network or access point</span></div>'
         '<span class="arrow" aria-hidden="true">&rarr;</span></a>'
         + _whitelist_nav(cap, control)
@@ -2581,13 +2582,18 @@ def _render_networks(rows_in, control=None, query="", page=1,
     stays light no matter how much the store holds."""
     rows_in = rows_in or []
     ap_view = view == "ap"
-    total = len(rows_in)
+    # The by-AP list may carry a trailing "(unknown BSSID)" fold row for
+    # handshakes whose BSSID didn't parse; it is shown but is not an access
+    # point, so the headline count excludes it to match the dashboard navcard.
+    total = (sum(1 for r in rows_in if r.get("bssid")) if ap_view
+             else len(rows_in))
     needle = (query or "").strip().lower()
     if needle:
         mac_needle = _mac_norm(query)
 
         def _matches(r):
-            if needle in (r.get("essid") or "").lower():
+            names = r.get("essids") if ap_view else [r.get("essid") or ""]
+            if any(needle in (e or "").lower() for e in (names or [])):
                 return True
             if ap_view and mac_needle and mac_needle in _mac_norm(r.get("bssid")):
                 return True
@@ -2617,24 +2623,31 @@ def _render_networks(rows_in, control=None, query="", page=1,
     noun = "access point" if ap_view else "network"
     rows = []
     for r in window:
-        essid = r.get("essid") or ""
-        name = _esc(essid) if essid else '<span class="smeta">(hidden)</span>'
         seen_cell = ('<td data-label="last seen"><span class="smeta">'
                      + _esc(_ago(r.get("last_seen"))) + "</span></td>")
         if ap_view:
+            # One row per radio (BSSID); the names it advertised follow.
             bssid = r.get("bssid") or ""
-            cell = (_esc(bssid) if bssid
-                    else '<span class="smeta">(unknown BSSID)</span>')
+            radio = (_esc(bssid) if bssid
+                     else '<span class="smeta">(unknown BSSID)</span>')
+            essids = r.get("essids") or []
+            if essids:
+                names = ", ".join(_esc(e) for e in essids)
+            else:
+                names = '<span class="smeta">(hidden)</span>'
             rows.append(
-                "<tr><td data-label=\"network\">" + name + "</td>"
-                "<td data-label=\"bssid\">" + cell + "</td>"
+                "<tr><td data-label=\"access point\">" + radio + "</td>"
+                "<td data-label=\"network(s)\">" + names + "</td>"
                 "<td data-label=\"handshakes\">" + _esc(r.get("handshakes", 0))
                 + "</td>" + seen_cell + "</tr>"
             )
         else:
+            essid = r.get("essid") or ""
+            name = _esc(essid) if essid else '<span class="smeta">(hidden)</span>'
             rows.append(
                 "<tr><td data-label=\"network\">" + name + "</td>"
-                "<td data-label=\"bssids\">" + _esc(r.get("bssids", 0)) + "</td>"
+                "<td data-label=\"access points\">" + _esc(r.get("bssids", 0))
+                + "</td>"
                 "<td data-label=\"handshakes\">" + _esc(r.get("handshakes", 0))
                 + "</td>" + seen_cell + "</tr>"
             )
@@ -2728,12 +2741,12 @@ def _render_networks(rows_in, control=None, query="", page=1,
 
     if ap_view:
         heading = "Captured access points"
-        head_cells = ("<th>network</th><th>BSSID</th><th>handshakes</th>"
-                      "<th>last seen</th>")
+        head_cells = ("<th>access point</th><th>network(s)</th>"
+                      "<th>handshakes</th><th>last seen</th>")
     else:
         heading = "Captured networks"
-        head_cells = ("<th>network</th><th>bssids</th><th>handshakes</th>"
-                      "<th>last seen</th>")
+        head_cells = ("<th>network</th><th>access points</th>"
+                      "<th>handshakes</th><th>last seen</th>")
 
     back = '<p><a href="' + _esc(_url("/", control)) + '">&larr; Dashboard</a></p>'
     return _page(

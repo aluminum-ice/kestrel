@@ -271,9 +271,14 @@ def test_compose_draws_voice_uptime_channel_and_aps(tmp_path):
     full = UIState(online=True, capture_active=True,
                    uptime=5025.0, channel="1,6,11",
                    capture_total=1240, capture_session=30,
-                   aps_total=85, aps_session=12)
+                   aps_total=85, aps_session=12, networks_total=52)
     img = p._compose_image(full, "motivated", "on a roll!")
     assert img.size == (EINK.PANEL_W, EINK.PANEL_H)
+    # A pathologically large trio still composes (the counter row stops before
+    # the brand mark rather than overlapping it).
+    huge = UIState(online=True, capture_active=True, capture_total=999999,
+                   capture_session=9999, aps_total=99999, networks_total=99999)
+    assert p._compose_image(huge, "awake", None).size == (EINK.PANEL_W, EINK.PANEL_H)
     # None of the fields present (no uptime/channel/aps, no voice) still composes.
     assert p._compose_image(UIState(), "awake", None).size == (EINK.PANEL_W, EINK.PANEL_H)
 

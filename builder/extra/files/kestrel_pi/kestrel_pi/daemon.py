@@ -194,15 +194,14 @@ class Daemon:
         self.capture_watcher = CaptureWatcher(
             capture_store, self._on_handshake, self.log.getChild("capture")
         )
-        # Capture counters for the UI: the lifetime total is the store line count
-        # at startup (existing hashlines are not re-announced), and the session
-        # count accumulates the new hashlines announced while this daemon runs.
-        self._capture_total_base = self.capture.hashline_count()
+        # Capture counters for the UI. The lifetime totals (handshakes, access
+        # points, networks) come straight from capture_counts() so the e-ink
+        # face can never disagree with the dashboard navcard, which reads the
+        # same call. Only the per-session deltas are tracked here: the
+        # handshakes and distinct BSSIDs seen since this daemon started, for the
+        # capture status card's "caught this session" line (and the face's
+        # session count beside the handshake total).
         self._session_handshakes = 0
-        # Distinct captured APs (unique BSSIDs): the store's set at startup is the
-        # lifetime base; BSSIDs seen this session add to it (a session BSSID
-        # already in the base does not double-count).
-        self._ap_base = self.capture.ap_bssids()
         self._session_bssids = set()
 
         self.loader = Loader(
@@ -332,6 +331,7 @@ class Daemon:
         position) are None when absent, and a UI plugin degrades accordingly."""
         agent = self.services.get("agent")
         capture_active = (self._capture_state() == "running")
+        counts = self.capture.capture_counts()
         return UIState(
             online=self.connectivity.online,
             epoch=self.epoch,
@@ -340,11 +340,12 @@ class Daemon:
             battery=self.services.get("battery"),
             position=self.services.get("position"),
             paths=dict(self.connectivity.paths),
-            capture_total=self._capture_total_base + self._session_handshakes,
+            capture_total=counts["handshakes"],
             capture_session=self._session_handshakes,
             uptime=time.time() - self.started,
-            aps_total=len(self._ap_base | self._session_bssids),
+            aps_total=counts["access_points"],
             aps_session=len(self._session_bssids),
+            networks_total=counts["networks"],
             channel=self._scan_channel(agent, capture_active),
             env=self._environment_state(self.config, capture_active),
         )
