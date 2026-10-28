@@ -377,7 +377,12 @@ class Backup(Plugin):
 
     def _scp_dir(self, src, remote, excludes=None):
         """Fallback copy with scp (no delta; copies everything each run) of one
-        directory into ``remote``, skipping names matched by ``excludes``."""
+        directory into ``remote``, skipping names matched by ``excludes``.
+
+        ``-p`` preserves each file's modification time and mode (parity with
+        rsync's ``-a``), so backed-up captures keep their on-device timestamps
+        instead of taking the copy time. (The per-AP first/last-seen record in
+        ``capture-seen.json`` is backed up alongside them either way.)"""
         if not shutil.which("scp"):
             return (False, 0, 0, "scp not installed")
         key = self.options.get("ssh_key") or _DEFAULT_KEY
@@ -399,7 +404,7 @@ class Backup(Plugin):
             subprocess.run(["ssh", "-i", key, "-p", port] + sshopts
                            + ["%s@%s" % (user, host), "mkdir", "-p", remote],
                            capture_output=True, text=True, timeout=60, check=False)
-            cmd = (["scp", "-r", "-C", "-i", key, "-P", port] + sshopts + items
+            cmd = (["scp", "-r", "-p", "-C", "-i", key, "-P", port] + sshopts + items
                    + ["%s@%s:%s" % (user, host, remote)])
             proc = subprocess.run(cmd, capture_output=True, text=True,
                                   timeout=self._timeout(), check=False)

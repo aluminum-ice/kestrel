@@ -1285,6 +1285,7 @@ def test_backup_scp_fallback_copies_store(tmp_path, monkeypatch):
     assert any(str(tmp_path / "a.hc22000") == arg for arg in scp)
     assert not any(".run" in arg for arg in scp)   # transient dir not pushed
     assert scp[-1] == "u@h:/remote/dir"
+    assert "-p" in scp   # preserve on-device mtimes/modes (parity with rsync -a)
 
 
 def test_backup_mirrors_the_agent_dir_to_a_subpath(tmp_path, monkeypatch):
