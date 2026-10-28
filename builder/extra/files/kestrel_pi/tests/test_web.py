@@ -743,9 +743,41 @@ class _FakeCapture:
         return self._access_points
 
 
+class _FakeCracked:
+    """A stand-in for CrackedStore: records as (bssid, essid, psk) triples."""
+
+    def __init__(self, records):
+        self._by_bssid, self._by_essid = {}, {}
+        for bssid, essid, psk in records:
+            rec = types.SimpleNamespace(bssid=bssid, essid=essid, psk=psk,
+                                        source="test")
+            self._by_bssid.setdefault(bssid, rec)
+            if essid:
+                self._by_essid.setdefault(essid, []).append(rec)
+
+    def lookup_bssid(self, bssid):
+        return self._by_bssid.get(bssid)
+
+    def lookup_essid(self, essid):
+        return list(self._by_essid.get(essid, ()))
+
+
+class _FakeServices:
+    def __init__(self, cracked=None):
+        self._cracked = cracked
+
+    def get(self, name, default=None):
+        if name == "cracked" and self._cracked is not None:
+            return self._cracked
+        return default
+
+    def names(self):
+        return ["cracked"] if self._cracked is not None else []
+
+
 class _FakeDaemon:
     def __init__(self, web_cfg, plugin_table, networks=None,
-                 access_points=None, output_mode=None):
+                 access_points=None, output_mode=None, cracked=None):
         import logging
         from kestrel_pi.loader import PluginRecord
 
@@ -759,6 +791,7 @@ class _FakeDaemon:
         if output_mode is not None:
             self.config["capture"] = {"output": {"mode": output_mode}}
         self.capture = _FakeCapture(networks or [], access_points)
+        self.services = _FakeServices(cracked)
 
     def _fresh_config(self):
         return self.config
@@ -779,7 +812,7 @@ def _basic(user="pi", password="hunter2"):
 
 
 def _client(monkeypatch, tmp_path, web_cfg, table=None, replies=None, networks=None,
-            access_points=None, output_mode=None):
+            access_points=None, output_mode=None, cracked=None):
     pytest.importorskip("flask")
     sent = []
 
@@ -794,7 +827,7 @@ def _client(monkeypatch, tmp_path, web_cfg, table=None, replies=None, networks=N
     monkeypatch.setattr(web, "iface_ipv4", lambda iface: None)
     daemon = _FakeDaemon(web_cfg, table if table is not None else {"enabled": False},
                          networks=networks, access_points=access_points,
-                         output_mode=output_mode)
+                         output_mode=output_mode, cracked=cracked)
     return web.create_app(daemon).test_client(), sent
 
 
@@ -1624,6 +1657,101 @@ def test_networks_ap_unknown_bssid_row(monkeypatch, tmp_path):
         access_points=[{"essid": "", "bssid": "", "handshakes": 4}])
     body = client.get("/networks").get_data(as_text=True)
     assert "(unknown BSSID)" in body
+
+
+# -- cracked-networks annotation on /networks ----------------------------
+# Invented data only: RFC 7042 MACs, an invented SSID, a fake passphrase.
+_CRK_BSSID = "00:00:5E:00:53:AA"
+_CRK_PSK = "correct-horse"
+
+
+def _cracked_one():
+    return _FakeCracked([(_CRK_BSSID, "My Network", _CRK_PSK)])
+
+
+def test_networks_badge_and_passphrase_with_auth_on(monkeypatch, tmp_path):
+    # By-network view, web auth on, show_passphrases default true: the cracked
+    # row gets the badge and the passphrase in a disclosure; an uncracked row
+    # gets neither.
+    client, _ = _client(
+        monkeypatch, tmp_path, BASIC, output_mode="per-ssid",
+        networks=_nets("My Network", "Other Net"),
+        access_points=_aps(("My Network", _CRK_BSSID)),
+        cracked=_cracked_one())
+    body = client.get("/networks", headers=_basic()).get_data(as_text=True)
+    assert "cracked" in body and "<details" in body
+    assert _CRK_PSK in body
+    # The uncracked network is still listed, with no badge/passphrase of its own.
+    assert "Other Net" in body
+    assert body.count(">cracked</span>") == 1
+
+
+def test_networks_passphrase_withheld_when_auth_off(monkeypatch, tmp_path):
+    # auth = none: the badge still shows (not a secret) but the passphrase and
+    # the disclosure never render.
+    client, _ = _client(
+        monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ssid",
+        networks=_nets("My Network"),
+        access_points=_aps(("My Network", _CRK_BSSID)),
+        cracked=_cracked_one())
+    body = client.get("/networks").get_data(as_text=True)
+    assert "cracked" in body
+    assert _CRK_PSK not in body and "<details" not in body
+
+
+def test_networks_passphrase_hidden_by_show_passphrases_false(monkeypatch, tmp_path):
+    # auth on but show_passphrases = false: badge + a muted 'hidden' note, never
+    # the passphrase.
+    client, _ = _client(
+        monkeypatch, tmp_path, dict(BASIC, show_passphrases=False),
+        output_mode="per-ssid", networks=_nets("My Network"),
+        access_points=_aps(("My Network", _CRK_BSSID)),
+        cracked=_cracked_one())
+    body = client.get("/networks", headers=_basic()).get_data(as_text=True)
+    assert "cracked" in body
+    assert _CRK_PSK not in body
+    assert "show_passphrases = true" in body
+
+
+def test_networks_ap_view_shows_passphrase_for_the_radio(monkeypatch, tmp_path):
+    client, _ = _client(
+        monkeypatch, tmp_path, BASIC, output_mode="per-ap",
+        access_points=_aps(("My Network", _CRK_BSSID),
+                           ("Other Net", "00:00:5E:00:53:BB")),
+        cracked=_cracked_one())
+    body = client.get("/networks?view=ap", headers=_basic()).get_data(as_text=True)
+    assert _CRK_PSK in body
+    # Only the cracked radio carries the badge.
+    assert body.count(">cracked</span>") == 1
+
+
+def test_networks_passphrase_is_escaped(monkeypatch, tmp_path):
+    client, _ = _client(
+        monkeypatch, tmp_path, BASIC, output_mode="per-ssid",
+        networks=_nets("My Network"),
+        access_points=_aps(("My Network", _CRK_BSSID)),
+        cracked=_FakeCracked([(_CRK_BSSID, "My Network", "a<b>&c")]))
+    body = client.get("/networks", headers=_basic()).get_data(as_text=True)
+    assert "a&lt;b&gt;&amp;c" in body and "a<b>&c" not in body
+
+
+def test_networks_no_cracked_service_is_benign(monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path, BASIC, output_mode="per-ssid",
+                        networks=_nets("My Network"))      # cracked=None
+    body = client.get("/networks", headers=_basic()).get_data(as_text=True)
+    assert "cracked" not in body and "<details" not in body
+
+
+def test_dashboard_navcard_shows_cracked_count_when_present(monkeypatch, tmp_path):
+    status = dict(_status([]))
+    status["capture"] = dict(status["capture"], cracked_aps=3)
+    html = web._render_status(status)
+    assert "3 of 19 access point(s) cracked" in html
+
+
+def test_dashboard_navcard_omits_cracked_count_when_absent(monkeypatch, tmp_path):
+    html = web._render_status(_status([]))      # no cracked_aps key
+    assert "cracked" not in html
 
 
 def test_dashboard_navcard_shows_network_and_ap_counts(monkeypatch, tmp_path):

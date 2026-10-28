@@ -577,9 +577,17 @@ def create_app(daemon):
         else:
             data = daemon.capture.captured_networks()
         sort = "recent" if request.args.get("sort") == "recent" else "name"
+        ctl = control()
+        # The passphrase shows only with web auth on AND show_passphrases true
+        # (read live, so a toggle takes effect without a restart); the badge and
+        # count are not secrets and show regardless.
+        show_pass = bool((cfg.get("web") or {}).get("show_passphrases", True))
+        by_bssid, by_essid = _cracked_maps(daemon, view, data)
         return html(_render_networks(
-            data, control(), query=request.args.get("q", ""),
-            page=request.args.get("page", 1), view=view, sort=sort))
+            data, ctl, query=request.args.get("q", ""),
+            page=request.args.get("page", 1), view=view, sort=sort,
+            cracked_by_bssid=by_bssid, cracked_by_essid=by_essid,
+            show_passphrases=show_pass, auth_on=bool(ctl.get("ready"))))
 
     @app.get("/agent")
     def agent_page():  # noqa: ANN202
@@ -1325,6 +1333,22 @@ _STATUS_CSS = (
     "padding-top:1em;border-top:1px solid var(--border);}"
     ".guidenav a{color:var(--link);text-decoration:none;}"
     ".guidenav a:hover,.guidenav a:focus{text-decoration:underline;}"
+    # Cracked-networks marker and passphrase disclosure on /networks. The badge
+    # is a lock glyph plus the word "cracked" (never colour alone). The
+    # passphrase lives in a <details> so it is not rendered into the row until
+    # the operator expands it (dependency-free, keyboard-accessible).
+    ".crk{display:inline-flex;align-items:center;gap:.3em;margin-left:.5em;"
+    "font-size:.78rem;font-weight:600;color:var(--on-bd);white-space:nowrap;}"
+    ".crk .lock{font-size:.9em;}"
+    "details.crk-d>summary{cursor:pointer;list-style:none;}"
+    "details.crk-d>summary::-webkit-details-marker{display:none;}"
+    "details.crk-d>summary::after{content:'\\0020\\25be';color:var(--muted);"
+    "font-size:.8em;}"
+    "details.crk-d[open]>summary::after{content:'\\0020\\25b4';}"
+    ".crk-p{margin:.4em 0 .1em;font-size:.9rem;}"
+    ".crk-p code{word-break:break-all;}"
+    ".crk-p .bssid{color:var(--muted);}"
+    ".crk-hidden{color:var(--muted);font-style:italic;}"
 )
 
 
@@ -2411,7 +2435,14 @@ def _render_status(status, control=None, message=None, error=False, addresses=No
         + " handshake(s) &middot; " + _esc(cap.get("access_points", 0))
         + " access point(s) &middot; " + _esc(cap.get("networks", 0))
         + ' network(s)</span>'
-        '<span class="smeta">Browse by network or access point</span></div>'
+        # "cracked N of M" access points, when the cracked store could be read
+        # (the daemon omits the key on a read failure). Not a secret -- it is the
+        # count only -- so it always shows when present.
+        + (('<span class="smeta">' + _esc(cap.get("cracked_aps"))
+            + " of " + _esc(cap.get("access_points", 0))
+            + " access point(s) cracked</span>")
+           if cap.get("cracked_aps") is not None else "")
+        + '<span class="smeta">Browse by network or access point</span></div>'
         '<span class="arrow" aria-hidden="true">&rarr;</span></a>'
         + _whitelist_nav(cap, control)
     )
@@ -2565,8 +2596,87 @@ def _ago(epoch, now=None):
     return time.strftime("%Y-%m-%d", time.localtime(epoch))
 
 
+def _cracked_maps(daemon, view, data):
+    """Build the cracked-annotation maps for ``/networks`` from the ``cracked``
+    service. Returns ``(cracked_by_bssid, cracked_by_essid)`` -- both empty when
+    the store is absent or unreadable, so the page just shows no cracked markers.
+
+    By-AP view: each captured BSSID joined to its passphrase. By-network view: a
+    network is cracked if any of its captured BSSIDs is cracked (grouped under
+    the names that AP advertised) or an ESSID-name record matches; each distinct
+    ``(bssid, psk)`` is kept so differing passphrases under one name are shown."""
+    cracked = daemon.services.get("cracked")
+    by_bssid, by_essid = {}, {}
+    if cracked is None:
+        return by_bssid, by_essid
+    try:
+        if view == "ap":
+            for row in data:
+                bssid = row.get("bssid")
+                if not bssid:
+                    continue
+                rec = cracked.lookup_bssid(bssid)
+                if rec:
+                    by_bssid[bssid] = rec.psk
+        else:
+            def _add(essid, rec):
+                pairs = by_essid.setdefault(essid, [])
+                if (rec.bssid, rec.psk) not in pairs:
+                    pairs.append((rec.bssid, rec.psk))
+
+            for ap in daemon.capture.captured_access_points():
+                bssid = ap.get("bssid")
+                rec = cracked.lookup_bssid(bssid) if bssid else None
+                if rec:
+                    for essid in ap.get("essids") or []:
+                        _add(essid, rec)
+            for row in data:
+                essid = row.get("essid")
+                if essid:
+                    for rec in cracked.lookup_essid(essid):
+                        _add(essid, rec)
+    except Exception:  # noqa: BLE001 - a cracked-store read must never break the page
+        return {}, {}
+    return by_bssid, by_essid
+
+
+def _cracked_cell(summary_html, pairs, auth_on, show_passphrases, with_bssid):
+    """Wrap a row's name/BSSID cell so a cracked row shows the badge and, when
+    allowed, its passphrase in a ``<details>`` disclosure. ``pairs`` is a list of
+    ``(bssid, psk)``.
+
+    The passphrase is a secret, shown only when BOTH gates pass; the badge is
+    not a secret and always shows:
+    - auth off: badge only, no secret panel (there is no login to gate it).
+    - auth on, ``show_passphrases`` off: badge + a muted 'hidden' note, so the
+      operator still knows a passphrase exists.
+    - auth on, ``show_passphrases`` on: badge + the passphrase(s)."""
+    badge = ('<span class="crk"><span class="lock" aria-hidden="true">'
+             "&#128274;</span>cracked</span>")
+    if not auth_on:
+        return summary_html + " " + badge
+    if not show_passphrases:
+        panel = ('<div class="crk-p crk-hidden">Passphrase hidden '
+                 "(<code>show_passphrases = true</code> to reveal)</div>")
+    else:
+        parts = []
+        for bssid, psk in pairs:
+            if with_bssid and bssid:
+                parts.append('<div class="crk-p"><span class="bssid">'
+                             + _esc(bssid) + "</span> <code>" + _esc(psk)
+                             + "</code></div>")
+            else:
+                parts.append('<div class="crk-p">Passphrase: <code>'
+                             + _esc(psk) + "</code></div>")
+        panel = "".join(parts)
+    return ('<details class="crk-d"><summary>' + summary_html + " " + badge
+            + "</summary>" + panel + "</details>")
+
+
 def _render_networks(rows_in, control=None, query="", page=1,
-                     per_page=NETWORKS_PER_PAGE, view="ssid", sort="name"):
+                     per_page=NETWORKS_PER_PAGE, view="ssid", sort="name",
+                     cracked_by_bssid=None, cracked_by_essid=None,
+                     show_passphrases=True, auth_on=False):
     """The captured-networks page, in one of two views over the same store:
 
     - ``view="ssid"`` (by network): one row per ESSID, with its distinct-BSSID
@@ -2579,8 +2689,17 @@ def _render_networks(rows_in, control=None, query="", page=1,
     store (``captured_networks`` / ``captured_access_points``) regardless of the
     capture file layout -- so the operator can flip it anytime via the toggle.
     ``query`` filters (case-insensitive) and the list is paginated so the page
-    stays light no matter how much the store holds."""
+    stays light no matter how much the store holds.
+
+    A row whose network/AP has a known passphrase gets a "cracked" badge (never
+    colour alone), and -- only when ``auth_on`` and ``show_passphrases`` -- the
+    passphrase itself in a disclosure. ``cracked_by_bssid`` maps a BSSID to its
+    passphrase (by-AP view); ``cracked_by_essid`` maps an ESSID to its distinct
+    ``(bssid, psk)`` pairs (by-network view). Both are built by the handler from
+    the core cracked service; empty means nothing to annotate."""
     rows_in = rows_in or []
+    cracked_by_bssid = cracked_by_bssid or {}
+    cracked_by_essid = cracked_by_essid or {}
     ap_view = view == "ap"
     # The by-AP list may carry a trailing "(unknown BSSID)" fold row for
     # handshakes whose BSSID didn't parse; it is shown but is not an access
@@ -2630,6 +2749,9 @@ def _render_networks(rows_in, control=None, query="", page=1,
             bssid = r.get("bssid") or ""
             radio = (_esc(bssid) if bssid
                      else '<span class="smeta">(unknown BSSID)</span>')
+            if bssid and bssid in cracked_by_bssid:
+                radio = _cracked_cell(radio, [(bssid, cracked_by_bssid[bssid])],
+                                      auth_on, show_passphrases, with_bssid=False)
             essids = r.get("essids") or []
             if essids:
                 names = ", ".join(_esc(e) for e in essids)
@@ -2644,6 +2766,10 @@ def _render_networks(rows_in, control=None, query="", page=1,
         else:
             essid = r.get("essid") or ""
             name = _esc(essid) if essid else '<span class="smeta">(hidden)</span>'
+            pairs = cracked_by_essid.get(essid) if essid else None
+            if pairs:
+                name = _cracked_cell(name, pairs, auth_on, show_passphrases,
+                                     with_bssid=True)
             rows.append(
                 "<tr><td data-label=\"network\">" + name + "</td>"
                 "<td data-label=\"access points\">" + _esc(r.get("bssids", 0))
