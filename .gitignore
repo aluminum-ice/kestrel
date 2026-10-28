@@ -204,3 +204,5 @@ id_dsa
 # Bundles the scripts/pull-*.sh tools write into the current directory
 *-diagnostics-*/
 capture-health-*/
+# Beta check reports (tools/beta-check), and the old .tar.gz form
+kestrel-beta-check-*

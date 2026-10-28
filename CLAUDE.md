@@ -79,6 +79,7 @@ Commits use the project identity `aluminum-ice <aluminum-ice@noreply.git.3ntropy
 | `.claude/` | Claude Code settings (secret-file read denies, SessionStart hook that installs lint tools, PreToolUse hook that runs the real-data check before `git commit`). |
 | `SECURITY.md` | How to report a vulnerability privately (the `security@3ntropy.io` alias), scope, supported versions and safe harbor. Keep its scope in step when a new privilege boundary or network-facing surface is added. |
 | `tools/real-data-check/` | Stdlib checker for the "Nothing real in the repo" rule, run by `make lint` and the commit hook; its tests run in `make test`. |
+| `tools/beta-check/` | On-device verification for a beta: `pull-beta-check.sh` (run on a computer, reaches the device over SSH), `beta-check-device.sh` (the read-only device part) and `attach.py` (attaches both to the beta's issue). Rules for changing them in its README; process in [Verifying a beta](#verifying-a-beta). |
 | `tools/ghost-guide/` | Desktop publisher for the public Ghost user-guide page: renders the latest stable release's `GUIDE_MD` with screenshots from that release's code (iPhone 14 Pro Max, dark mode) and pushes it via the Ghost Admin API (key from the environment only). Not in CI; see `docs/developer/user-guide-publishing.md`. |
 
 ## Building and validating
@@ -102,6 +103,24 @@ make lint
 `make lint` runs `ansible-playbook --syntax-check` on the playbook, `yamllint` (config: `.yamllint`) on all YAML, `shellcheck --severity=error` on all `*.sh`, and the real-data check (`tools/real-data-check/`, see [Nothing real in the repo](#2-nothing-real-in-the-repo)). The same target runs in the **Lint** workflow (`.forgejo/workflows/lint.yml`) on every push and PR. Run it before committing. A passing lint does not mean the image builds; say so instead of claiming a build was validated.
 
 The on-device `kestrel_pi` package also has unit tests: `make test` runs them (venv `pytest`, needs `flask`/`requests` plus `numpy` for the agent spec import and `pillow` for the e-ink renderer; `torch`/SB3 are stubbed, not required), then the real-data check's own tests; `make lint` only byte-compiles the package. The **Test** workflow (`.forgejo/workflows/test.yml`) runs `make test` on every push and PR, alongside the Lint workflow.
+
+## Verifying a beta
+
+Every beta (`X.Y.Z-beta.N`) is verified on a device before the stable release, in three steps:
+
+1. **Checklist issue.** Once the Release run has published the beta, open an issue titled "On-device checklist for X.Y.Z-beta.N". Open it with a line saying the issue is public, so results, logs and screenshots use placeholders and never a key or passphrase. Then list one numbered checkbox (`3.5`, ...) per thing to verify, grouped by the change behind it and derived from the diff since the release the beta is built against. Tag every item the script can't judge **🖐 by hand** when you write it (how a page looks, a hidden prompt, a real upload, a fresh flash), and keep only the stable release (or the next beta) as the closing step.
+2. **Check script.** Update `tools/beta-check/` for the beta so that every item the device can show is a `CHECK <item number>` in `beta-check-device.sh`, keeping every rule in `tools/beta-check/README.md`. Those rules are part of this file's non-negotiable rules. In short:
+   - **Publishable:** the scripts hold no secrets, personal information, hosts, IPs, URLs, account names or passwords, so they are safe to post in this public repo and its issues.
+   - **Read-only:** they never touch the management link (`nmcli`, `bluetoothctl`, `ip`, `rfkill`, `iw`) and never start, stop or restart a service. They write `config.toml` only as a throwaway copy, checksummed to prove the real file is unchanged.
+   - **Nothing real leaves:** they read no capture content, and everything is redacted on the device before it leaves.
+   - **Lands in a PR:** the update goes in a PR like any change; the scripts aren't shipped, so it doesn't affect the release kind.
+   - **Checked before attaching:** `make lint`, the off-device harness and redactor checks from the README, then `python3 tools/beta-check/attach.py <issue> <version>`. That zips the scripts as `beta-check-<version>.zip` (the forge rejects `.sh`) and attaches them to the issue; post a comment naming it and the command to run. The first run on a device is the scripts' first real test, so say so.
+3. **Review.** The maintainer runs the script and hands over the report, `kestrel-beta-check-<time>.txt`, privately (from a folder outside the repo). It is never attached to the public issue. Read it for anything real before quoting from it; if it holds real data, stop, quote nothing, and say so. Then edit the issue from its current text (the maintainer ticks boxes too; never overwrite their edits):
+   - tick only an item the report shows was checked and passed, and add **✅ script**;
+   - leave failures, `INFO`, `SKIP` and anything inconclusive unticked, and report them to the maintainer in the session rather than on the issue;
+   - add **🖐 by hand** to every item that is left for the maintainer.
+
+   A fix for a failure goes into the next beta, not the stable release.
 
 ## Conventions and gotchas
 
