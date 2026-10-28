@@ -115,11 +115,10 @@ Every beta (`X.Y.Z-beta.N`) is verified on a device before the stable release, i
    - **Nothing real leaves:** they read no capture content, and everything is redacted on the device before it leaves.
    - **Lands in a PR:** the update goes in a PR like any change; the scripts aren't shipped, so it doesn't affect the release kind.
    - **Checked before attaching:** `make lint`, the off-device harness and redactor checks from the README, then `python3 tools/beta-check/attach.py <issue> <version>`. That zips the scripts as `beta-check-<version>.zip` (the forge rejects `.sh`) and attaches them to the issue; post a comment naming it and the command to run. The first run on a device is the scripts' first real test, so say so.
-3. **Review.** The maintainer runs the script and hands over the `kestrel-beta-check-<time>.tar.gz` (or attaches it to the issue). Read it for anything real before quoting from it. If it holds real data, stop, quote nothing, and tell the maintainer to delete the attachment. Then edit the issue from its current text (the maintainer ticks boxes too; never overwrite their edits):
-   - tick each item the report shows `PASS` and add **✅ script**;
-   - leave a `FAIL` unticked, add **❌ FAIL**, and explain it in a comment using placeholders only;
-   - leave `INFO`, `SKIP` and anything inconclusive unticked with a short reason;
-   - keep **🖐 by hand** on what's left for the maintainer.
+3. **Review.** The maintainer runs the script and hands over the report, `kestrel-beta-check-<time>.txt`, privately (from a folder outside the repo). It is never attached to the public issue. Read it for anything real before quoting from it; if it holds real data, stop, quote nothing, and say so. Then edit the issue from its current text (the maintainer ticks boxes too; never overwrite their edits):
+   - tick only an item the report shows was checked and passed, and add **✅ script**;
+   - leave failures, `INFO`, `SKIP` and anything inconclusive unticked, and report them to the maintainer in the session rather than on the issue;
+   - add **🖐 by hand** to every item that is left for the maintainer.
 
    A fix for a failure goes into the next beta, not the stable release.
 

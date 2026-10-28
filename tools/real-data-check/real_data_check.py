@@ -86,9 +86,10 @@ FORBIDDEN_SUFFIXES = (
 )
 FORBIDDEN_NAMES = ("capture-seen.json", "capture-status.json",
                    "id_rsa", "id_ecdsa", "id_ed25519", "id_dsa")
-FORBIDDEN_NAME_RES = (re.compile(r"^model-.*\.zip$"),)
+FORBIDDEN_NAME_RES = (re.compile(r"^model-.*\.zip$"),
+                      re.compile(r"^kestrel-beta-check-\d"))   # beta check reports
 # Bundles the scripts/pull-*.sh tools write into the current directory.
-BUNDLE_DIR_RE = re.compile(r"(?:-diagnostics-|^capture-health-)\d")
+BUNDLE_DIR_RE = re.compile(r"(?:-diagnostics-|^capture-health-|^kestrel-beta-check-)\d")
 
 
 # -- checks ---------------------------------------------------------------------

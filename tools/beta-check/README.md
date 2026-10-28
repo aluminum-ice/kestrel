@@ -6,7 +6,7 @@ process around them is in [CLAUDE.md, "Verifying a beta"](../../CLAUDE.md#verify
 
 | File | What it is |
 | --- | --- |
-| `pull-beta-check.sh` | Runs on your computer. Reaches the device over SSH, runs the device part once with sudo, and saves `kestrel-beta-check-<time>.tar.gz` locally. |
+| `pull-beta-check.sh` | Runs on your computer. Reaches the device over SSH, runs the device part once with sudo, and saves one text report, `kestrel-beta-check-<time>.txt`. |
 | `beta-check-device.sh` | The device part. Copied to a private temp folder on the device, run, then deleted. Never run it by hand. |
 | `attach.py` | Zips the two scripts and this README as `beta-check-<version>.zip` and attaches it to the beta's issue (the forge doesn't accept `.sh` attachments). |
 
@@ -14,13 +14,18 @@ process around them is in [CLAUDE.md, "Verifying a beta"](../../CLAUDE.md#verify
 
 ```bash
 unzip beta-check-<version>.zip && cd beta-check-<version>
-EXPECT_VERSION=<version> bash pull-beta-check.sh <user>@<host> [ssh-port]
+EXPECT_VERSION=<version> OUT_DIR=<folder> bash pull-beta-check.sh <user>@<host> [ssh-port]
 ```
 
 It asks for your SSH login once, sudo on the device if it needs it, and
 optionally the dashboard password (adds plugin health and agent state; press
-Enter to skip). Attach the resulting `.tar.gz` to the issue, or hand it to
-Claude, after reading it.
+Enter to skip). `OUT_DIR` (default: the current folder) must be outside any git
+checkout, so the report can't be committed; `.gitignore` and the real-data
+check also refuse `kestrel-beta-check-*` as a backstop.
+
+The report is private: read it, then hand it to Claude for review (a folder
+outside the repo that Claude's session can read is simplest). Don't attach it
+to the public issue; the review posts only the results there.
 
 The report has one `CHECK <id> <result>` line per checklist item the script can
 judge (`PASS`, `FAIL`, `INFO`, `SKIP`, `MANUAL`), the readings behind them, and
@@ -82,3 +87,5 @@ these. They come on top of the [Non-negotiable rules](../../CLAUDE.md#non-negoti
   name with a space, a fake secret) and confirm everything is masked.
 - These checks run off the device only, so the first run on a real device is
   still its first real test; say so when attaching it.
+- The report is a single plain text file, never an archive: an archive made
+  on the operator's computer records local owner names and OS metadata.

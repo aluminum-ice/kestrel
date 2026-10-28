@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # pull-beta-check.sh - collect the on-device evidence for a Kestrel beta's
-# checklist into a local .tar.gz you can review and share. Keep
+# checklist into one local text report you can review. Keep
 # beta-check-device.sh (the part that runs on the device) in the same folder.
 # The process is in CLAUDE.md, "Verifying a beta"; the rules for changing
 # these scripts are in tools/beta-check/README.md.
@@ -15,6 +15,9 @@
 #
 # Env overrides:
 #   SSH_KEY          identity file to use (default: your ssh default)
+#   OUT_DIR          where to save the report (default: the current folder).
+#                    It must not be inside a git checkout, so a report can't
+#                    be committed by accident.
 #   EXPECT_VERSION   the version the device should be on (e.g. 1.0.6-beta.1);
 #                    without it the version is reported but not judged
 #
@@ -77,7 +80,18 @@ cleanup() {
 trap cleanup EXIT
 
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-out="kestrel-beta-check-$stamp"
+out_dir=${OUT_DIR:-.}
+if [ ! -d "$out_dir" ]; then
+  echo "OUT_DIR $out_dir is not a folder" >&2
+  exit 2
+fi
+out_dir=$(cd "$out_dir" && pwd)
+if command -v git >/dev/null 2>&1 \
+    && git -C "$out_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "$out_dir is inside a git checkout; set OUT_DIR to a folder outside it" >&2
+  exit 2
+fi
+out=$out_dir/kestrel-beta-check-$stamp.txt
 if [ ! -r "$(dirname "$0")/beta-check-device.sh" ]; then
   echo "beta-check-device.sh must be in the same folder as this script" >&2
   exit 2
@@ -98,24 +112,20 @@ device_script=$here/beta-check-device.sh
 echo "Running the checks on the device (sudo will ask for your password if it needs it) ..."
 "${ssh_cmd[@]}" -t "$target" "sudo bash '$remote_dir/check.sh' '$remote_dir' '$expect'"
 
-mkdir -p "$out"
-"${ssh_cmd[@]}" "$target" "cat '$remote_dir/report.txt'" > "$out/report.txt"
-if [ ! -s "$out/report.txt" ]; then
-  echo "the device produced no report" >&2
-  exit 1
-fi
+# One plain text file: no archive, so no local owner names or OS metadata
+# (an archive made on a Mac records both) can travel with it.
+umask 077
 {
   echo "collected: $stamp"
   echo "target:    <user>@<host> (port <port>)"
   echo "expected:  ${expect:-(not given)}"
-  echo "contents:"
-  echo "  report.txt  CHECK lines (PASS/FAIL/INFO/SKIP/MANUAL) for the beta"
-  echo "              checklist, the supporting readings, and a by-hand list."
-  echo "              Redacted on the device before it was copied here."
-} > "$out/MANIFEST.txt"
-
-bundle="$out.tar.gz"
-tar -czf "$bundle" "$out"
-rm -rf "$out"
-echo "Done. Review, then share this bundle:"
-echo "  $(pwd)/$bundle"
+  echo "CHECK lines (PASS/FAIL/INFO/SKIP/MANUAL) for the beta checklist, the"
+  echo "readings behind them and a by-hand list. Redacted on the device."
+  "${ssh_cmd[@]}" "$target" "cat '$remote_dir/report.txt'"
+} > "$out"
+if ! grep -q '^CHECK ' "$out"; then
+  echo "the device produced no report" >&2
+  exit 1
+fi
+echo "Done. Review, then hand over this report (it is private; don't post it):"
+echo "  $out"

@@ -84,9 +84,12 @@ def test_forbidden_names():
     for path in ("captures/Cafe.hc22000", "x/dump.pcapng", "track.gpx",
                  "agent/model-recurrentppo.zip", "secrets/.env", "home/.ssh/id_ed25519",
                  "device-diagnostics-20261027T101500Z/journal.txt",
-                 "capture-health-20261027T101500Z/status.txt", "store/capture-seen.json"):
+                 "capture-health-20261027T101500Z/status.txt", "store/capture-seen.json",
+                 "kestrel-beta-check-20261027T101500Z.txt",
+                 "kestrel-beta-check-20261027T101500Z/report.txt"):
         assert rdc.check_name(path), path
     for path in ("builder/extra/files/scripts/pull-device-diagnostics.sh",
+                 "tools/beta-check/pull-beta-check.sh", "tools/beta-check/beta-check-device.sh",
                  "docs/images/web-ui.png", "assets/branding/kestrel.svg",
                  "home/.ssh/id_ed25519.pub", "builder/extra/files/config.toml"):
         assert rdc.check_name(path) is None, path

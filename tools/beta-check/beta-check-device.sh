@@ -324,7 +324,7 @@ else
 fi
 
 echo "environment readout (capture-status.json, read as the device user):"
-as_dev /usr/bin/python3 -I - <<'PY' 2>&1 | sed 's/^/  /'
+envstat=$(as_dev /usr/bin/python3 -I - <<'PY' 2>&1
 import json, time
 try:
     s = json.load(open("/var/lib/kestrel/capture/capture-status.json"))
@@ -337,10 +337,27 @@ else:
     for k in ("updated_at", "data_ts"):
         v = s.get(k)
         print("%s: %s" % (k, "%d s ago" % (now - v) if isinstance(v, (int, float)) else v))
+    if isinstance(s.get("radios_recent"), int) and isinstance(s.get("data_ts"), (int, float)) \
+            and now - s["data_ts"] < 900:
+        print("ENV fresh")
 PY
+)
+printf '%s\n' "$envstat" | grep -v '^ENV ' | sed 's/^/  /'
 echo "kismet DB read test as the device user (counts only):"
 envres=$(as_dev /usr/bin/python3 -I - <<'PY' 2>&1
-import glob, os, sqlite3
+import glob, os, sqlite3, time
+
+
+def read_once(db):
+    conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=2)
+    try:
+        ts = conn.execute("SELECT MAX(ts_sec) FROM packets").fetchone()[0]
+        n = conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
+    finally:
+        conn.close()
+    return n, ts
+
+
 dbs = sorted(glob.glob("/var/lib/kestrel/capture-run/*.kismet"), key=os.path.getmtime)
 if not dbs:
     print("RESULT none no kismet DB in capture-run")
@@ -348,21 +365,38 @@ else:
     db = dbs[-1]
     side = [s for s in ("-wal", "-shm", "-journal") if os.path.exists(db + s)]
     print("db mode %o, sidecars %s" % (os.stat(db).st_mode & 0o777, side or "none"))
-    try:
-        conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=2)
-        ts = conn.execute("SELECT MAX(ts_sec) FROM packets").fetchone()[0]
-        n = conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
-        conn.close()
-        print("RESULT ok packets=%s newest_ts=%s" % (n, ts))
-    except sqlite3.Error as exc:
-        print("RESULT error %s: %s" % (type(exc).__name__, exc))
+    # AngryOxide holds the write lock while it commits, so a busy or locked DB
+    # is retried with backoff, as the collector does. Only another error, or a
+    # lock that outlasts every try, is a failure.
+    result = None
+    for attempt in range(8):
+        try:
+            n, ts = read_once(db)
+            result = "RESULT ok packets=%s newest_ts=%s (try %d)" % (n, ts, attempt + 1)
+            break
+        except sqlite3.OperationalError as exc:
+            result = "RESULT error %s: %s" % (type(exc).__name__, exc)
+            msg = str(exc).lower()
+            if "lock" not in msg and "busy" not in msg:
+                break
+            time.sleep(0.5 * (attempt + 1))
+        except sqlite3.Error as exc:
+            result = "RESULT error %s: %s" % (type(exc).__name__, exc)
+            break
+    print(result)
 PY
 )
 printf '%s\n' "$envres" | sed 's/^/  /'
 case "$envres" in
-  *"RESULT ok"*) check 3.5 PASS "device user can read the kismet DB" "Environment card should show a count; confirm on the page" ;;
-  *"RESULT error"*) check 3.5 FAIL "device user can read the kismet DB" "$(printf '%s\n' "$envres" | grep RESULT)" ;;
-  *) check 3.5 SKIP "device user can read the kismet DB" "no kismet DB (capture not running?)" ;;
+  *"RESULT ok"*) check 3.5 PASS "device user can read the kismet DB" "read test succeeded" ;;
+  *)
+    if printf '%s\n' "$envstat" | grep -q '^ENV fresh'; then
+      check 3.5 PASS "device user can read the kismet DB" "the collector's own reading is fresh (read test: $(printf '%s\n' "$envres" | grep RESULT))"
+    elif printf '%s\n' "$envres" | grep -q 'RESULT error'; then
+      check 3.5 FAIL "device user can read the kismet DB" "$(printf '%s\n' "$envres" | grep RESULT); no fresh collector reading"
+    else
+      check 3.5 SKIP "device user can read the kismet DB" "no kismet DB (capture not running?)"
+    fi ;;
 esac
 # Counts only: the capture journal can carry network names, so no lines leave.
 echo "collector/launcher error counts this boot (kestrel-capture journal):"
@@ -688,12 +722,16 @@ def walk(node):
                 subs.append((v, "<host>"))
 walk(cfg)
 try:
-    subs.append((socket.gethostname(), "<hostname>"))
+    hostname = socket.gethostname()
 except Exception:
-    pass
+    hostname = ""
 for value, tag in sorted(subs, key=lambda s: -len(s[0])):
     if value:
         text = text.replace(value, tag)
+# The hostname often matches a path or project name (/var/lib/<name>), so only a
+# standalone token is masked, never part of a path, URL or file name.
+if hostname:
+    text = re.sub(r"(?<![\w./-])%s(?![\w./-])" % re.escape(hostname), "<hostname>", text)
 for name in set(sys.argv[2:]):
     if name and name != "root":
         text = re.sub(r"(?<![\w-])%s(?![\w-])" % re.escape(name), "<user>", text)
@@ -701,7 +739,10 @@ text = re.sub(r"\b([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b", "<mac>", text)
 text = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "<ipv4>", text)
 text = re.sub(r"(?<![\w:])(?:[0-9A-Fa-f]{1,4}:)*[0-9A-Fa-f]{0,4}::(?:[0-9A-Fa-f]{1,4}:)*[0-9A-Fa-f]{1,4}(?![\w:])", "<ipv6>", text)
 text = re.sub(r"\b(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}\b", "<ipv6>", text)
-text = re.sub(r"-?\b\d{1,3}\.\d{4,}\b", "<coord>", text)
+# Coordinates: a "lat, lon" pair, or a number after a lat/lon/latitude/longitude
+# label. Other decimals (rewards, timings) are left alone.
+text = re.sub(r"-?\b\d{1,3}\.\d{4,}\s*,\s*-?\d{1,3}\.\d{4,}\b", "<coord>, <coord>", text)
+text = re.sub(r"(?i)\b(lat|lon|lng|latitude|longitude)([^\w-]{1,4})-?\d{1,3}\.\d+", r"\1\2<coord>", text)
 text = re.sub(r"/var/lib/kestrel/capture/[^\n]*?\.(hc22000|pcapng|kismet)", r"<store>/<file>.\1", text)
 sys.stdout.write(text)
 PY
