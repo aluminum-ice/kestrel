@@ -135,10 +135,24 @@ can leave them alone.
 | `webhook_timeout_seconds` | whole number (`0` = off) | `30` | How long a plugin's own page or action may run before the browser gets a "still working" page instead of hanging; the plugin's work keeps going in the background. `0` waits forever. |
 | `auth` | `system` / `basic` / `token` / `none` | `system` | How the dashboard logs you in. `system` uses your device account (same as SSH). Set this with `web auth`, not by hand — a wrong value can lock you out. |
 | `username` | text | `""` | `system`: the account to check (default: the login user). `basic`: the web username. |
+| `show_passphrases` | `true` / `false` | `true` | Show a cracked network's passphrase in its card on the Captured networks page. Needs the web login on; off keeps the "cracked" badge and count but hides the passphrase (for screen-sharing). Takes effect immediately. |
 | `probe_url` | URL or empty | `""` | An explicit address to test for "online". Empty uses the built-in check. |
 
 The dashboard `password` and `token` are secrets set by `web auth`; they are not
 shown here and shouldn't be typed in by hand.
+
+## `[cracked]` — imported passphrases
+
+Known passphrases for captured networks are parsed from any `*.potfile` dropped
+in the cracked store (`<store>/cracked/`): the wpa-sec plugin, a web upload, a
+CLI import, or a file copied in over SSH. The device never cracks anything — it
+only displays results you produced elsewhere, for networks you are authorized to
+test. These caps bound an upload or import; both are read live (no restart).
+
+| Key | Values | Default | What it does |
+| --- | --- | --- | --- |
+| `max_import_mb` | whole number ≥ 1 | `2` | Largest potfile an import accepts, in MB. |
+| `max_import_lines` | whole number ≥ 1 | `50000` | Most lines read from an imported potfile; any beyond this are skipped. |
 
 ## `[plugins.*]` — the plugins
 

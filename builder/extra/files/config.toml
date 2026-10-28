@@ -203,6 +203,20 @@ probe_url = ""
 # page returns a timeout response instead of the browser hanging on a stuck
 # plugin; the call is left to finish in the background. 0 disables.
 webhook_timeout_seconds = 30
+# Show a cracked network's passphrase in its card on the Captured networks page.
+# The passphrase shows only with the web login on (auth != none) AND this true;
+# the "cracked" badge and the "cracked N of M" count always show regardless. Set
+# it false for screen-sharing or shoulder-surfing -- the badge and count stay,
+# the passphrase is replaced by a muted "hidden" note. Read live (no restart).
+show_passphrases = true
+
+# Known passphrases for captured networks, parsed from any *.potfile dropped in
+# <store>/cracked/ -- the wpa-sec plugin, a web upload, a CLI import, or a file
+# copied in over SSH. Display-only: the device never cracks anything. These caps
+# bound an upload/import; they are read live (no restart).
+[cracked]
+max_import_mb = 2           # largest potfile an import accepts, in MB
+max_import_lines = 50000    # most lines read from an imported potfile (rest skipped)
 
 # All reference plugins ship DISABLED. `kestrel plugins enable <name>`
 # shows the plugin's capabilities, takes the authorized-use acknowledgment for

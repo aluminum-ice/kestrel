@@ -137,8 +137,16 @@ CONFIG_SETTABLE = {
     "daemon.capture_poll_seconds": {"type": "int", "min": 1},
     "daemon.connectivity_poll_seconds": {"type": "int", "min": 1},
     "web.refresh_seconds": {"type": "int", "min": 0},
+    "web.show_passphrases": {"type": "bool"},
     "web.probe_url": {"type": "str", "maxlen": 256},
+    # cracked networks (import caps; read live, so no restart)
+    "cracked.max_import_mb": {"type": "int", "min": 1},
+    "cracked.max_import_lines": {"type": "int", "min": 1},
 }
+
+# [web] keys the dashboard reads live on each render, so a change takes effect
+# without bouncing the plugin host (unlike every other [web]/[daemon] key).
+_WEB_LIVE_KEYS = frozenset({"show_passphrases"})
 
 
 def load_config():
@@ -940,11 +948,15 @@ def _config_literal(spec, value):
     raise ValueError("can't be edited from the web page")
 
 
-def _config_restart(table):
-    """What restarting a change to ``table`` needs: ``(restart_daemon, hint)``.
-    A [daemon]/[web] change needs the plugin host restarted (done after the
-    reply, like a plugin change); capture/agent changes are picked up when those
-    services next (re)start, so the page just says so and nothing is bounced."""
+def _config_restart(table, key=""):
+    """What restarting a change to ``table``/``key`` needs: ``(restart_daemon,
+    hint)``. A [daemon]/[web] change needs the plugin host restarted (done after
+    the reply, like a plugin change); capture/agent changes are picked up when
+    those services next (re)start, so the page just says so and nothing is
+    bounced. A handful of [web] display keys are read live on each render, so
+    they take effect without a restart."""
+    if table == "web" and key in _WEB_LIVE_KEYS:
+        return False, "Saved."
     if table in ("daemon", "web"):
         return True, "The dashboard will restart to apply this."
     if table == "capture" or table.startswith("capture."):
@@ -982,7 +994,7 @@ def apply_config_set(change):
         cs.set_value(CONFIG, table, key, literal)
     except (OSError, cs.ConfigSetError) as exc:
         return {"ok": False, "error": "could not write the config: %s" % exc}
-    restart, hint = _config_restart(table)
+    restart, hint = _config_restart(table, key)
     sys.stderr.write("plugins-ctl apply: config-set %s.%s via web\n" % (table, key))
     return {"ok": True, "changed": ["%s.%s" % (table, key)],
             "restart": restart, "restart_hint": hint}
