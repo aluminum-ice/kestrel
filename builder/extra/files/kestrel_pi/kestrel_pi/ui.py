@@ -62,18 +62,25 @@ class UIState:
     # Per-management-interface link state (``{"bnep0": bool, "wlan0": bool}``),
     # so a display can show BT PAN and Wi-Fi separately. ``None`` when unknown.
     paths: dict | None = None
-    # Captured-handshake counters: ``capture_total`` is the lifetime count of
-    # hashlines in the store; ``capture_session`` is those captured since this
-    # daemon started. ``None`` when not provided.
+    # The three capture counts the UI speaks in plain English ("N handshakes
+    # from M access points across K networks"), all from the daemon's
+    # capture_counts() so the face agrees with the dashboard. ``capture_total``
+    # is the lifetime handshake (hashline) count; ``capture_session`` is those
+    # captured since this daemon started. ``None`` when not provided.
     capture_total: int | None = None
     capture_session: int | None = None
     # Seconds the daemon has been running (for an "uptime" readout). ``None``
     # when not provided.
     uptime: float | None = None
-    # Distinct captured access points (unique BSSIDs): ``aps_total`` lifetime in
-    # the store, ``aps_session`` since this daemon started. ``None`` when absent.
+    # Distinct captured access points, i.e. distinct **radios (BSSIDs)**: a radio
+    # seen under more than one name counts once. ``aps_total`` is lifetime in the
+    # store; ``aps_session`` is distinct BSSIDs since this daemon started (used by
+    # the capture card, not the face). ``None`` when absent.
     aps_total: int | None = None
     aps_session: int | None = None
+    # Distinct captured networks (unique ESSIDs / names) lifetime in the store.
+    # ``None`` when absent.
+    networks_total: int | None = None
     # A short label of the channel plan capture is pinned to this window (e.g.
     # ``"1,6,11"``, ``"2.4G"``, ``"sweep"``, ``"hunt"``), or ``None`` when
     # capture is not running / unknown. Honest: it is the plan, not a live tune.

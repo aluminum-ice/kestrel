@@ -372,3 +372,27 @@ def test_fresh_config_reparses_only_when_the_file_changes(tmp_path, monkeypatch)
     os.replace(tmp, cfg)
     assert d._fresh_config()["capture"]["enabled"] is True
     assert len(parses) == 2
+
+
+# A radio (BSSID) advertising two names, plus a second radio, so distinct
+# radios (2) and the old ESSID+BSSID pair count (3) diverge.
+_WPA = "WPA*02*0123456789abcdef0123456789abcdef*%s*112233445566*%s*0*0*00"
+_R1_HOME = _WPA % ("aabbccddeeff", "486f6d65")       # aa:..:ff "Home"
+_R1_GUEST = _WPA % ("aabbccddeeff", "4775657374")    # aa:..:ff "Guest"
+_R2_CAFE = _WPA % ("111111111111", "43616665")       # 11:..:11 "Cafe"
+
+
+def test_ui_state_counts_match_capture_counts(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[web]\nenabled = false\n")
+    (tmp_path / "store.hc22000").write_text(
+        "\n".join([_R1_HOME, _R1_GUEST, _R2_CAFE]) + "\n")
+    d = daemon_mod.Daemon(config_path=str(cfg), capture_store=str(tmp_path))
+    state = d._ui_state()
+    # Plain English: 3 handshakes from 2 access points across 3 networks.
+    assert state.capture_total == 3
+    assert state.aps_total == 2          # distinct radios, not ESSID+BSSID pairs
+    assert state.networks_total == 3     # Home, Guest, Cafe
+    # The face reads exactly what the dashboard navcard reads.
+    assert d.capture.capture_counts() == {
+        "handshakes": 3, "access_points": 2, "networks": 3}

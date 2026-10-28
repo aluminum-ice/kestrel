@@ -116,28 +116,46 @@ def test_captured_networks_empty_store(tmp_path):
 NO_BSSID = "WPA*02*0123456789abcdef0123456789abcdef**112233445566*486f6d65*0*0*00"
 
 
-def test_captured_access_points_one_row_per_bssid(tmp_path):
-    # Same store as the by-network test, viewed by AP: Home splits into its two
-    # BSSIDs (2 + 1 handshakes), Cafe and the hidden PMKID AP are one each.
+def test_captured_access_points_one_row_per_radio(tmp_path):
+    # An access point is a radio (BSSID): Home spans two BSSIDs (2 + 1
+    # handshakes), Cafe and the hidden PMKID AP are one radio each.
     (tmp_path / "Home.hc22000").write_text("\n".join([EAPOL, HOME_A2, HOME_B]) + "\n")
     (tmp_path / "Other.hc22000").write_text("\n".join([CAFE, PMKID]) + "\n")
 
     aps = CaptureInterface(str(tmp_path)).captured_access_points()
-    # One entry per distinct ESSID+BSSID; no handshake lost.
-    assert sum(a["handshakes"] for a in aps) == 5
-    by_key = {(a["essid"], a["bssid"]): a["handshakes"] for a in aps}
-    assert by_key[("Home", "AA:BB:CC:DD:EE:FF")] == 2
-    assert by_key[("Home", "AA:BB:CC:DD:EE:02")] == 1
-    assert by_key[("Cafe", "11:11:11:11:11:11")] == 1
-    # A hidden ESSID is NOT merged -- it keeps its own BSSID row.
-    assert by_key[("", "AA:BB:CC:DD:EE:01")] == 1
-    # Sorted by ESSID (hidden last) then BSSID.
-    assert [(a["essid"], a["bssid"]) for a in aps] == [
-        ("Cafe", "11:11:11:11:11:11"),
-        ("Home", "AA:BB:CC:DD:EE:02"),
-        ("Home", "AA:BB:CC:DD:EE:FF"),
-        ("", "AA:BB:CC:DD:EE:01"),
+    assert sum(a["handshakes"] for a in aps) == 5          # no handshake lost
+    by_bssid = {a["bssid"]: a for a in aps}
+    assert by_bssid["AA:BB:CC:DD:EE:FF"]["essids"] == ["Home"]
+    assert by_bssid["AA:BB:CC:DD:EE:FF"]["handshakes"] == 2
+    assert by_bssid["AA:BB:CC:DD:EE:02"]["essids"] == ["Home"]
+    assert by_bssid["AA:BB:CC:DD:EE:02"]["handshakes"] == 1
+    assert by_bssid["11:11:11:11:11:11"]["essids"] == ["Cafe"]
+    # A radio only ever seen hidden carries no name and sorts last.
+    assert by_bssid["AA:BB:CC:DD:EE:01"]["essids"] == []
+    assert [a["bssid"] for a in aps] == [
+        "11:11:11:11:11:11",      # Cafe
+        "AA:BB:CC:DD:EE:02",      # Home
+        "AA:BB:CC:DD:EE:FF",      # Home
+        "AA:BB:CC:DD:EE:01",      # hidden -> last
     ]
+
+
+# One radio (BSSID) advertising two names: hidden "Home" and a "Guest" SSID,
+# both on aabbccddeeff.
+HOME_GUEST = "WPA*02*0123456789abcdef0123456789abcdef*aabbccddeeff*112233445577*4775657374*0*0*00"
+
+
+def test_captured_access_points_merges_names_for_one_radio(tmp_path):
+    # The same radio seen under two names is ONE access point, listing both.
+    (tmp_path / "Home.hc22000").write_text("\n".join([EAPOL, HOME_GUEST]) + "\n")
+    aps = CaptureInterface(str(tmp_path)).captured_access_points()
+    assert len(aps) == 1
+    assert aps[0]["bssid"] == "AA:BB:CC:DD:EE:FF"
+    assert aps[0]["essids"] == ["Guest", "Home"]           # sorted, case-insensitive
+    assert aps[0]["handshakes"] == 2
+    # ... and it counts as one access point across two networks.
+    counts = CaptureInterface(str(tmp_path)).capture_counts()
+    assert counts == {"handshakes": 2, "access_points": 1, "networks": 2}
 
 
 def test_captured_access_points_folds_missing_bssid(tmp_path):
@@ -145,7 +163,7 @@ def test_captured_access_points_folds_missing_bssid(tmp_path):
     (tmp_path / "Home.hc22000").write_text("\n".join([NO_BSSID, NO_BSSID.replace(
         "112233445566", "112233445599")]) + "\n")
     aps = CaptureInterface(str(tmp_path)).captured_access_points()
-    assert aps == [{"essid": "", "bssid": "", "handshakes": 2, "last_seen": None}]
+    assert aps == [{"bssid": "", "essids": [], "handshakes": 2, "last_seen": None}]
 
 
 def _write_seen(tmp_path, aps):
@@ -157,10 +175,10 @@ def test_last_seen_comes_from_the_seen_index(tmp_path):
     (tmp_path / "Home.hc22000").write_text("\n".join([EAPOL, HOME_B]) + "\n")
     _write_seen(tmp_path, {"AA:BB:CC:DD:EE:FF": {"first": 10, "last": 100},
                            "AA:BB:CC:DD:EE:02": {"first": 5, "last": 50}})
-    aps = {(a["essid"], a["bssid"]): a["last_seen"]
+    aps = {a["bssid"]: a["last_seen"]
            for a in CaptureInterface(str(tmp_path)).captured_access_points()}
-    assert aps[("Home", "AA:BB:CC:DD:EE:FF")] == 100
-    assert aps[("Home", "AA:BB:CC:DD:EE:02")] == 50
+    assert aps["AA:BB:CC:DD:EE:FF"] == 100
+    assert aps["AA:BB:CC:DD:EE:02"] == 50
     # The network's last_seen is the newest across its APs.
     net = {n["essid"]: n["last_seen"]
            for n in CaptureInterface(str(tmp_path)).captured_networks()}
@@ -181,7 +199,7 @@ def test_last_seen_none_when_no_index_and_mtime_unknown(tmp_path):
     # The unknown-BSSID fold row has no AP to date.
     (tmp_path / "Home.hc22000").write_text(NO_BSSID + "\n")
     aps = CaptureInterface(str(tmp_path)).captured_access_points()
-    assert aps == [{"essid": "", "bssid": "", "handshakes": 1, "last_seen": None}]
+    assert aps == [{"bssid": "", "essids": [], "handshakes": 1, "last_seen": None}]
 
 
 def test_seen_index_wins_over_mtime(tmp_path):
@@ -193,14 +211,21 @@ def test_seen_index_wins_over_mtime(tmp_path):
     assert aps[0]["last_seen"] == 2_000_000   # the stamp, not the mtime
 
 
-def test_capture_counts_networks_and_access_points(tmp_path):
+def test_capture_counts_handshakes_access_points_networks(tmp_path):
     (tmp_path / "Home.hc22000").write_text("\n".join([EAPOL, HOME_A2, HOME_B]) + "\n")
     (tmp_path / "Other.hc22000").write_text("\n".join([CAFE, PMKID]) + "\n")
     counts = CaptureInterface(str(tmp_path)).capture_counts()
-    # 3 distinct ESSIDs (Home, Cafe, hidden); 4 distinct ESSID+BSSID APs.
-    assert counts == {"networks": 3, "access_points": 4}
+    # 5 handshakes; 4 distinct radios (BSSIDs); 3 distinct names (Home, Cafe,
+    # hidden). No BSSID here spans two names, so access_points == the old pair
+    # count; the merge test above is where the two definitions diverge.
+    assert counts == {"handshakes": 5, "access_points": 4, "networks": 3}
     assert CaptureInterface(str(tmp_path / "empty")).capture_counts() == {
-        "networks": 0, "access_points": 0}
+        "handshakes": 0, "access_points": 0, "networks": 0}
+    # The headline AP count equals the by-AP row count (radios), the navcard
+    # and the by-AP page always agreeing.
+    ap_rows = [a for a in CaptureInterface(str(tmp_path)).captured_access_points()
+               if a["bssid"]]
+    assert len(ap_rows) == counts["access_points"]
 
 
 def test_hashline_count_sums_nonempty_lines(tmp_path):

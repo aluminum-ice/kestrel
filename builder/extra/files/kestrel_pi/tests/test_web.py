@@ -23,7 +23,8 @@ def _status(plugins):
         "epoch": 2,
         "connectivity": {"online": False, "paths": ["wlan0"]},
         "capture": {"store": "/var/lib/kestrel/capture", "hashline_files": 47,
-                    "networks": 12, "access_points": 19},
+                    "networks": 12, "access_points": 19,
+                    "handshakes": 240},
         "plugins": plugins,
     }
 
@@ -1549,7 +1550,9 @@ def test_networks_search_form_carries_the_token(monkeypatch, tmp_path):
 
 
 def _aps(*pairs):
-    return [{"essid": e, "bssid": b, "handshakes": 1} for e, b in pairs]
+    # One row per radio (BSSID), carrying the name(s) it advertised.
+    return [{"bssid": b, "essids": ([e] if e else []), "handshakes": 1}
+            for e, b in pairs]
 
 
 def test_networks_default_view_follows_per_ap_mode(monkeypatch, tmp_path):
@@ -1560,9 +1563,9 @@ def test_networks_default_view_follows_per_ap_mode(monkeypatch, tmp_path):
                            ("poswifi", "AA:BB:CC:00:00:02")))
     body = client.get("/networks").get_data(as_text=True)
     assert "Captured access points" in body
-    assert "<th>BSSID</th>" in body
+    assert "<th>access point</th>" in body and "<th>network(s)</th>" in body
     assert "AA:BB:CC:00:00:01" in body and "AA:BB:CC:00:00:02" in body
-    # The reused name shows once per BSSID, never merged.
+    # Two radios sharing a name are two access points (radios), not merged.
     assert "2 access point(s) captured" in body
 
 
@@ -1571,7 +1574,7 @@ def test_networks_default_view_follows_per_ssid_mode(monkeypatch, tmp_path):
                         output_mode="per-ssid", networks=_nets("HomeWiFi"))
     body = client.get("/networks").get_data(as_text=True)
     assert "Captured networks" in body
-    assert "<th>bssids</th>" in body
+    assert "<th>access points</th>" in body
 
 
 def test_networks_view_toggle_overrides_mode(monkeypatch, tmp_path):
@@ -1625,7 +1628,8 @@ def test_networks_ap_unknown_bssid_row(monkeypatch, tmp_path):
 
 def test_dashboard_navcard_shows_network_and_ap_counts(monkeypatch, tmp_path):
     html = web._render_status(_status([]))
-    assert "12 network(s)" in html and "19 AP(s)" in html
+    assert ("240 handshake(s)" in html and "19 access point(s)" in html
+            and "12 network(s)" in html)
 
 
 def test_networks_has_last_seen_column_and_sort_toggle(monkeypatch, tmp_path):

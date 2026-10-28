@@ -278,43 +278,72 @@ class CaptureInterface:
         return out
 
     def captured_access_points(self):
-        """One entry per distinct access point (ESSID+BSSID) across the store.
+        """One entry per distinct access point -- that is, per **radio (BSSID)**
+        -- across the store.
 
-        Returns a list of ``{"essid", "bssid", "handshakes", "last_seen"}``
-        sorted by ESSID (case-insensitive; empty/hidden last) then BSSID, where
-        ``handshakes`` is that AP's own count and ``last_seen`` its newest
-        capture epoch (or ``None``). A hidden/empty ESSID still yields one entry
-        per BSSID -- the APs stay distinct, which is the whole point of keying on
-        the BSSID. Handshakes whose BSSID could not be parsed (a corrupt line)
-        are folded into a single trailing entry with an empty ``bssid`` (the page
-        renders it as the "(unknown BSSID)" row). This is the by-access-point
-        view; :meth:`captured_networks` is the by-network view."""
+        Returns a list of ``{"bssid", "essids", "handshakes", "last_seen"}``
+        where ``essids`` is the sorted list of distinct names that radio was seen
+        advertising (so a radio captured hidden and later named lists both names
+        and is still ONE access point), ``handshakes`` is its total across those
+        names and ``last_seen`` its newest capture epoch (or ``None``). Sorted by
+        the first name (case-insensitive; a radio only ever seen hidden sorts
+        last) then BSSID. Handshakes whose BSSID could not be parsed (a corrupt
+        line) are folded into a single trailing entry with an empty ``bssid``
+        (the page renders it as the "(unknown BSSID)" row); it is a handshake but
+        not an access point, so it is excluded from the access-point count. This
+        is the by-access-point view; :meth:`captured_networks` is the by-network
+        view."""
         nets, mtime_by_bssid = self._parse_store()
         seen = self._read_seen()
-        out = []
+        by_bssid = {}   # bssid -> {"essids": set, "handshakes": int}
         unknown = 0
         for essid, data in nets.items():
             for bssid, count in data["bssids"].items():
-                out.append({"essid": essid, "bssid": bssid, "handshakes": count,
-                            "last_seen": self._last_seen(bssid, seen,
-                                                         mtime_by_bssid)})
+                slot = by_bssid.get(bssid)
+                if slot is None:
+                    slot = by_bssid[bssid] = {"essids": set(), "handshakes": 0}
+                if essid:
+                    slot["essids"].add(essid)
+                slot["handshakes"] += count
             unknown += data["no_bssid"]
-        out.sort(key=lambda ap: (ap["essid"] == "", ap["essid"].lower(),
+        out = []
+        for bssid, slot in by_bssid.items():
+            out.append({
+                "bssid": bssid,
+                "essids": sorted(slot["essids"], key=str.lower),
+                "handshakes": slot["handshakes"],
+                "last_seen": self._last_seen(bssid, seen, mtime_by_bssid),
+            })
+        out.sort(key=lambda ap: (not ap["essids"],
+                                 ap["essids"][0].lower() if ap["essids"] else "",
                                  ap["bssid"]))
         if unknown:
-            out.append({"essid": "", "bssid": "", "handshakes": unknown,
+            out.append({"bssid": "", "essids": [], "handshakes": unknown,
                         "last_seen": None})
         return out
 
     def capture_counts(self):
-        """``{"networks", "access_points"}`` from the cached parse: the number
-        of distinct ESSIDs and of distinct ESSID+BSSID APs (the row counts of
-        the two /networks views, so the dashboard navcard and the page agree).
-        The "(unknown BSSID)" fold is not counted as an access point."""
+        """``{"handshakes", "access_points", "networks"}`` from the cached parse,
+        the three numbers the whole UI speaks in plain English ("N handshakes
+        from M access points across K networks"):
+
+        - ``handshakes``: total captured hashlines across the store.
+        - ``access_points``: distinct **radios** (BSSIDs). A radio seen under
+          more than one name (hidden, then named) counts once.
+        - ``networks``: distinct network names (ESSIDs).
+
+        One definition each, used by the dashboard navcard, the /networks page
+        and (via the daemon) the e-ink face, so they always agree. The
+        "(unknown BSSID)" fold is a handshake but not an access point, so it adds
+        to ``handshakes`` and not to ``access_points``."""
         nets, _mtime = self._parse_store()
+        bssids = set()
+        for data in nets.values():
+            bssids.update(data["bssids"])
         return {
+            "handshakes": sum(d["handshakes"] for d in nets.values()),
+            "access_points": len(bssids),
             "networks": len(nets),
-            "access_points": sum(len(d["bssids"]) for d in nets.values()),
         }
 
     def environment(self, stale_after=180):
