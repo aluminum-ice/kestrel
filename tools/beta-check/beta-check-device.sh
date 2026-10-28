@@ -45,7 +45,7 @@ LOGIN_USER=${SUDO_USER:-root}
 VENV_PY=$DEV_HOME/.venv/bin/python
 SCRIPTS_DIR=/usr/local/share/kestrel/scripts
 # Shared paths: not every beta's checks use all of them.
-: "$CLI" "$CTL" "$AGENT_DIR" "$VENV_PY" "$SCRIPTS_DIR"
+: "$CLI" "$CTL" "$AGENT_DIR" "$VENV_PY" "$SCRIPTS_DIR" "$LEGACY_RUN"
 
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 work=$(mktemp -d /tmp/kbc.XXXXXX)          # root-only (0700)
@@ -85,7 +85,7 @@ echo "uptime:     $(uptime -p 2>/dev/null)"
 echo "python3:    $(/usr/bin/python3 -V 2>&1)"
 echo "web auth:   $web_auth"
 
-# ================================================================ checks for 1.0.6-beta.2
+# ================================================================ checks for 1.0.6-beta.3
 # The ids are the item numbers of this beta's checklist issue.
 
 # ---------------------------------------------------------------- 1. the update
@@ -150,76 +150,115 @@ else
   check 1.5 SKIP "settings unchanged by the update" "no in-place update recorded"
 fi
 
-# ---------------------------------------------------------------- 2. store hand-over (#24)
-sec "2. store hand-over to the collector"
+# ---------------------------------------------------------------- 2. capture relaunches (#27)
+sec "2. capture relaunches and the in-range reading"
 cap_state=$(svc_active kestrel-capture.service)
 cap_since=$(systemctl show -p ActiveEnterTimestamp --value kestrel-capture.service 2>/dev/null)
-echo "capture enabled=$(cfg capture.enabled false) service=$cap_state since=${cap_since:-?}"
+cap_since_s=$(date -d "$cap_since" +%s 2>/dev/null || echo 0)
+cap_age=$(( $(date +%s) - cap_since_s ))
+echo "capture enabled=$(cfg capture.enabled false) service=$cap_state since=${cap_since:-?} (${cap_age}s)"
+echo "agent unit: active=$(svc_active kestrel-agent) policy=$(cfg agent.policy baseline) decision_seconds=$(cfg agent.decision_seconds 30)"
 # Counts only: the capture journal can carry network names, so no lines leave.
-capj=$(journalctl -b -q --no-pager -u kestrel-capture 2>/dev/null)
-nadopt=$(printf '%s\n' "$capj" | grep -c 'capture-collect: adopt:' || true)
-echo "hand-over lines this boot: $nadopt"
-printf '%s\n' "$capj" | grep 'capture-collect: adopt: handed' | tail -n 3 \
-  | sed -E 's/^.*(capture-collect: adopt: handed [0-9]+ file\(s\) and [0-9]+ folder\(s\) to the collector, skipped [0-9]+).*$/  \1/;t;d'
-capj=""
-if [ "$cap_state" = "active" ]; then
-  check 2.1 INFO "hand-over ran at capture start" "$nadopt hand-over line(s) this boot (none once nothing is left to hand over)"
+nre=$(journalctl -q --no-pager -u kestrel-capture --since "-30 min" 2>/dev/null \
+      | grep -c 'agent updated the scan plan' || true)
+if [ "$cap_state" != "active" ]; then
+  check 2.1 SKIP "relaunches for a new plan, last 30 min" "capture not running"
+elif [ "$cap_age" -lt 1800 ]; then
+  check 2.1 SKIP "relaunches for a new plan, last 30 min" "capture has run only ${cap_age}s; run again after 30 min ($nre so far)"
+elif [ "${nre:-0}" -lt 17 ]; then
+  check 2.1 PASS "relaunches for a new plan, last 30 min" "$nre (beta.2: 17)"
 else
-  check 2.1 SKIP "hand-over ran at capture start" "capture not running"
+  check 2.1 FAIL "relaunches for a new plan, last 30 min" "$nre (beta.2: 17)"
 fi
-nroot=$(find "$STORE" -mindepth 1 -maxdepth 5 ! -type l -user root 2>/dev/null | wc -l)
-nlink=$(find "$STORE" -mindepth 1 -maxdepth 5 -type l -user root 2>/dev/null | wc -l)
-if [ "$nroot" -eq 0 ]; then
-  check 2.2 PASS "no root-owned files or folders left in the store" "root-owned symlinks (never touched): $nlink"
+nk=$(find "$RUNDIR" -maxdepth 1 -type f -name '*.kismet' 2>/dev/null | wc -l)
+nnamed=$(find "$RUNDIR" -maxdepth 1 -type f -regextype posix-extended \
+         -regex '.*/kestrel-[0-9]+-[0-9]{6}[^/]*\.kismet' 2>/dev/null | wc -l)
+echo "kismet DBs in capture-run: $nk (per-launch names: $nnamed)"
+if [ "$cap_state" != "active" ]; then
+  check 2.2 SKIP "capture-run holds this run's DB and at most the previous one" "capture not running"
+elif [ "$nk" -ge 1 ] && [ "$nk" -le 2 ] && [ "$nnamed" -eq "$nk" ]; then
+  check 2.2 PASS "capture-run holds this run's DB and at most the previous one" "$nk DB(s), per-launch names"
 else
-  check 2.2 FAIL "no root-owned files or folders left in the store" "$nroot left"
+  check 2.2 FAIL "capture-run holds this run's DB and at most the previous one" "$nk DB(s), $nnamed with per-launch names"
 fi
-if [ "$cap_state" = "active" ] && [ -n "$cap_since" ]; then
-  pd=$(journalctl -q --no-pager -u kestrel-capture --since "$cap_since" 2>/dev/null | grep -c 'Permission denied' || true)
-  if [ "${pd:-0}" -eq 0 ]; then
-    check 2.3 PASS "no 'Permission denied' from the collector since capture started" ""
-  else
-    check 2.3 FAIL "no 'Permission denied' from the collector since capture started" "$pd line(s) (not shown)"
-  fi
-else
-  check 2.3 SKIP "no 'Permission denied' from the collector since capture started" "capture not running"
-fi
-if [ -d "$LEGACY_RUN" ]; then
-  lres=$(as_dev /usr/bin/python3 -I - <<'PY' 2>&1
-import glob
-names = glob.glob("/var/lib/kestrel/capture/.run/*.hc22000")
-bad = 0
-for name in names:
-    try:
-        with open(name, "rb") as handle:
-            handle.read(1)
-    except OSError:
-        bad += 1
-print("files=%d unreadable=%d" % (len(names), bad))
+echo "environment readout (capture-status.json, read as the device user):"
+envstat=$(as_dev /usr/bin/python3 -I - <<'PY' 2>&1
+import json, time
+try:
+    s = json.load(open("/var/lib/kestrel/capture/capture-status.json"))
+except Exception as exc:
+    print("unreadable: %s" % type(exc).__name__)
+else:
+    now = time.time()
+    for k in ("scanning", "radios_recent", "window_s"):
+        print("%s: %s" % (k, s.get(k)))
+    for k in ("updated_at", "data_ts"):
+        v = s.get(k)
+        print("%s: %s" % (k, "%d s ago" % (now - v) if isinstance(v, (int, float)) else v))
+    if isinstance(s.get("radios_recent"), int) and isinstance(s.get("data_ts"), (int, float)) \
+            and now - s["data_ts"] < 900:
+        print("ENV fresh")
 PY
 )
-  lown=$(stat -c '%U' "$LEGACY_RUN" 2>/dev/null)
-  if [ "$lown" = "$DEV_USER" ] && printf '%s' "$lres" | grep -q 'unreadable=0'; then
-    check 2.4 PASS "legacy .run owned and readable by the device user" "$lres (kept by design)"
+printf '%s\n' "$envstat" | grep -v '^ENV ' | sed 's/^/  /'
+if [ "$cap_state" != "active" ]; then
+  check 2.3 SKIP "Environment reading is fresh" "capture not running"
+elif [ "$cap_age" -lt 600 ]; then
+  check 2.3 SKIP "Environment reading is fresh" "capture has run only ${cap_age}s; run again after 10 min"
+elif printf '%s\n' "$envstat" | grep -q '^ENV fresh'; then
+  check 2.3 PASS "Environment reading is fresh" "the collector read packets within 15 min"
+else
+  check 2.3 FAIL "Environment reading is fresh" "no fresh reading after ${cap_age}s of capture"
+fi
+
+# ---------------------------------------------------------------- 3. carried over from beta.2
+sec "3. store, collector and run folder (carried over)"
+nroot=$(find "$STORE" -mindepth 1 -maxdepth 5 ! -type l -user root 2>/dev/null | wc -l)
+if [ "$nroot" -eq 0 ]; then
+  check 3.1 PASS "no root-owned files or folders in the store" ""
+else
+  check 3.1 FAIL "no root-owned files or folders in the store" "$nroot"
+fi
+if [ "$cap_state" = "active" ] && [ -n "$cap_since" ]; then
+  capj=$(journalctl -q --no-pager -u kestrel-capture --since "$cap_since" 2>/dev/null)
+  pd=$(printf '%s\n' "$capj" | grep -c 'Permission denied' || true)
+  nad=$(printf '%s\n' "$capj" | grep -c 'capture-collect: adopt:' || true)
+  capj=""
+  if [ "${pd:-0}" -eq 0 ]; then
+    check 3.2 PASS "no 'Permission denied' from the collector since capture started" ""
   else
-    check 2.4 FAIL "legacy .run owned and readable by the device user" "owner=$lown $lres"
+    check 3.2 FAIL "no 'Permission denied' from the collector since capture started" "$pd line(s) (not shown)"
+  fi
+  if [ "${nad:-0}" -eq 0 ]; then
+    check 3.3 PASS "the store hand-over stays quiet once done" "no hand-over line since this capture start"
+  else
+    check 3.3 INFO "the store hand-over stays quiet once done" "$nad hand-over line(s) since this capture start"
   fi
 else
-  check 2.4 PASS "legacy .run owned and readable by the device user" "no legacy folder"
+  check 3.2 SKIP "no 'Permission denied' from the collector since capture started" "capture not running"
+  check 3.3 SKIP "the store hand-over stays quiet once done" "capture not running"
 fi
-adir=$(cfg capture.housekeeping.archive_dir "$STORE/archive")
-if [ -d "$adir" ]; then
-  ns=$(find "$adir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
-  nnp=$(find "$adir" ! -type l ! -user "$DEV_USER" 2>/dev/null | wc -l)
-  if [ "$nnp" -eq 0 ]; then
-    check 2.5 PASS "archive sets owned by the device user" "$ns set(s)"
+if [ -d "$RUNDIR" ]; then
+  perm=$(stat -c '%U:%G %a' "$RUNDIR")
+  if [ "$perm" = "root:$DEV_USER 750" ]; then
+    check 3.4 PASS "capture-run ownership" "$perm"
   else
-    check 2.5 FAIL "archive sets owned by the device user" "$nnp entr(ies) not owned by the device user"
+    check 3.4 FAIL "capture-run ownership" "$perm (expected root:<device user> 750)"
   fi
 else
-  check 2.5 SKIP "archive sets owned by the device user" "no archive folder on this device"
+  check 3.4 SKIP "capture-run ownership" "folder not created yet"
 fi
-check 2.6 MANUAL "a new handshake from your own test AP is saved" "by hand"
+if [ "$cap_state" = "active" ]; then
+  npi=$(pgrep -c -u "$DEV_USER" -f capture-collect || true)
+  nrt=$(pgrep -c -u root -f capture-collect || true)
+  if [ "${npi:-0}" -ge 1 ] && [ "${nrt:-0}" -eq 0 ]; then
+    check 3.5 PASS "collector runs as the device user" "user=$npi root=$nrt"
+  else
+    check 3.5 FAIL "collector runs as the device user" "user=$npi root=$nrt"
+  fi
+else
+  check 3.5 SKIP "collector runs as the device user" "capture not running"
+fi
 
 # ---------------------------------------------------------------- config tests on a throwaway copy
 sec "config tests (throwaway copy of config.toml; commands blocked)"
@@ -267,18 +306,18 @@ def apply(change):
     except Exception as exc:
         return {"ok": False, "error": "exception %s: %s" % (type(exc).__name__, exc)}
 
-# 3.1: the page's raw-data cap lands in [capture.housekeeping], the table capture reads
+# 3.6: the page's raw-data cap lands in [capture.housekeeping], the table capture reads
 cur = read("capture.housekeeping.max_run_mb", 512)
 want = 511 if cur != 511 else 513
 r = apply({"target": "config-set", "table": "capture.housekeeping",
            "key": "max_run_mb", "value": want})
 r_old = apply({"target": "config-set", "table": "capture", "key": "max_run_mb", "value": want})
-check("3.1", bool(r.get("ok")) and read("capture.housekeeping.max_run_mb") == want
+check("3.6", bool(r.get("ok")) and read("capture.housekeeping.max_run_mb") == want
       and not r_old.get("ok"),
       "Settings saves max_run_mb under [capture.housekeeping]",
       "housekeeping ok=%s; old [capture] key accepted=%s" % (r.get("ok"), r_old.get("ok")))
 
-# 4.5: beta.1's root-helper refusals still hold
+# 3.7: the root-helper refusals still hold
 results = []
 for opt, val in (("host", "https://git.example.com"), ("repo", "example/kestrel"),
                  ("token", "example-not-a-token")):
@@ -292,7 +331,7 @@ for table, key, vals in (("capture.housekeeping", "archive_dir",
     for val in vals:
         r = apply({"target": "config-set", "table": table, "key": key, "value": val})
         results.append((not r.get("ok")) and read("%s.%s" % (table, key)) == before)
-check("4.5", all(results), "root helper refusals still hold",
+check("3.7", all(results), "root helper refusals still hold",
       "%d of %d refused" % (sum(results), len(results)))
 PY
 if [ "$(sha256sum "$CONFIG" | awk '{print $1}')" = "$cfg_sum_before" ]; then
@@ -301,82 +340,6 @@ else
   check 0.3 FAIL "real config.toml untouched by the tests" "checksum changed - tell Claude"
 fi
 
-# ---------------------------------------------------------------- 3. raw-data cap (#22)
-sec "3. raw-data cap"
-hk=$(cfg capture.housekeeping.max_run_mb 512)
-stray=$(cfg capture.max_run_mb "")
-rsz=$(du -sm "$RUNDIR" 2>/dev/null | awk '{print $1}')
-echo "cap [capture.housekeeping] max_run_mb=$hk; run dir now ${rsz:-0} MB"
-check 3.2 MANUAL "the Settings page shows and saves the cap" "by hand"
-if [ -z "$stray" ]; then
-  check 3.3 PASS "no stray [capture] max_run_mb" ""
-else
-  check 3.3 FAIL "no stray [capture] max_run_mb" "[capture] max_run_mb=$stray is set and ignored; remove it by hand"
-fi
-
-# ---------------------------------------------------------------- 4. beta.1 capture checks again
-sec "4. capture run folder and collector (re-checked: the launcher changed)"
-if [ -d "$RUNDIR" ]; then
-  perm=$(stat -c '%U:%G %a' "$RUNDIR")
-  if [ "$perm" = "root:$DEV_USER 750" ]; then
-    check 4.1 PASS "capture-run ownership" "$perm"
-  else
-    check 4.1 FAIL "capture-run ownership" "$perm (expected root:<device user> 750)"
-  fi
-else
-  check 4.1 SKIP "capture-run ownership" "folder not created yet"
-fi
-if [ "$cap_state" = "active" ]; then
-  npi=$(pgrep -c -u "$DEV_USER" -f capture-collect || true)
-  nrt=$(pgrep -c -u root -f capture-collect || true)
-  if [ "${npi:-0}" -ge 1 ] && [ "${nrt:-0}" -eq 0 ]; then
-    check 4.2 PASS "collector runs as the device user" "user=$npi root=$nrt"
-  else
-    check 4.2 FAIL "collector runs as the device user" "user=$npi root=$nrt"
-  fi
-  nk=$(find "$RUNDIR" -maxdepth 1 -name '*.kismet' 2>/dev/null | wc -l)
-  np=$(find "$RUNDIR" -maxdepth 1 -name '*.pcapng' 2>/dev/null | wc -l)
-  if [ -f "$upd" ]; then
-    nnew=$(find "$LEGACY_RUN" -maxdepth 1 -type f -newer "$upd" 2>/dev/null | wc -l)
-  else
-    nnew=0
-  fi
-  if [ "$((nk + np))" -ge 1 ] && [ "$nnew" -eq 0 ]; then
-    check 4.3 PASS "raw files go to capture-run, nothing new in .run" "kismet=$nk pcapng=$np new-in-legacy=$nnew"
-  else
-    check 4.3 FAIL "raw files go to capture-run, nothing new in .run" "kismet=$nk pcapng=$np new-in-legacy=$nnew"
-  fi
-else
-  check 4.2 SKIP "collector runs as the device user" "capture not running"
-  check 4.3 SKIP "raw files go to capture-run" "capture not running"
-fi
-echo "environment readout (capture-status.json, read as the device user):"
-envstat=$(as_dev /usr/bin/python3 -I - <<'PY' 2>&1
-import json, time
-try:
-    s = json.load(open("/var/lib/kestrel/capture/capture-status.json"))
-except Exception as exc:
-    print("unreadable: %s" % type(exc).__name__)
-else:
-    now = time.time()
-    for k in ("scanning", "radios_recent", "window_s"):
-        print("%s: %s" % (k, s.get(k)))
-    for k in ("updated_at", "data_ts"):
-        v = s.get(k)
-        print("%s: %s" % (k, "%d s ago" % (now - v) if isinstance(v, (int, float)) else v))
-    if isinstance(s.get("radios_recent"), int) and isinstance(s.get("data_ts"), (int, float)) \
-            and now - s["data_ts"] < 900:
-        print("ENV fresh")
-PY
-)
-printf '%s\n' "$envstat" | grep -v '^ENV ' | sed 's/^/  /'
-if printf '%s\n' "$envstat" | grep -q '^ENV fresh'; then
-  check 4.4 PASS "Environment reading is fresh" "the collector read the kismet DB within 15 min"
-elif [ "$cap_state" = "active" ]; then
-  check 4.4 FAIL "Environment reading is fresh" "no fresh reading while capture runs"
-else
-  check 4.4 SKIP "Environment reading is fresh" "capture not running"
-fi
 } >"$raw" 2>&1
 
 # ---------------------------------------------------------------- dashboard status (optional)
@@ -438,10 +401,10 @@ web_pw=""
 cat >>"$raw" <<'EOF'
 
 ===== by hand (the script can't see these) =====
-2.6  a new handshake from your own test AP is saved (the dashboard count goes up)
-3.2  the Settings page shows the raw-data cap and saving it takes effect on the next capture start
-5.x  the by-hand items still open on the 1.0.6-beta.1 issue, and the failed
-     NetworkManager-wait-online unit seen there
+4.1  a new handshake from your own test AP is saved (the dashboard count goes up)
+4.2  the Environment card on the dashboard shows a count, not "unknown"
+4.3  the by-hand items still open on the 1.0.6-beta.1 and beta.2 issues, and
+     the failed NetworkManager-wait-online unit
 EOF
 
 # ---------------------------------------------------------------- redact and save
