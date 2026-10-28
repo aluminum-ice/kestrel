@@ -300,11 +300,18 @@ if [ "$cap_state" = "active" ]; then
   fi
   nk=$(find "$RUNDIR" -maxdepth 1 -name '*.kismet' 2>/dev/null | wc -l)
   np=$(find "$RUNDIR" -maxdepth 1 -name '*.pcapng' 2>/dev/null | wc -l)
-  nl=$(find "$LEGACY_RUN" -maxdepth 1 -type f 2>/dev/null | wc -l)
-  if [ "$((nk + np))" -ge 1 ] && [ "$nl" -eq 0 ]; then
-    check 3.3 PASS "raw files in capture-run, none in .run" "kismet=$nk pcapng=$np legacy=$nl"
+  # The legacy .run is drained but never deleted by design, so files from an
+  # older release may stay; what matters is that nothing new lands there.
+  upd=/var/lib/kestrel/update-run/status.json
+  if [ -f "$upd" ]; then
+    nnew=$(find "$LEGACY_RUN" -maxdepth 1 -type f -newer "$upd" 2>/dev/null | wc -l)
   else
-    check 3.3 FAIL "raw files in capture-run, none in .run" "kismet=$nk pcapng=$np legacy=$nl"
+    nnew=0
+  fi
+  if [ "$((nk + np))" -ge 1 ] && [ "$nnew" -eq 0 ]; then
+    check 3.3 PASS "raw files go to capture-run, nothing new in .run" "kismet=$nk pcapng=$np new-in-legacy=$nnew"
+  else
+    check 3.3 FAIL "raw files go to capture-run, nothing new in .run" "kismet=$nk pcapng=$np new-in-legacy=$nnew"
   fi
 else
   check 3.2 SKIP "collector runs as the device user" "capture not running"
@@ -407,15 +414,28 @@ for pat in 'Permission denied' 'sqlite' 'readonly' 'unable to open' 'Traceback' 
 done
 capj=""
 
+# The collector drains (reads) the legacy .run but never deletes it, so the
+# check is that the device user can read every hashline file left there.
 if [ -d "$LEGACY_RUN" ]; then
-  nl=$(find "$LEGACY_RUN" -type f 2>/dev/null | wc -l)
-  if [ "$nl" -eq 0 ]; then
-    check 3.6 PASS "legacy .run drained" "folder present, empty"
-  else
-    check 3.6 FAIL "legacy .run drained" "$nl file(s) still in $LEGACY_RUN"
-  fi
+  lres=$(as_dev /usr/bin/python3 -I - <<'PY' 2>&1
+import glob
+names = glob.glob("/var/lib/kestrel/capture/.run/*.hc22000")
+bad = 0
+for name in names:
+    try:
+        with open(name, "rb") as handle:
+            handle.read(1)
+    except OSError:
+        bad += 1
+print("files=%d unreadable=%d" % (len(names), bad))
+PY
+)
+  case "$lres" in
+    *"unreadable=0"*) check 3.6 PASS "legacy .run readable by the device user" "$lres (kept by design)" ;;
+    *) check 3.6 FAIL "legacy .run readable by the device user" "$lres" ;;
+  esac
 else
-  check 3.6 PASS "legacy .run drained" "no legacy folder"
+  check 3.6 PASS "legacy .run readable by the device user" "no legacy folder"
 fi
 
 hk=$(cfg capture.housekeeping.max_run_mb 512)
