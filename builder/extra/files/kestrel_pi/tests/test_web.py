@@ -5,6 +5,7 @@ These exercise the two pieces that have no Flask/werkzeug dependency: the pure
 through ``str.format``) and ``WebServer`` with an injected server factory (so
 the bind/rebind logic is tested without opening real sockets)."""
 
+import io
 import logging
 import threading
 import time
@@ -744,9 +745,10 @@ class _FakeCapture:
 
 
 class _FakeCracked:
-    """A stand-in for CrackedStore: records as (bssid, essid, psk) triples."""
+    """A stand-in for CrackedStore: records as (bssid, essid, psk) triples, plus
+    an ``ingest`` that records the text and returns a canned result."""
 
-    def __init__(self, records):
+    def __init__(self, records=(), ingest_result=None):
         self._by_bssid, self._by_essid = {}, {}
         for bssid, essid, psk in records:
             rec = types.SimpleNamespace(bssid=bssid, essid=essid, psk=psk,
@@ -754,12 +756,18 @@ class _FakeCracked:
             self._by_bssid.setdefault(bssid, rec)
             if essid:
                 self._by_essid.setdefault(essid, []).append(rec)
+        self._ingest_result = ingest_result or {"imported": 0, "skipped": 0}
+        self.ingested = []            # (text, max_lines) per ingest call
 
     def lookup_bssid(self, bssid):
         return self._by_bssid.get(bssid)
 
     def lookup_essid(self, essid):
         return list(self._by_essid.get(essid, ()))
+
+    def ingest(self, text, *, max_lines=None):
+        self.ingested.append((text, max_lines))
+        return self._ingest_result
 
 
 class _FakeServices:
@@ -777,7 +785,8 @@ class _FakeServices:
 
 class _FakeDaemon:
     def __init__(self, web_cfg, plugin_table, networks=None,
-                 access_points=None, output_mode=None, cracked=None):
+                 access_points=None, output_mode=None, cracked=None,
+                 cracked_cfg=None):
         import logging
         from kestrel_pi.loader import PluginRecord
 
@@ -790,8 +799,11 @@ class _FakeDaemon:
         self.config = {"web": web_cfg, "plugins": {"wpa-sec": plugin_table}}
         if output_mode is not None:
             self.config["capture"] = {"output": {"mode": output_mode}}
+        if cracked_cfg is not None:
+            self.config["cracked"] = cracked_cfg
         self.capture = _FakeCapture(networks or [], access_points)
         self.services = _FakeServices(cracked)
+        self.cracked = cracked      # the import route writes through this
 
     def _fresh_config(self):
         return self.config
@@ -812,7 +824,7 @@ def _basic(user="pi", password="hunter2"):
 
 
 def _client(monkeypatch, tmp_path, web_cfg, table=None, replies=None, networks=None,
-            access_points=None, output_mode=None, cracked=None):
+            access_points=None, output_mode=None, cracked=None, cracked_cfg=None):
     pytest.importorskip("flask")
     sent = []
 
@@ -827,7 +839,8 @@ def _client(monkeypatch, tmp_path, web_cfg, table=None, replies=None, networks=N
     monkeypatch.setattr(web, "iface_ipv4", lambda iface: None)
     daemon = _FakeDaemon(web_cfg, table if table is not None else {"enabled": False},
                          networks=networks, access_points=access_points,
-                         output_mode=output_mode, cracked=cracked)
+                         output_mode=output_mode, cracked=cracked,
+                         cracked_cfg=cracked_cfg)
     return web.create_app(daemon).test_client(), sent
 
 
@@ -1739,7 +1752,9 @@ def test_networks_no_cracked_service_is_benign(monkeypatch, tmp_path):
     client, _ = _client(monkeypatch, tmp_path, BASIC, output_mode="per-ssid",
                         networks=_nets("My Network"))      # cracked=None
     body = client.get("/networks", headers=_basic()).get_data(as_text=True)
-    assert "cracked" not in body and "<details" not in body
+    # No cracked badge or passphrase disclosure on any row (the import control's
+    # own text mentions "cracked", so check for the markers, not the word).
+    assert ">cracked</span>" not in body and 'class="crk-d"' not in body
 
 
 def test_dashboard_navcard_shows_cracked_count_when_present(monkeypatch, tmp_path):
@@ -1752,6 +1767,104 @@ def test_dashboard_navcard_shows_cracked_count_when_present(monkeypatch, tmp_pat
 def test_dashboard_navcard_omits_cracked_count_when_absent(monkeypatch, tmp_path):
     html = web._render_status(_status([]))      # no cracked_aps key
     assert "cracked" not in html
+
+
+# -- cracked import upload (/cracked/import) -----------------------------
+def _potfile_upload(data):
+    return {"potfile": (io.BytesIO(data), "results.potfile")}
+
+
+def _redirect_banner(resp):
+    # The import route is POST-redirect-GET; read the (kind, text) banner it put
+    # in the redirect's query rather than following it (which would need the
+    # basic-auth header re-sent).
+    from urllib.parse import parse_qs, urlsplit
+
+    q = parse_qs(urlsplit(resp.headers["Location"]).query)
+    if "err" in q:
+        return "err", q["err"][0]
+    if "msg" in q:
+        return "msg", q["msg"][0]
+    return None, None
+
+
+def test_networks_import_form_shown_only_with_web_auth(monkeypatch, tmp_path):
+    off, _ = _client(monkeypatch, tmp_path, {"auth": "none"},
+                     networks=_nets("My Network"))
+    assert "Import cracked results" not in off.get("/networks").get_data(as_text=True)
+    on, _ = _client(monkeypatch, tmp_path, BASIC, networks=_nets("My Network"))
+    body = on.get("/networks", headers=_basic()).get_data(as_text=True)
+    assert "Import cracked results" in body
+    assert 'action="/cracked/import"' in body and 'type="file"' in body
+
+
+def test_cracked_import_success_shows_summary(monkeypatch, tmp_path):
+    fake = _FakeCracked(ingest_result={"imported": 2, "skipped": 1})
+    client, _ = _client(monkeypatch, tmp_path, BASIC, networks=_nets("x"),
+                        cracked=fake)
+    token = _csrf(client.get("/networks", headers=_basic()).get_data(as_text=True))
+    resp = client.post("/cracked/import", headers=_basic(),
+                       data={"csrf": token, "view": "ssid",
+                             **_potfile_upload(b"00005e0053aa:00005e005301:My Net:pw\n")},
+                       content_type="multipart/form-data")
+    assert resp.status_code == 303
+    assert _redirect_banner(resp) == ("msg", "Imported 2 record(s); skipped 1 line(s).")
+    assert len(fake.ingested) == 1                 # the file reached ingest()
+
+
+def test_cracked_import_requires_csrf(monkeypatch, tmp_path):
+    fake = _FakeCracked(ingest_result={"imported": 1, "skipped": 0})
+    client, _ = _client(monkeypatch, tmp_path, BASIC, cracked=fake)
+    resp = client.post("/cracked/import", headers=_basic(),
+                       data={"view": "ssid", **_potfile_upload(b"x")},
+                       content_type="multipart/form-data")
+    kind, text = _redirect_banner(resp)
+    assert kind == "err" and "out of date" in text
+    assert fake.ingested == []                     # nothing imported without CSRF
+
+
+def test_cracked_import_refused_when_auth_off(monkeypatch, tmp_path):
+    fake = _FakeCracked(ingest_result={"imported": 1, "skipped": 0})
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"}, cracked=fake)
+    resp = client.post("/cracked/import",
+                       data={"csrf": "x", **_potfile_upload(b"x")},
+                       content_type="multipart/form-data")
+    kind, text = _redirect_banner(resp)
+    assert kind == "err" and "Turn on the web login" in text
+    assert fake.ingested == []
+
+
+def test_cracked_import_rejects_oversize(monkeypatch, tmp_path):
+    fake = _FakeCracked(ingest_result={"imported": 0, "skipped": 0})
+    client, _ = _client(monkeypatch, tmp_path, BASIC, cracked=fake,
+                        cracked_cfg={"max_import_mb": 1})
+    token = _csrf(client.get("/networks", headers=_basic()).get_data(as_text=True))
+    big = b"x" * (1024 * 1024 + 1)                  # one byte over the 1 MB cap
+    resp = client.post("/cracked/import", headers=_basic(),
+                       data={"csrf": token, **_potfile_upload(big)},
+                       content_type="multipart/form-data")
+    kind, text = _redirect_banner(resp)
+    assert kind == "err" and "larger than the 1 MB limit" in text
+    assert fake.ingested == []                     # rejected before ingest
+
+
+def test_cracked_import_no_file_selected(monkeypatch, tmp_path):
+    fake = _FakeCracked()
+    client, _ = _client(monkeypatch, tmp_path, BASIC, cracked=fake)
+    token = _csrf(client.get("/networks", headers=_basic()).get_data(as_text=True))
+    resp = client.post("/cracked/import", headers=_basic(), data={"csrf": token})
+    kind, text = _redirect_banner(resp)
+    assert kind == "err" and "No file selected." in text
+    assert fake.ingested == []
+
+
+def test_networks_renders_import_banner(monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"},
+                        networks=_nets("x"))
+    ok = client.get("/networks?msg=Imported+3+records").get_data(as_text=True)
+    assert "Imported 3 records" in ok and 'class="msg"' in ok
+    bad = client.get("/networks?err=That+failed").get_data(as_text=True)
+    assert "That failed" in bad and "msg err" in bad    # error styling
 
 
 def test_dashboard_navcard_shows_network_and_ap_counts(monkeypatch, tmp_path):

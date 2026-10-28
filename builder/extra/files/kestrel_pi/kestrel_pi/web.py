@@ -490,7 +490,7 @@ def _refused_table(daemon, record, change):
 
 def create_app(daemon):
     """Build the Flask app for ``daemon`` (a :class:`~kestrel_pi.daemon.Daemon`)."""
-    from flask import Flask, Response, jsonify, request
+    from flask import Flask, Response, jsonify, redirect, request
 
     app = Flask("kestrel_pi")
     web_cfg = daemon.config.get("web", {}) or {}
@@ -583,11 +583,75 @@ def create_app(daemon):
         # count are not secrets and show regardless.
         show_pass = bool((cfg.get("web") or {}).get("show_passphrases", True))
         by_bssid, by_essid = _cracked_maps(daemon, view, data)
+        # A one-line banner after an import (set by /cracked/import's redirect).
+        err = request.args.get("err")
+        msg = err or request.args.get("msg")
         return html(_render_networks(
             data, ctl, query=request.args.get("q", ""),
             page=request.args.get("page", 1), view=view, sort=sort,
             cracked_by_bssid=by_bssid, cracked_by_essid=by_essid,
-            show_passphrases=show_pass, auth_on=bool(ctl.get("ready"))))
+            show_passphrases=show_pass, auth_on=bool(ctl.get("ready")),
+            message=msg, error=bool(err)))
+
+    def _back_to_networks(message, error=False, view=None, code=303):
+        # POST-redirect-GET back to /networks with a one-line banner, keeping the
+        # view and (for token auth) the token so the page stays signed in.
+        params = {}
+        if view in ("ssid", "ap"):
+            params["view"] = view
+        token = request.args.get("token") or request.form.get("token")
+        if token:
+            params["token"] = token
+        params["err" if error else "msg"] = message
+        return redirect("/networks?" + urlencode(params), code)
+
+    @app.post("/cracked/import")
+    def cracked_import():  # noqa: ANN202
+        # Import a potfile of known passphrases into the cracked store. Runs as
+        # the daemon (pi) into the pi-owned store -- no root, no new privilege.
+        ctl = control()
+        view = request.form.get("view")
+        view = view if view in ("ssid", "ap") else None
+        if not ctl["ready"]:
+            return _back_to_networks(
+                "Turn on the web login to import cracked results.",
+                error=True, view=view)
+        if not _same(request.form.get("csrf") or "", csrf_token):
+            return _back_to_networks(
+                "This page is out of date (the daemon restarted). Reload and "
+                "try again.", error=True, view=view)
+        upload = request.files.get("potfile")
+        if upload is None or not upload.filename:
+            return _back_to_networks("No file selected.", error=True, view=view)
+        cfg = daemon._fresh_config()
+        cracked_cfg = cfg.get("cracked") or {}
+        try:
+            max_mb = max(1, int(cracked_cfg.get("max_import_mb", 2)))
+        except (TypeError, ValueError):
+            max_mb = 2
+        try:
+            max_lines = max(1, int(cracked_cfg.get("max_import_lines", 50000)))
+        except (TypeError, ValueError):
+            max_lines = 50000
+        # The file is untrusted: read at most the cap+1 (so an oversize file is
+        # rejected, not streamed whole), decode with replacement, parse in pure
+        # Python -- never a shell -- and write under a device-generated name.
+        max_bytes = max_mb * 1024 * 1024
+        raw = upload.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            return _back_to_networks(
+                "That file is larger than the %d MB limit." % max_mb,
+                error=True, view=view)
+        try:
+            result = daemon.cracked.ingest(raw.decode("utf-8", "replace"),
+                                           max_lines=max_lines)
+        except OSError as exc:
+            log.warning("web: cracked import failed: %s", exc)
+            return _back_to_networks("Could not save the import.",
+                                     error=True, view=view)
+        return _back_to_networks(
+            "Imported %d record(s); skipped %d line(s)."
+            % (result.get("imported", 0), result.get("skipped", 0)), view=view)
 
     @app.get("/agent")
     def agent_page():  # noqa: ANN202
@@ -1349,6 +1413,11 @@ _STATUS_CSS = (
     ".crk-p code{word-break:break-all;}"
     ".crk-p .bssid{color:var(--muted);}"
     ".crk-hidden{color:var(--muted);font-style:italic;}"
+    ".crkimport{margin:1.2em 0;}"
+    ".crkimport>summary{cursor:pointer;color:var(--link);}"
+    ".crkimport form{margin-top:.7em;display:flex;flex-wrap:wrap;gap:.6em;"
+    "align-items:center;}"
+    ".crkimport .hint{flex-basis:100%;margin:0;}"
 )
 
 
@@ -2673,10 +2742,35 @@ def _cracked_cell(summary_html, pairs, auth_on, show_passphrases, with_bssid):
             + "</summary>" + panel + "</details>")
 
 
+def _cracked_import_form(control, view):
+    """The "Import cracked results" control on /networks, shown only with web
+    auth on. A multipart POST to /cracked/import, CSRF-protected like every
+    other write; the file is parsed server-side (see the route)."""
+    csrf = (control or {}).get("csrf") or ""
+    token = (control or {}).get("token") or ""
+    hidden = ('<input type="hidden" name="csrf" value="' + _esc(csrf) + '">'
+              + '<input type="hidden" name="view" value="' + _esc(view) + '">'
+              + ('<input type="hidden" name="token" value="' + _esc(token)
+                 + '">' if token else ""))
+    return (
+        '<details class="crkimport"><summary>Import cracked results</summary>'
+        '<form method="post" action="/cracked/import" '
+        'enctype="multipart/form-data">' + hidden
+        + '<p class="hint">Upload a wpa-sec results file or a hashcat '
+        "<em>separated</em> potfile (BSSID, ESSID and passphrase per line). The "
+        "default hashcat.potfile is not supported &mdash; export with a "
+        "separated outfile format instead. These are passphrases for networks "
+        "you are authorized to test.</p>"
+        '<input type="file" name="potfile" accept=".potfile,.txt,text/plain" '
+        'required aria-label="Potfile to import">'
+        '<button type="submit">Import</button></form></details>')
+
+
 def _render_networks(rows_in, control=None, query="", page=1,
                      per_page=NETWORKS_PER_PAGE, view="ssid", sort="name",
                      cracked_by_bssid=None, cracked_by_essid=None,
-                     show_passphrases=True, auth_on=False):
+                     show_passphrases=True, auth_on=False,
+                     message=None, error=False):
     """The captured-networks page, in one of two views over the same store:
 
     - ``view="ssid"`` (by network): one row per ESSID, with its distinct-BSSID
@@ -2875,13 +2969,20 @@ def _render_networks(rows_in, control=None, query="", page=1,
                       "<th>handshakes</th><th>last seen</th>")
 
     back = '<p><a href="' + _esc(_url("/", control)) + '">&larr; Dashboard</a></p>'
+    banner = ""
+    if message:
+        banner = ('<p class="msg' + (" err" if error else "") + '">'
+                  + _esc(message) + "</p>")
+    # The import control writes to the cracked store, so it needs web auth on
+    # (like every other write); read-only pages don't show it.
+    import_form = _cracked_import_form(control, view) if auth_on else ""
     return _page(
         "captured " + noun + "s - Kestrel",
-        back + "<h1>" + heading + "</h1>" + tabs + sorttabs + search
+        back + "<h1>" + heading + "</h1>" + banner + tabs + sorttabs + search
         + '<p class="count">' + count + "</p>"
         + "<div class='wrap'><table><thead><tr>" + head_cells
         + "</tr></thead><tbody>" + body_rows
-        + "</tbody></table></div>" + pager,
+        + "</tbody></table></div>" + pager + import_form,
     )
 
 

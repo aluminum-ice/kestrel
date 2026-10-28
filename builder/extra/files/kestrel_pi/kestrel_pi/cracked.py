@@ -252,6 +252,16 @@ class CrackedStore:
         _by_bssid, _by_essid, records = self._parse()
         return list(records)
 
+    def ingest(self, text, *, max_lines=None):
+        """Parse ``text`` and merge its records into the cracked dir, returning
+        ``{"imported": N, "skipped": M}`` (see :func:`ingest_text`). The caller
+        (web upload / CLI) has already enforced the byte cap; ``max_lines`` falls
+        back to this store's configured line cap. The next read re-parses, since
+        a new potfile changes the directory signature."""
+        return ingest_text(
+            self.store_dir, text,
+            max_lines=self._max_lines if max_lines is None else max_lines)
+
 
 def _unique_import_path(cracked_dir):
     """A fresh ``imported-<UTC-stamp>.potfile`` path opened ``O_EXCL`` so a

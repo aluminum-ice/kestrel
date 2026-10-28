@@ -59,6 +59,10 @@ Usage: $PROG <command>
   capture archive    Archive the capture store and start fresh
   capture rotate     Apply the housekeeping policy now (used by the timer)
   capture clear --yes [--purge]   Delete the live store (and archives with --purge)
+  cracked            Known passphrases for captured networks (display only)
+  cracked import FILE   Import a wpa-sec or hashcat separated potfile
+  cracked list       Show how many cracked records, by source (no passphrases)
+  cracked clear [--source NAME] [--yes]   Remove imported potfiles (or one source)
   plugins            Plugin menu (list, info, enable, disable)
   plugins list       List plugins and whether each is enabled
   plugins info NAME  Show a plugin's capabilities, options, deps and health
@@ -2165,6 +2169,95 @@ cmd_setup() {
     done
 }
 
+# Known passphrases for captured networks, parsed from any *.potfile in the
+# pi-owned cracked store. Display/import only: the device never cracks anything,
+# and every step runs as pi (run_as_pi), so no root and no new privilege.
+cmd_cracked() {
+    local sub=${1:-list}
+    [ $# -gt 0 ] && shift || true
+    case "$sub" in
+        import) cracked_import "$@" ;;
+        list) cracked_list ;;
+        clear) cracked_clear "$@" ;;
+        *) die "unknown 'cracked' subcommand: $sub (import|list|clear)" ;;
+    esac
+}
+
+# Import a potfile: parse it (pure Python, no shell) and merge the records into
+# the cracked store under a device-generated name. The byte/line caps come from
+# [cracked] config, with code defaults.
+cracked_import() {
+    [ -n "${1:-}" ] || die "usage: $PROG cracked import <file>"
+    local file=$1 max_mb max_lines
+    [ -f "$file" ] || die "no such file: $file"
+    max_mb=$(cfg cracked.max_import_mb 2)
+    { [[ $max_mb =~ ^[0-9]+$ ]] && [ "$max_mb" -ge 1 ]; } || max_mb=2
+    max_lines=$(cfg cracked.max_import_lines 50000)
+    { [[ $max_lines =~ ^[0-9]+$ ]] && [ "$max_lines" -ge 1 ]; } || max_lines=50000
+    run_as_pi "$PWN_VENV_PYTHON" -I - "$PWN_CAPTURE_DIR" "$file" "$max_mb" "$max_lines" <<'PY'
+import sys
+from kestrel_pi import cracked
+store, path, max_mb, max_lines = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+cap = max_mb * 1024 * 1024
+try:
+    with open(path, "rb") as handle:
+        raw = handle.read(cap + 1)
+except OSError as exc:
+    sys.stderr.write("cannot read %s: %s\n" % (path, exc))
+    sys.exit(1)
+if len(raw) > cap:
+    sys.stderr.write("file is larger than the %d MB limit "
+                     "(raise [cracked] max_import_mb to import it)\n" % max_mb)
+    sys.exit(1)
+res = cracked.ingest_text(store, raw.decode("utf-8", "replace"), max_lines=max_lines)
+print("imported %d record(s), skipped %d line(s)" % (res["imported"], res["skipped"]))
+PY
+}
+
+# Counts only, by source -- never a passphrase, so it is safe in a shared SSH
+# session or in logs.
+cracked_list() {
+    run_as_pi "$PWN_VENV_PYTHON" -I - "$PWN_CAPTURE_DIR" <<'PY'
+import sys
+from collections import Counter
+from kestrel_pi.cracked import CrackedStore
+store = CrackedStore(sys.argv[1])
+recs = store.all()
+counts = store.counts()
+print("%d cracked record(s): %d access point(s), %d network name(s)"
+      % (len(recs), counts["cracked_aps"], counts["cracked_essids"]))
+for source, n in sorted(Counter(r.source for r in recs).items()):
+    print("  %s: %d" % (source, n))
+PY
+}
+
+# Remove imported potfiles. Default: every imported-*.potfile (leaves the
+# wpa-sec plugin's file alone). --source NAME removes just that one file.
+cracked_clear() {
+    local yes=no source="" a cracked_dir="$PWN_CAPTURE_DIR/cracked"
+    while [ $# -gt 0 ]; do
+        a=$1; shift
+        case "$a" in
+            --yes|-y) yes=yes ;;
+            --source) source=${1:-}; shift || true ;;
+            *) die "unknown option for 'cracked clear': $a" ;;
+        esac
+    done
+    [ "$yes" = yes ] || die "cracked clear removes imported passphrases; re-run with --yes"
+    [ -d "$cracked_dir" ] || { log "no cracked store at $cracked_dir"; return 0; }
+    if [ -n "$source" ]; then
+        case "$source" in
+            */*|..|.) die "invalid --source (a file name only): $source" ;;
+        esac
+        [ "${source%.potfile}" = "$source" ] && source="$source.potfile"
+        run_as_pi rm -f -- "$cracked_dir/$source"
+        log "removed cracked source: $source"
+    else
+        run_as_pi find "$cracked_dir" -maxdepth 1 -type f -name 'imported-*.potfile' -delete
+        log "removed imported cracked potfiles"
+    fi
+}
+
 main() {
     local cmd=${1:-setup}
     [ $# -gt 0 ] && shift || true
@@ -2172,6 +2265,7 @@ main() {
         setup) cmd_setup "$@" ;;
         network) cmd_network "$@" ;;
         capture) cmd_capture "$@" ;;
+        cracked) cmd_cracked "$@" ;;
         plugins) cmd_plugins "$@" ;;
         web) cmd_web "$@" ;;
         backup) cmd_backup "$@" ;;
