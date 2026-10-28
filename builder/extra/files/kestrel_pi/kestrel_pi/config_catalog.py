@@ -262,6 +262,12 @@ SECTIONS = [
                   "Dashboard auto-refresh in seconds (0 = off). Below "
                   "epoch_seconds just re-renders the same numbers.",
                   RESTART_DAEMON, min=0),
+            _edit("web", "show_passphrases", "bool", True,
+                  "Show a cracked network's passphrase in its Captured-networks "
+                  "card (needs the web login). Off keeps the 'cracked' badge and "
+                  "count but hides the passphrase -- for screen-sharing or "
+                  "shoulder-surfing. Takes effect immediately, no restart.",
+                  RESTART_NONE),
             _ro("web", "auth", RO_LOCKOUT,
                 "The login mode. Use 'sudo kestrel web auth <mode>' — a "
                 "wrong value can lock you out of the dashboard.", cli=""),
@@ -278,6 +284,22 @@ SECTIONS = [
                   "Explicit reachability probe URL for the online check. Empty = "
                   "NetworkManager check, then a default probe.", RESTART_DAEMON,
                   maxlen=256),
+        ],
+    },
+    {
+        "title": "Cracked networks",
+        "anchor": "cracked",
+        "intro": "Known passphrases imported for captured networks. These caps "
+                 "bound a web upload or CLI import of a potfile; the passphrases "
+                 "themselves show on the Captured networks page when the web "
+                 "login is on and 'show_passphrases' is true.",
+        "entries": [
+            _edit("cracked", "max_import_mb", "int", 2,
+                  "Largest potfile accepted by an import, in MB.",
+                  RESTART_NONE, min=1),
+            _edit("cracked", "max_import_lines", "int", 50000,
+                  "Most lines read from an imported potfile; any beyond this are "
+                  "skipped.", RESTART_NONE, min=1),
         ],
     },
 ]

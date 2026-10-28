@@ -490,7 +490,7 @@ def _refused_table(daemon, record, change):
 
 def create_app(daemon):
     """Build the Flask app for ``daemon`` (a :class:`~kestrel_pi.daemon.Daemon`)."""
-    from flask import Flask, Response, jsonify, request
+    from flask import Flask, Response, jsonify, redirect, request
 
     app = Flask("kestrel_pi")
     web_cfg = daemon.config.get("web", {}) or {}
@@ -577,9 +577,81 @@ def create_app(daemon):
         else:
             data = daemon.capture.captured_networks()
         sort = "recent" if request.args.get("sort") == "recent" else "name"
+        ctl = control()
+        # The passphrase shows only with web auth on AND show_passphrases true
+        # (read live, so a toggle takes effect without a restart); the badge and
+        # count are not secrets and show regardless.
+        show_pass = bool((cfg.get("web") or {}).get("show_passphrases", True))
+        by_bssid, by_essid = _cracked_maps(daemon, view, data)
+        # A one-line banner after an import (set by /cracked/import's redirect).
+        err = request.args.get("err")
+        msg = err or request.args.get("msg")
         return html(_render_networks(
-            data, control(), query=request.args.get("q", ""),
-            page=request.args.get("page", 1), view=view, sort=sort))
+            data, ctl, query=request.args.get("q", ""),
+            page=request.args.get("page", 1), view=view, sort=sort,
+            cracked_by_bssid=by_bssid, cracked_by_essid=by_essid,
+            show_passphrases=show_pass, auth_on=bool(ctl.get("ready")),
+            message=msg, error=bool(err)))
+
+    def _back_to_networks(message, error=False, view=None, code=303):
+        # POST-redirect-GET back to /networks with a one-line banner, keeping the
+        # view and (for token auth) the token so the page stays signed in.
+        params = {}
+        if view in ("ssid", "ap"):
+            params["view"] = view
+        token = request.args.get("token") or request.form.get("token")
+        if token:
+            params["token"] = token
+        params["err" if error else "msg"] = message
+        return redirect("/networks?" + urlencode(params), code)
+
+    @app.post("/cracked/import")
+    def cracked_import():  # noqa: ANN202
+        # Import a potfile of known passphrases into the cracked store. Runs as
+        # the daemon (pi) into the pi-owned store -- no root, no new privilege.
+        ctl = control()
+        view = request.form.get("view")
+        view = view if view in ("ssid", "ap") else None
+        if not ctl["ready"]:
+            return _back_to_networks(
+                "Turn on the web login to import cracked results.",
+                error=True, view=view)
+        if not _same(request.form.get("csrf") or "", csrf_token):
+            return _back_to_networks(
+                "This page is out of date (the daemon restarted). Reload and "
+                "try again.", error=True, view=view)
+        upload = request.files.get("potfile")
+        if upload is None or not upload.filename:
+            return _back_to_networks("No file selected.", error=True, view=view)
+        cfg = daemon._fresh_config()
+        cracked_cfg = cfg.get("cracked") or {}
+        try:
+            max_mb = max(1, int(cracked_cfg.get("max_import_mb", 2)))
+        except (TypeError, ValueError):
+            max_mb = 2
+        try:
+            max_lines = max(1, int(cracked_cfg.get("max_import_lines", 50000)))
+        except (TypeError, ValueError):
+            max_lines = 50000
+        # The file is untrusted: read at most the cap+1 (so an oversize file is
+        # rejected, not streamed whole), decode with replacement, parse in pure
+        # Python -- never a shell -- and write under a device-generated name.
+        max_bytes = max_mb * 1024 * 1024
+        raw = upload.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            return _back_to_networks(
+                "That file is larger than the %d MB limit." % max_mb,
+                error=True, view=view)
+        try:
+            result = daemon.cracked.ingest(raw.decode("utf-8", "replace"),
+                                           max_lines=max_lines)
+        except OSError as exc:
+            log.warning("web: cracked import failed: %s", exc)
+            return _back_to_networks("Could not save the import.",
+                                     error=True, view=view)
+        return _back_to_networks(
+            "Imported %d record(s); skipped %d line(s)."
+            % (result.get("imported", 0), result.get("skipped", 0)), view=view)
 
     @app.get("/agent")
     def agent_page():  # noqa: ANN202
@@ -1325,6 +1397,27 @@ _STATUS_CSS = (
     "padding-top:1em;border-top:1px solid var(--border);}"
     ".guidenav a{color:var(--link);text-decoration:none;}"
     ".guidenav a:hover,.guidenav a:focus{text-decoration:underline;}"
+    # Cracked-networks marker and passphrase disclosure on /networks. The badge
+    # is a lock glyph plus the word "cracked" (never colour alone). The
+    # passphrase lives in a <details> so it is not rendered into the row until
+    # the operator expands it (dependency-free, keyboard-accessible).
+    ".crk{display:inline-flex;align-items:center;gap:.3em;margin-left:.5em;"
+    "font-size:.78rem;font-weight:600;color:var(--on-bd);white-space:nowrap;}"
+    ".crk .lock{font-size:.9em;}"
+    "details.crk-d>summary{cursor:pointer;list-style:none;}"
+    "details.crk-d>summary::-webkit-details-marker{display:none;}"
+    "details.crk-d>summary::after{content:'\\0020\\25be';color:var(--muted);"
+    "font-size:.8em;}"
+    "details.crk-d[open]>summary::after{content:'\\0020\\25b4';}"
+    ".crk-p{margin:.4em 0 .1em;font-size:.9rem;}"
+    ".crk-p code{word-break:break-all;}"
+    ".crk-p .bssid{color:var(--muted);}"
+    ".crk-hidden{color:var(--muted);font-style:italic;}"
+    ".crkimport{margin:1.2em 0;}"
+    ".crkimport>summary{cursor:pointer;color:var(--link);}"
+    ".crkimport form{margin-top:.7em;display:flex;flex-wrap:wrap;gap:.6em;"
+    "align-items:center;}"
+    ".crkimport .hint{flex-basis:100%;margin:0;}"
 )
 
 
@@ -2411,7 +2504,14 @@ def _render_status(status, control=None, message=None, error=False, addresses=No
         + " handshake(s) &middot; " + _esc(cap.get("access_points", 0))
         + " access point(s) &middot; " + _esc(cap.get("networks", 0))
         + ' network(s)</span>'
-        '<span class="smeta">Browse by network or access point</span></div>'
+        # "cracked N of M" access points, when the cracked store could be read
+        # (the daemon omits the key on a read failure). Not a secret -- it is the
+        # count only -- so it always shows when present.
+        + (('<span class="smeta">' + _esc(cap.get("cracked_aps"))
+            + " of " + _esc(cap.get("access_points", 0))
+            + " access point(s) cracked</span>")
+           if cap.get("cracked_aps") is not None else "")
+        + '<span class="smeta">Browse by network or access point</span></div>'
         '<span class="arrow" aria-hidden="true">&rarr;</span></a>'
         + _whitelist_nav(cap, control)
     )
@@ -2565,8 +2665,112 @@ def _ago(epoch, now=None):
     return time.strftime("%Y-%m-%d", time.localtime(epoch))
 
 
+def _cracked_maps(daemon, view, data):
+    """Build the cracked-annotation maps for ``/networks`` from the ``cracked``
+    service. Returns ``(cracked_by_bssid, cracked_by_essid)`` -- both empty when
+    the store is absent or unreadable, so the page just shows no cracked markers.
+
+    By-AP view: each captured BSSID joined to its passphrase. By-network view: a
+    network is cracked if any of its captured BSSIDs is cracked (grouped under
+    the names that AP advertised) or an ESSID-name record matches; each distinct
+    ``(bssid, psk)`` is kept so differing passphrases under one name are shown."""
+    cracked = daemon.services.get("cracked")
+    by_bssid, by_essid = {}, {}
+    if cracked is None:
+        return by_bssid, by_essid
+    try:
+        if view == "ap":
+            for row in data:
+                bssid = row.get("bssid")
+                if not bssid:
+                    continue
+                rec = cracked.lookup_bssid(bssid)
+                if rec:
+                    by_bssid[bssid] = rec.psk
+        else:
+            def _add(essid, rec):
+                pairs = by_essid.setdefault(essid, [])
+                if (rec.bssid, rec.psk) not in pairs:
+                    pairs.append((rec.bssid, rec.psk))
+
+            for ap in daemon.capture.captured_access_points():
+                bssid = ap.get("bssid")
+                rec = cracked.lookup_bssid(bssid) if bssid else None
+                if rec:
+                    for essid in ap.get("essids") or []:
+                        _add(essid, rec)
+            for row in data:
+                essid = row.get("essid")
+                if essid:
+                    for rec in cracked.lookup_essid(essid):
+                        _add(essid, rec)
+    except Exception:  # noqa: BLE001 - a cracked-store read must never break the page
+        return {}, {}
+    return by_bssid, by_essid
+
+
+def _cracked_cell(summary_html, pairs, auth_on, show_passphrases, with_bssid):
+    """Wrap a row's name/BSSID cell so a cracked row shows the badge and, when
+    allowed, its passphrase in a ``<details>`` disclosure. ``pairs`` is a list of
+    ``(bssid, psk)``.
+
+    The passphrase is a secret, shown only when BOTH gates pass; the badge is
+    not a secret and always shows:
+    - auth off: badge only, no secret panel (there is no login to gate it).
+    - auth on, ``show_passphrases`` off: badge + a muted 'hidden' note, so the
+      operator still knows a passphrase exists.
+    - auth on, ``show_passphrases`` on: badge + the passphrase(s)."""
+    badge = ('<span class="crk"><span class="lock" aria-hidden="true">'
+             "&#128274;</span>cracked</span>")
+    if not auth_on:
+        return summary_html + " " + badge
+    if not show_passphrases:
+        panel = ('<div class="crk-p crk-hidden">Passphrase hidden '
+                 "(<code>show_passphrases = true</code> to reveal)</div>")
+    else:
+        parts = []
+        for bssid, psk in pairs:
+            if with_bssid and bssid:
+                parts.append('<div class="crk-p"><span class="bssid">'
+                             + _esc(bssid) + "</span> <code>" + _esc(psk)
+                             + "</code></div>")
+            else:
+                parts.append('<div class="crk-p">Passphrase: <code>'
+                             + _esc(psk) + "</code></div>")
+        panel = "".join(parts)
+    return ('<details class="crk-d"><summary>' + summary_html + " " + badge
+            + "</summary>" + panel + "</details>")
+
+
+def _cracked_import_form(control, view):
+    """The "Import cracked results" control on /networks, shown only with web
+    auth on. A multipart POST to /cracked/import, CSRF-protected like every
+    other write; the file is parsed server-side (see the route)."""
+    csrf = (control or {}).get("csrf") or ""
+    token = (control or {}).get("token") or ""
+    hidden = ('<input type="hidden" name="csrf" value="' + _esc(csrf) + '">'
+              + '<input type="hidden" name="view" value="' + _esc(view) + '">'
+              + ('<input type="hidden" name="token" value="' + _esc(token)
+                 + '">' if token else ""))
+    return (
+        '<details class="crkimport"><summary>Import cracked results</summary>'
+        '<form method="post" action="/cracked/import" '
+        'enctype="multipart/form-data">' + hidden
+        + '<p class="hint">Upload a wpa-sec results file or a hashcat '
+        "<em>separated</em> potfile (BSSID, ESSID and passphrase per line). The "
+        "default hashcat.potfile is not supported &mdash; export with a "
+        "separated outfile format instead. These are passphrases for networks "
+        "you are authorized to test.</p>"
+        '<input type="file" name="potfile" accept=".potfile,.txt,text/plain" '
+        'required aria-label="Potfile to import">'
+        '<button type="submit">Import</button></form></details>')
+
+
 def _render_networks(rows_in, control=None, query="", page=1,
-                     per_page=NETWORKS_PER_PAGE, view="ssid", sort="name"):
+                     per_page=NETWORKS_PER_PAGE, view="ssid", sort="name",
+                     cracked_by_bssid=None, cracked_by_essid=None,
+                     show_passphrases=True, auth_on=False,
+                     message=None, error=False):
     """The captured-networks page, in one of two views over the same store:
 
     - ``view="ssid"`` (by network): one row per ESSID, with its distinct-BSSID
@@ -2579,8 +2783,17 @@ def _render_networks(rows_in, control=None, query="", page=1,
     store (``captured_networks`` / ``captured_access_points``) regardless of the
     capture file layout -- so the operator can flip it anytime via the toggle.
     ``query`` filters (case-insensitive) and the list is paginated so the page
-    stays light no matter how much the store holds."""
+    stays light no matter how much the store holds.
+
+    A row whose network/AP has a known passphrase gets a "cracked" badge (never
+    colour alone), and -- only when ``auth_on`` and ``show_passphrases`` -- the
+    passphrase itself in a disclosure. ``cracked_by_bssid`` maps a BSSID to its
+    passphrase (by-AP view); ``cracked_by_essid`` maps an ESSID to its distinct
+    ``(bssid, psk)`` pairs (by-network view). Both are built by the handler from
+    the core cracked service; empty means nothing to annotate."""
     rows_in = rows_in or []
+    cracked_by_bssid = cracked_by_bssid or {}
+    cracked_by_essid = cracked_by_essid or {}
     ap_view = view == "ap"
     # The by-AP list may carry a trailing "(unknown BSSID)" fold row for
     # handshakes whose BSSID didn't parse; it is shown but is not an access
@@ -2630,6 +2843,9 @@ def _render_networks(rows_in, control=None, query="", page=1,
             bssid = r.get("bssid") or ""
             radio = (_esc(bssid) if bssid
                      else '<span class="smeta">(unknown BSSID)</span>')
+            if bssid and bssid in cracked_by_bssid:
+                radio = _cracked_cell(radio, [(bssid, cracked_by_bssid[bssid])],
+                                      auth_on, show_passphrases, with_bssid=False)
             essids = r.get("essids") or []
             if essids:
                 names = ", ".join(_esc(e) for e in essids)
@@ -2644,6 +2860,10 @@ def _render_networks(rows_in, control=None, query="", page=1,
         else:
             essid = r.get("essid") or ""
             name = _esc(essid) if essid else '<span class="smeta">(hidden)</span>'
+            pairs = cracked_by_essid.get(essid) if essid else None
+            if pairs:
+                name = _cracked_cell(name, pairs, auth_on, show_passphrases,
+                                     with_bssid=True)
             rows.append(
                 "<tr><td data-label=\"network\">" + name + "</td>"
                 "<td data-label=\"access points\">" + _esc(r.get("bssids", 0))
@@ -2749,13 +2969,20 @@ def _render_networks(rows_in, control=None, query="", page=1,
                       "<th>handshakes</th><th>last seen</th>")
 
     back = '<p><a href="' + _esc(_url("/", control)) + '">&larr; Dashboard</a></p>'
+    banner = ""
+    if message:
+        banner = ('<p class="msg' + (" err" if error else "") + '">'
+                  + _esc(message) + "</p>")
+    # The import control writes to the cracked store, so it needs web auth on
+    # (like every other write); read-only pages don't show it.
+    import_form = _cracked_import_form(control, view) if auth_on else ""
     return _page(
         "captured " + noun + "s - Kestrel",
-        back + "<h1>" + heading + "</h1>" + tabs + sorttabs + search
+        back + "<h1>" + heading + "</h1>" + banner + tabs + sorttabs + search
         + '<p class="count">' + count + "</p>"
         + "<div class='wrap'><table><thead><tr>" + head_cells
         + "</tr></thead><tbody>" + body_rows
-        + "</tbody></table></div>" + pager,
+        + "</tbody></table></div>" + pager + import_form,
     )
 
 

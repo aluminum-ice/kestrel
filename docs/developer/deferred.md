@@ -109,6 +109,51 @@ How to use this file:
 - **Pick up when:** the next release that is already reflash-class for a larger
   reason, so this rides along at no extra reflash cost.
 
+## Cracked networks (`kestrel_pi.cracked`)
+
+### Support the default `hashcat.potfile` format
+
+- **What:** the parser reads the wpa-sec download (`bssid:sta:essid:psk`) and the
+  hashcat **separated** potfile (`hash:bssid:sta:essid:psk`), both of which carry
+  the BSSID and ESSID in the clear. It does not read hashcat's *default*
+  `hashcat.potfile`, whose line is `<full WPA* 22000 hash>:<password>` with the
+  ESSID/BSSID hex-encoded inside the `*`-delimited hash; such a line has no
+  adjacent MAC pair, so it is skipped. The import UI says to export with a
+  separated outfile format instead.
+- **Why deferred:** reading it means a second parser that decodes the `WPA*`
+  hash to recover the BSSID/ESSID — more surface for a format the operator can
+  avoid by exporting differently.
+- **What to do:** add a WPA*-hash decoder behind the same `CrackedStore` (a line
+  with one long hash field then a password), feeding the same `CrackedRecord`;
+  drop the "not supported" note from the import UI.
+- **Pick up when:** operators ask for it, or a common tool only emits the default
+  potfile.
+
+### Show imported-but-not-captured records
+
+- **What:** a cracked record whose BSSID matches no captured access point is not
+  shown on `/networks` (there is nothing to annotate); it still counts in
+  `CrackedStore.counts()`. Such records are simply invisible today.
+- **Why deferred:** needs its own small "imported, not captured" list/section and
+  a decision on how it reconciles when the network is later captured; out of
+  scope for annotating captures.
+- **What to do:** add an opt-in list of unmatched cracked records (counts are
+  already available), or fold them in once their BSSID is captured.
+- **Pick up when:** an operator imports results for networks they have not yet
+  captured and wants to see them.
+
+### Retire the `wpa-sec` plugin's cracked page
+
+- **What:** the `wpa-sec` plugin still renders its own `/plugins/wpa-sec/cracked`
+  page. The core cracked service now reads `wpa-sec.potfile` like any other
+  source and shows it on `/networks`, so the plugin page is redundant.
+- **Why deferred:** removing it is a behaviour change (a link some operators may
+  use) best done on its own, not folded into adding the core feature.
+- **What to do:** drop the plugin's `on_webhook` cracked page (and its `ui`/row
+  button), or redirect it to `/networks`; update the plugin's docs and
+  `GUIDE_MD`.
+- **Pick up when:** the unified `/networks` view has shipped and settled.
+
 ## Ghost user-guide publisher (`tools/ghost-guide`)
 
 ### Remove superseded screenshots from Ghost
