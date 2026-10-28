@@ -64,11 +64,11 @@ networks.
   off the main view so it doesn't crowd the dashboard.
 - **Captured networks** — a page listing the unique APs you've captured, with
   BSSID and handshake counts, searchable by name and paginated, so it scales to
-  thousands of networks. A network whose passphrase is known shows a **cracked**
-  badge, and the dashboard card shows a **cracked N of M access points** count;
-  with a login on, expand a cracked row to see the passphrase (unless
+  thousands of networks. A network whose passphrase is known shows a **recovered**
+  badge, and the dashboard card shows a **recovered N of M access points** count;
+  with a login on, expand a recovered row to see the passphrase (unless
   `show_passphrases` is off). See [Working with your
-  captures](working-with-captures.md#seeing-which-networks-are-cracked).
+  captures](working-with-captures.md#seeing-which-networks-are-recovered).
 - **Whitelist** — directly below Captured networks: a page of the APs that are
   never actively attacked (deauth) — they're still observed passively. It's
   searchable, and with a login you can **add a new AP** (an ESSID or a BSSID
@@ -89,7 +89,7 @@ through a small privileged helper (the daemon itself runs unprivileged):
 - **Plugins** — a page to enable/disable plugins and edit their options, with the
   authorized-use acknowledgment for network plugins. See
   [Managing plugins](managing-plugins.md).
-- **Import cracked results** — a control on the Captured networks page for
+- **Import recovered results** — a control on the Captured networks page for
   uploading a potfile of known passphrases (wpa-sec or hashcat separated format).
   See [Working with your
   captures](working-with-captures.md#importing-a-potfile).

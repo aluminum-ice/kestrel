@@ -32,12 +32,12 @@ def test_editable_allowlist_matches_the_root_helper():
     assert cc.EDITABLE == ctl.CONFIG_SETTABLE
 
 
-def test_cracked_networks_settings_are_settable():
+def test_recovered_networks_settings_are_settable():
     # The passphrase-visibility toggle is a plain bool, and the import caps are
     # positive ints -- settable from the Settings page and the apply socket.
     assert cc.EDITABLE["web.show_passphrases"] == {"type": "bool"}
-    assert cc.EDITABLE["cracked.max_import_mb"] == {"type": "int", "min": 1}
-    assert cc.EDITABLE["cracked.max_import_lines"] == {"type": "int", "min": 1}
+    assert cc.EDITABLE["recovered.max_import_mb"] == {"type": "int", "min": 1}
+    assert cc.EDITABLE["recovered.max_import_lines"] == {"type": "int", "min": 1}
     # show_passphrases is read live, so it must not be marked as needing a restart.
     assert cc.find("web", "show_passphrases")["restart"] is cc.RESTART_NONE
 

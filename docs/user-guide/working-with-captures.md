@@ -26,7 +26,7 @@ Everything is under the capture store, **`/var/lib/kestrel/capture/`**:
 | `unknown.hc22000` | Handshakes that couldn't be attributed to an access point. |
 | `*.gps.json` | A GPS location sidecar for a capture, when the `gps` plugin is providing fixes. |
 | `cracked/wpa-sec.potfile` | Passwords recovered for your key, downloaded by the `wpa-sec` plugin. |
-| `cracked/*.potfile` | Any potfile of known passphrases the device reads to annotate your captured networks: the `wpa-sec` download above, an `imported-<stamp>.potfile` from a dashboard upload or `kestrel cracked import`, or a file you copied in over SSH. Private (`0700` dir, `0600` files). The device never cracks anything — it only displays results you produced. |
+| `cracked/*.potfile` | Any potfile of known passphrases the device reads to annotate your captured networks: the `wpa-sec` download above, an `imported-<stamp>.potfile` from a dashboard upload or `kestrel recovered import`, or a file you copied in over SSH. Private (`0700` dir, `0600` files). The device never cracks anything — it only displays results you produced. |
 | `geo/wigle-cache.json` | WiGLE geolocation lookups (display-only; never uploaded). |
 | `archive/` | Snapshots made by housekeeping (archive/rotate). |
 | `.run/` | Small working state (backup restore status, and raw capture files from older releases) — **not** your handshakes. Ignore it. Raw packet capture now lives outside the store, in `/var/lib/kestrel/capture-run/`. |
@@ -56,8 +56,8 @@ one file, whereas `per-ap` keys on the BSSID and keeps them apart.
   to the release that added this show "last seen" from the file's timestamp, or
   "never". The dashboard card shows the network and access-point totals. If any
   of your networks' passphrases are known (see [Cracking them](#cracking-them)),
-  the card also shows a **cracked N of M** count and each cracked row gets a
-  **cracked** badge. The `session-stats` plugin card shows live counts for the
+  the card also shows a **recovered N of M** count and each recovered row gets a
+  **recovered** badge. The `session-stats` plugin card shows live counts for the
   current session.
 - **From the terminal:** `kestrel capture status` reports the store size
   and how many capture files it holds.
@@ -105,17 +105,17 @@ An `hc22000` file is ready for either path:
 
 Only crack and upload handshakes you are authorized to capture.
 
-## Seeing which networks are cracked
+## Seeing which networks are recovered
 
 However a passphrase was recovered — the `wpa-sec` plugin, hashcat on your own
 machine, or anywhere else — the device can show it against the matching captured
 network. It reads **potfiles** from `cracked/` in the store (above); it never
 cracks anything itself.
 
-- A cracked network's row on the **Captured networks** page gets a **cracked**
-  badge, and the dashboard card shows a **cracked N of M access points** count.
+- A recovered network's row on the **Captured networks** page gets a **recovered**
+  badge, and the dashboard card shows a **recovered N of M access points** count.
   Neither is a secret, so both show whenever you can see the page.
-- With the **web login on**, expand a cracked row to see its passphrase. To keep
+- With the **web login on**, expand a recovered row to see its passphrase. To keep
   the badge and count but hide the passphrase — handy when screen-sharing — set
   `show_passphrases` to `false` on the **Settings** page (or in `config.toml`'s
   `[web]` table). The passphrase never shows when the login is off.
@@ -130,16 +130,16 @@ followed by the password) is **not** supported — export with a separated outfi
 format, or upload a wpa-sec file.
 
 - **Dashboard:** on the Captured networks page (web login on), open **Import
-  cracked results** and choose the file.
+  recovered results** and choose the file.
 - **Terminal:**
 
   ```bash
-  kestrel cracked import results.potfile   # parse and merge into the store
-  kestrel cracked list                     # counts by source (no passphrases)
-  kestrel cracked clear --yes              # remove imported files (--source NAME for one)
+  kestrel recovered import results.potfile   # parse and merge into the store
+  kestrel recovered list                     # counts by source (no passphrases)
+  kestrel recovered clear --yes              # remove imported files (--source NAME for one)
   ```
 
-Imports are size- and line-capped (`[cracked] max_import_mb` and
+Imports are size- and line-capped (`[recovered] max_import_mb` and
 `max_import_lines` — see [the config reference](config-reference.md)). Only
 import passphrases for networks you are authorized to test.
 

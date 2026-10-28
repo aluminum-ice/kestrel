@@ -1,4 +1,4 @@
-"""Tests for the cracked-networks core service.
+"""Tests for the recovered-networks core service.
 
 All data here is invented, per CLAUDE.md "Nothing real in the repo": RFC 7042
 ``00:00:5E:00:53:xx`` MACs (bare-hex form ``00005e0053xx``), invented ESSIDs and
@@ -8,9 +8,9 @@ fake passphrases, and a throwaway 32-hex field for the hashcat-line fixtures.
 import os
 import stat
 
-from kestrel_pi import cracked
-from kestrel_pi.cracked import (
-    CrackedStore,
+from kestrel_pi import recovered
+from kestrel_pi.recovered import (
+    RecoveredStore,
     ingest_text,
     parse_potfile_line,
 )
@@ -90,21 +90,21 @@ def test_parse_lone_mac_without_neighbour_is_skipped():
     assert parse_potfile_line("%s:notamacfield:Net:pw" % BSSID_BARE) is None
 
 
-# -- CrackedStore ----------------------------------------------------------
+# -- RecoveredStore ----------------------------------------------------------
 
 def _write_potfile(store_dir, name, text):
-    cracked_dir = os.path.join(store_dir, "cracked")
-    os.makedirs(cracked_dir, exist_ok=True)
-    path = os.path.join(cracked_dir, name)
+    recovered_dir = os.path.join(store_dir, "cracked")
+    os.makedirs(recovered_dir, exist_ok=True)
+    path = os.path.join(recovered_dir, name)
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(text)
     return path
 
 
 def test_store_empty_dir_is_benign(tmp_path):
-    store = CrackedStore(str(tmp_path))
+    store = RecoveredStore(str(tmp_path))
     assert store.all() == []
-    assert store.counts() == {"cracked_aps": 0, "cracked_essids": 0}
+    assert store.counts() == {"recovered_aps": 0, "recovered_essids": 0}
     assert store.lookup_bssid(BSSID_NORM) is None
     assert store.lookup_essid("My Network") == []
 
@@ -117,15 +117,15 @@ def test_store_merges_and_dedupes_across_potfiles(tmp_path):
     _write_potfile(str(tmp_path), "imported-x.potfile",
                    "%s:00005e0053ff:My Network:pw-a\n"
                    "%s:%s:Other:pw-b\n" % (BSSID_BARE, BSSID2_BARE, STA_BARE))
-    store = CrackedStore(str(tmp_path))
+    store = RecoveredStore(str(tmp_path))
     assert len(store.all()) == 2
-    assert store.counts() == {"cracked_aps": 2, "cracked_essids": 2}
+    assert store.counts() == {"recovered_aps": 2, "recovered_essids": 2}
 
 
 def test_store_lookup_bssid_is_exact_and_normalizes_input(tmp_path):
     _write_potfile(str(tmp_path), "a.potfile",
                    "%s:%s:My Network:pw-a\n" % (BSSID_BARE, STA_BARE))
-    store = CrackedStore(str(tmp_path))
+    store = RecoveredStore(str(tmp_path))
     assert store.lookup_bssid(BSSID_NORM).psk == "pw-a"
     assert store.lookup_bssid(BSSID_BARE).psk == "pw-a"       # bare hex
     assert store.lookup_bssid("00:00:5e:00:53:aa").psk == "pw-a"  # lower colon
@@ -137,7 +137,7 @@ def test_store_lookup_essid_lists_multiple_psks_under_one_name(tmp_path):
                    "%s:%s:SharedName:pw-a\n"
                    "%s:%s:SharedName:pw-b\n"
                    % (BSSID_BARE, STA_BARE, BSSID2_BARE, STA_BARE))
-    store = CrackedStore(str(tmp_path))
+    store = RecoveredStore(str(tmp_path))
     recs = store.lookup_essid("SharedName")
     assert len(recs) == 2
     assert {(r.bssid, r.psk) for r in recs} == {
@@ -147,15 +147,15 @@ def test_store_lookup_essid_lists_multiple_psks_under_one_name(tmp_path):
 def test_store_hidden_essid_not_counted_as_essid_but_is_an_ap(tmp_path):
     _write_potfile(str(tmp_path), "a.potfile",
                    "%s:%s::pwonly\n" % (BSSID_BARE, STA_BARE))
-    store = CrackedStore(str(tmp_path))
-    assert store.counts() == {"cracked_aps": 1, "cracked_essids": 0}
+    store = RecoveredStore(str(tmp_path))
+    assert store.counts() == {"recovered_aps": 1, "recovered_essids": 0}
     assert store.lookup_bssid(BSSID_NORM).psk == "pwonly"
 
 
 def test_store_records_carry_their_source_file(tmp_path):
     _write_potfile(str(tmp_path), "wpa-sec.potfile",
                    "%s:%s:My Network:pw-a\n" % (BSSID_BARE, STA_BARE))
-    store = CrackedStore(str(tmp_path))
+    store = RecoveredStore(str(tmp_path))
     assert store.all()[0].source == "wpa-sec.potfile"
 
 
@@ -163,14 +163,14 @@ def test_store_cache_reparses_only_on_change(tmp_path, monkeypatch):
     _write_potfile(str(tmp_path), "a.potfile",
                    "%s:%s:My Network:pw-a\n" % (BSSID_BARE, STA_BARE))
     calls = {"n": 0}
-    real = cracked.parse_potfile_line
+    real = recovered.parse_potfile_line
 
     def counting(line):
         calls["n"] += 1
         return real(line)
 
-    monkeypatch.setattr(cracked, "parse_potfile_line", counting)
-    store = CrackedStore(str(tmp_path))
+    monkeypatch.setattr(recovered, "parse_potfile_line", counting)
+    store = RecoveredStore(str(tmp_path))
 
     store.all()
     after_first = calls["n"]
@@ -196,11 +196,11 @@ def test_ingest_writes_private_file_and_dir(tmp_path):
         str(tmp_path),
         "%s:%s:My Network:pw-a\n" % (BSSID_BARE, STA_BARE))
     assert result == {"imported": 1, "skipped": 0}
-    cracked_dir = os.path.join(str(tmp_path), "cracked")
-    assert _mode(cracked_dir) == 0o700
-    files = os.listdir(cracked_dir)
+    recovered_dir = os.path.join(str(tmp_path), "cracked")
+    assert _mode(recovered_dir) == 0o700
+    files = os.listdir(recovered_dir)
     assert len(files) == 1 and files[0].startswith("imported-")
-    assert _mode(os.path.join(cracked_dir, files[0])) == 0o600
+    assert _mode(os.path.join(recovered_dir, files[0])) == 0o600
 
 
 def test_ingest_result_round_trips_through_the_store(tmp_path):
@@ -209,7 +209,7 @@ def test_ingest_result_round_trips_through_the_store(tmp_path):
                 "%s:%s:%s:My Network:pw-a\n"
                 "%s:%s:My: Net:pw-b\n"
                 % (HASH32, BSSID_BARE, STA_BARE, BSSID2_BARE, STA_BARE))
-    store = CrackedStore(str(tmp_path))
+    store = RecoveredStore(str(tmp_path))
     assert store.lookup_bssid(BSSID_NORM).essid == "My Network"
     other = store.lookup_bssid(BSSID2_NORM)
     assert other.essid == "My: Net"

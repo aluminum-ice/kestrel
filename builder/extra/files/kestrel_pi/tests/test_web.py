@@ -744,8 +744,8 @@ class _FakeCapture:
         return self._access_points
 
 
-class _FakeCracked:
-    """A stand-in for CrackedStore: records as (bssid, essid, psk) triples, plus
+class _FakeRecovered:
+    """A stand-in for RecoveredStore: records as (bssid, essid, psk) triples, plus
     an ``ingest`` that records the text and returns a canned result."""
 
     def __init__(self, records=(), ingest_result=None):
@@ -771,22 +771,22 @@ class _FakeCracked:
 
 
 class _FakeServices:
-    def __init__(self, cracked=None):
-        self._cracked = cracked
+    def __init__(self, recovered=None):
+        self._recovered = recovered
 
     def get(self, name, default=None):
-        if name == "cracked" and self._cracked is not None:
-            return self._cracked
+        if name == "recovered" and self._recovered is not None:
+            return self._recovered
         return default
 
     def names(self):
-        return ["cracked"] if self._cracked is not None else []
+        return ["recovered"] if self._recovered is not None else []
 
 
 class _FakeDaemon:
     def __init__(self, web_cfg, plugin_table, networks=None,
-                 access_points=None, output_mode=None, cracked=None,
-                 cracked_cfg=None):
+                 access_points=None, output_mode=None, recovered=None,
+                 recovered_cfg=None):
         import logging
         from kestrel_pi.loader import PluginRecord
 
@@ -799,11 +799,11 @@ class _FakeDaemon:
         self.config = {"web": web_cfg, "plugins": {"wpa-sec": plugin_table}}
         if output_mode is not None:
             self.config["capture"] = {"output": {"mode": output_mode}}
-        if cracked_cfg is not None:
-            self.config["cracked"] = cracked_cfg
+        if recovered_cfg is not None:
+            self.config["recovered"] = recovered_cfg
         self.capture = _FakeCapture(networks or [], access_points)
-        self.services = _FakeServices(cracked)
-        self.cracked = cracked      # the import route writes through this
+        self.services = _FakeServices(recovered)
+        self.recovered = recovered      # the import route writes through this
 
     def _fresh_config(self):
         return self.config
@@ -824,7 +824,7 @@ def _basic(user="pi", password="hunter2"):
 
 
 def _client(monkeypatch, tmp_path, web_cfg, table=None, replies=None, networks=None,
-            access_points=None, output_mode=None, cracked=None, cracked_cfg=None):
+            access_points=None, output_mode=None, recovered=None, recovered_cfg=None):
     pytest.importorskip("flask")
     sent = []
 
@@ -839,8 +839,8 @@ def _client(monkeypatch, tmp_path, web_cfg, table=None, replies=None, networks=N
     monkeypatch.setattr(web, "iface_ipv4", lambda iface: None)
     daemon = _FakeDaemon(web_cfg, table if table is not None else {"enabled": False},
                          networks=networks, access_points=access_points,
-                         output_mode=output_mode, cracked=cracked,
-                         cracked_cfg=cracked_cfg)
+                         output_mode=output_mode, recovered=recovered,
+                         recovered_cfg=recovered_cfg)
     return web.create_app(daemon).test_client(), sent
 
 
@@ -1672,31 +1672,31 @@ def test_networks_ap_unknown_bssid_row(monkeypatch, tmp_path):
     assert "(unknown BSSID)" in body
 
 
-# -- cracked-networks annotation on /networks ----------------------------
+# -- recovered-networks annotation on /networks ----------------------------
 # Invented data only: RFC 7042 MACs, an invented SSID, a fake passphrase.
 _CRK_BSSID = "00:00:5E:00:53:AA"
 _CRK_PSK = "correct-horse"
 
 
-def _cracked_one():
-    return _FakeCracked([(_CRK_BSSID, "My Network", _CRK_PSK)])
+def _recovered_one():
+    return _FakeRecovered([(_CRK_BSSID, "My Network", _CRK_PSK)])
 
 
 def test_networks_badge_and_passphrase_with_auth_on(monkeypatch, tmp_path):
-    # By-network view, web auth on, show_passphrases default true: the cracked
-    # row gets the badge and the passphrase in a disclosure; an uncracked row
+    # By-network view, web auth on, show_passphrases default true: the recovered
+    # row gets the badge and the passphrase in a disclosure; an unrecovered row
     # gets neither.
     client, _ = _client(
         monkeypatch, tmp_path, BASIC, output_mode="per-ssid",
         networks=_nets("My Network", "Other Net"),
         access_points=_aps(("My Network", _CRK_BSSID)),
-        cracked=_cracked_one())
+        recovered=_recovered_one())
     body = client.get("/networks", headers=_basic()).get_data(as_text=True)
-    assert "cracked" in body and "<details" in body
+    assert "recovered" in body and "<details" in body
     assert _CRK_PSK in body
-    # The uncracked network is still listed, with no badge/passphrase of its own.
+    # The unrecovered network is still listed, with no badge/passphrase of its own.
     assert "Other Net" in body
-    assert body.count(">cracked</span>") == 1
+    assert body.count(">recovered</span>") == 1
 
 
 def test_networks_passphrase_withheld_when_auth_off(monkeypatch, tmp_path):
@@ -1706,9 +1706,9 @@ def test_networks_passphrase_withheld_when_auth_off(monkeypatch, tmp_path):
         monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ssid",
         networks=_nets("My Network"),
         access_points=_aps(("My Network", _CRK_BSSID)),
-        cracked=_cracked_one())
+        recovered=_recovered_one())
     body = client.get("/networks").get_data(as_text=True)
-    assert "cracked" in body
+    assert "recovered" in body
     assert _CRK_PSK not in body and "<details" not in body
 
 
@@ -1719,9 +1719,9 @@ def test_networks_passphrase_hidden_by_show_passphrases_false(monkeypatch, tmp_p
         monkeypatch, tmp_path, dict(BASIC, show_passphrases=False),
         output_mode="per-ssid", networks=_nets("My Network"),
         access_points=_aps(("My Network", _CRK_BSSID)),
-        cracked=_cracked_one())
+        recovered=_recovered_one())
     body = client.get("/networks", headers=_basic()).get_data(as_text=True)
-    assert "cracked" in body
+    assert "recovered" in body
     assert _CRK_PSK not in body
     assert "show_passphrases = true" in body
 
@@ -1731,11 +1731,11 @@ def test_networks_ap_view_shows_passphrase_for_the_radio(monkeypatch, tmp_path):
         monkeypatch, tmp_path, BASIC, output_mode="per-ap",
         access_points=_aps(("My Network", _CRK_BSSID),
                            ("Other Net", "00:00:5E:00:53:BB")),
-        cracked=_cracked_one())
+        recovered=_recovered_one())
     body = client.get("/networks?view=ap", headers=_basic()).get_data(as_text=True)
     assert _CRK_PSK in body
-    # Only the cracked radio carries the badge.
-    assert body.count(">cracked</span>") == 1
+    # Only the recovered radio carries the badge.
+    assert body.count(">recovered</span>") == 1
 
 
 def test_networks_passphrase_is_escaped(monkeypatch, tmp_path):
@@ -1743,33 +1743,33 @@ def test_networks_passphrase_is_escaped(monkeypatch, tmp_path):
         monkeypatch, tmp_path, BASIC, output_mode="per-ssid",
         networks=_nets("My Network"),
         access_points=_aps(("My Network", _CRK_BSSID)),
-        cracked=_FakeCracked([(_CRK_BSSID, "My Network", "a<b>&c")]))
+        recovered=_FakeRecovered([(_CRK_BSSID, "My Network", "a<b>&c")]))
     body = client.get("/networks", headers=_basic()).get_data(as_text=True)
     assert "a&lt;b&gt;&amp;c" in body and "a<b>&c" not in body
 
 
-def test_networks_no_cracked_service_is_benign(monkeypatch, tmp_path):
+def test_networks_no_recovered_service_is_benign(monkeypatch, tmp_path):
     client, _ = _client(monkeypatch, tmp_path, BASIC, output_mode="per-ssid",
-                        networks=_nets("My Network"))      # cracked=None
+                        networks=_nets("My Network"))      # recovered=None
     body = client.get("/networks", headers=_basic()).get_data(as_text=True)
-    # No cracked badge or passphrase disclosure on any row (the import control's
-    # own text mentions "cracked", so check for the markers, not the word).
-    assert ">cracked</span>" not in body and 'class="crk-d"' not in body
+    # No recovered badge or passphrase disclosure on any row (the import control's
+    # own text mentions "recovered", so check for the markers, not the word).
+    assert ">recovered</span>" not in body and 'class="crk-d"' not in body
 
 
-def test_dashboard_navcard_shows_cracked_count_when_present(monkeypatch, tmp_path):
+def test_dashboard_navcard_shows_recovered_count_when_present(monkeypatch, tmp_path):
     status = dict(_status([]))
-    status["capture"] = dict(status["capture"], cracked_aps=3)
+    status["capture"] = dict(status["capture"], recovered_aps=3)
     html = web._render_status(status)
-    assert "3 of 19 access point(s) cracked" in html
+    assert "3 of 19 access point(s) recovered" in html
 
 
-def test_dashboard_navcard_omits_cracked_count_when_absent(monkeypatch, tmp_path):
-    html = web._render_status(_status([]))      # no cracked_aps key
-    assert "cracked" not in html
+def test_dashboard_navcard_omits_recovered_count_when_absent(monkeypatch, tmp_path):
+    html = web._render_status(_status([]))      # no recovered_aps key
+    assert "recovered" not in html
 
 
-# -- cracked import upload (/cracked/import) -----------------------------
+# -- recovered import upload (/recovered/import) -----------------------------
 def _potfile_upload(data):
     return {"potfile": (io.BytesIO(data), "results.potfile")}
 
@@ -1791,19 +1791,19 @@ def _redirect_banner(resp):
 def test_networks_import_form_shown_only_with_web_auth(monkeypatch, tmp_path):
     off, _ = _client(monkeypatch, tmp_path, {"auth": "none"},
                      networks=_nets("My Network"))
-    assert "Import cracked results" not in off.get("/networks").get_data(as_text=True)
+    assert "Import recovered results" not in off.get("/networks").get_data(as_text=True)
     on, _ = _client(monkeypatch, tmp_path, BASIC, networks=_nets("My Network"))
     body = on.get("/networks", headers=_basic()).get_data(as_text=True)
-    assert "Import cracked results" in body
-    assert 'action="/cracked/import"' in body and 'type="file"' in body
+    assert "Import recovered results" in body
+    assert 'action="/recovered/import"' in body and 'type="file"' in body
 
 
-def test_cracked_import_success_shows_summary(monkeypatch, tmp_path):
-    fake = _FakeCracked(ingest_result={"imported": 2, "skipped": 1})
+def test_recovered_import_success_shows_summary(monkeypatch, tmp_path):
+    fake = _FakeRecovered(ingest_result={"imported": 2, "skipped": 1})
     client, _ = _client(monkeypatch, tmp_path, BASIC, networks=_nets("x"),
-                        cracked=fake)
+                        recovered=fake)
     token = _csrf(client.get("/networks", headers=_basic()).get_data(as_text=True))
-    resp = client.post("/cracked/import", headers=_basic(),
+    resp = client.post("/recovered/import", headers=_basic(),
                        data={"csrf": token, "view": "ssid",
                              **_potfile_upload(b"00005e0053aa:00005e005301:My Net:pw\n")},
                        content_type="multipart/form-data")
@@ -1812,10 +1812,10 @@ def test_cracked_import_success_shows_summary(monkeypatch, tmp_path):
     assert len(fake.ingested) == 1                 # the file reached ingest()
 
 
-def test_cracked_import_requires_csrf(monkeypatch, tmp_path):
-    fake = _FakeCracked(ingest_result={"imported": 1, "skipped": 0})
-    client, _ = _client(monkeypatch, tmp_path, BASIC, cracked=fake)
-    resp = client.post("/cracked/import", headers=_basic(),
+def test_recovered_import_requires_csrf(monkeypatch, tmp_path):
+    fake = _FakeRecovered(ingest_result={"imported": 1, "skipped": 0})
+    client, _ = _client(monkeypatch, tmp_path, BASIC, recovered=fake)
+    resp = client.post("/recovered/import", headers=_basic(),
                        data={"view": "ssid", **_potfile_upload(b"x")},
                        content_type="multipart/form-data")
     kind, text = _redirect_banner(resp)
@@ -1823,10 +1823,10 @@ def test_cracked_import_requires_csrf(monkeypatch, tmp_path):
     assert fake.ingested == []                     # nothing imported without CSRF
 
 
-def test_cracked_import_refused_when_auth_off(monkeypatch, tmp_path):
-    fake = _FakeCracked(ingest_result={"imported": 1, "skipped": 0})
-    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"}, cracked=fake)
-    resp = client.post("/cracked/import",
+def test_recovered_import_refused_when_auth_off(monkeypatch, tmp_path):
+    fake = _FakeRecovered(ingest_result={"imported": 1, "skipped": 0})
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"}, recovered=fake)
+    resp = client.post("/recovered/import",
                        data={"csrf": "x", **_potfile_upload(b"x")},
                        content_type="multipart/form-data")
     kind, text = _redirect_banner(resp)
@@ -1834,13 +1834,13 @@ def test_cracked_import_refused_when_auth_off(monkeypatch, tmp_path):
     assert fake.ingested == []
 
 
-def test_cracked_import_rejects_oversize(monkeypatch, tmp_path):
-    fake = _FakeCracked(ingest_result={"imported": 0, "skipped": 0})
-    client, _ = _client(monkeypatch, tmp_path, BASIC, cracked=fake,
-                        cracked_cfg={"max_import_mb": 1})
+def test_recovered_import_rejects_oversize(monkeypatch, tmp_path):
+    fake = _FakeRecovered(ingest_result={"imported": 0, "skipped": 0})
+    client, _ = _client(monkeypatch, tmp_path, BASIC, recovered=fake,
+                        recovered_cfg={"max_import_mb": 1})
     token = _csrf(client.get("/networks", headers=_basic()).get_data(as_text=True))
     big = b"x" * (1024 * 1024 + 1)                  # one byte over the 1 MB cap
-    resp = client.post("/cracked/import", headers=_basic(),
+    resp = client.post("/recovered/import", headers=_basic(),
                        data={"csrf": token, **_potfile_upload(big)},
                        content_type="multipart/form-data")
     kind, text = _redirect_banner(resp)
@@ -1848,11 +1848,11 @@ def test_cracked_import_rejects_oversize(monkeypatch, tmp_path):
     assert fake.ingested == []                     # rejected before ingest
 
 
-def test_cracked_import_no_file_selected(monkeypatch, tmp_path):
-    fake = _FakeCracked()
-    client, _ = _client(monkeypatch, tmp_path, BASIC, cracked=fake)
+def test_recovered_import_no_file_selected(monkeypatch, tmp_path):
+    fake = _FakeRecovered()
+    client, _ = _client(monkeypatch, tmp_path, BASIC, recovered=fake)
     token = _csrf(client.get("/networks", headers=_basic()).get_data(as_text=True))
-    resp = client.post("/cracked/import", headers=_basic(), data={"csrf": token})
+    resp = client.post("/recovered/import", headers=_basic(), data={"csrf": token})
     kind, text = _redirect_banner(resp)
     assert kind == "err" and "No file selected." in text
     assert fake.ingested == []
@@ -2183,7 +2183,7 @@ def test_update_submit_threads_no_backup_through(monkeypatch, tmp_path):
 
 # -- generic plugin row buttons (__actions__ + /plugins/<name>/<path>) -------
 # The five bespoke button routes (backup/restore, remote-train, update-check,
-# wpa-sec cracked) are gone: a plugin now declares up to two row buttons via
+# wpa-sec recovered) are gone: a plugin now declares up to two row buttons via
 # __actions__/webhook_actions and renders/handles them in its own on_webhook.
 # These tests cover the generic core mechanism; each plugin's own behaviour is
 # tested with the plugin (test_reference_plugins.py, test_updates.py).
