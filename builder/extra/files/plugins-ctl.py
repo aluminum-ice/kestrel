@@ -138,6 +138,7 @@ CONFIG_SETTABLE = {
     "daemon.connectivity_poll_seconds": {"type": "int", "min": 1},
     "web.refresh_seconds": {"type": "int", "min": 0},
     "web.show_passphrases": {"type": "bool"},
+    "web.show_locations": {"type": "bool"},
     "web.probe_url": {"type": "str", "maxlen": 256},
     # recovered networks (import caps; read live, so no restart)
     "recovered.max_import_mb": {"type": "int", "min": 1},
@@ -146,7 +147,7 @@ CONFIG_SETTABLE = {
 
 # [web] keys the dashboard reads live on each render, so a change takes effect
 # without bouncing the plugin host (unlike every other [web]/[daemon] key).
-_WEB_LIVE_KEYS = frozenset({"show_passphrases"})
+_WEB_LIVE_KEYS = frozenset({"show_passphrases", "show_locations"})
 
 
 def load_config():

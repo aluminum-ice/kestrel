@@ -268,6 +268,13 @@ SECTIONS = [
                   "count but hides the passphrase -- for screen-sharing or "
                   "shoulder-surfing. Takes effect immediately, no restart.",
                   RESTART_NONE),
+            _edit("web", "show_locations", "bool", True,
+                  "Show a captured network's recorded/estimated location "
+                  "(lat/long) in its Captured-networks card as an OpenStreetMap "
+                  "link (needs the web login). Off keeps a muted 'location hidden' "
+                  "marker but hides the coordinates -- for screen-sharing. Takes "
+                  "effect immediately, no restart.",
+                  RESTART_NONE),
             _ro("web", "auth", RO_LOCKOUT,
                 "The login mode. Use 'sudo kestrel web auth <mode>' — a "
                 "wrong value can lock you out of the dashboard.", cli=""),
