@@ -62,12 +62,18 @@ check() { printf 'CHECK %-5s %-6s %s :: %s\n' "$1" "$2" "$3" "${4:-}"; }
 svc_active() { systemctl is-active "$1" 2>/dev/null || true; }
 
 # Optional dashboard login, asked up front so the rest runs unattended.
+# KESTREL_WEB_PASSWORD, when set (e.g. forwarded by pull-beta-check.sh over
+# SSH's env channel, never on a command line), is used as-is and the prompt is
+# skipped, so the fetch can run unattended. Capture it into web_pw and drop it
+# from the environment so the many child processes below don't inherit it.
 web_auth=$(cfg web.auth system)
-web_pw=""
-if [ "$web_auth" = "system" ] && [ -t 0 ]; then
+web_pw="${KESTREL_WEB_PASSWORD:-}"
+unset KESTREL_WEB_PASSWORD 2>/dev/null || true
+if [ -z "$web_pw" ] && [ "$web_auth" = "system" ] && [ -t 0 ]; then
   echo "Optional: the dashboard's /status.json adds plugin health, agent and"
   echo "environment state to the report. Type the device login password"
-  printf 'to include it (input hidden), or press Enter to skip: '
+  echo "(or set KESTREL_WEB_PASSWORD to skip this prompt)."
+  printf 'Type it to include it (input hidden), or press Enter to skip: '
   IFS= read -rs web_pw || web_pw=""
   echo
 fi
@@ -85,14 +91,10 @@ echo "uptime:     $(uptime -p 2>/dev/null)"
 echo "python3:    $(/usr/bin/python3 -V 2>&1)"
 echo "web auth:   $web_auth"
 
-# ================================================================ 1.0.7-beta.2 checks (#36 rename #39)
-# Recovered networks: surface known passphrases for captured networks (display
-# + import). CHECK ids match the checklist issue.
-pid=$(systemctl show -p MainPID --value kestrel-daemon.service 2>/dev/null)
-cap_state=$(svc_active kestrel-capture.service)
-cap_since=$(systemctl show -p ActiveEnterTimestamp --value kestrel-capture.service 2>/dev/null)
-cap_since_s=$(date -d "$cap_since" +%s 2>/dev/null || echo 0)
-cap_age=$(( $(date +%s) - cap_since_s ))
+# ================================================================ 1.0.8-beta.1 checks (#45)
+# Network locations: show a captured network's lat/long on /networks, recorded
+# by the onboard GPS or estimated from an external source. Display-only; the
+# CHECK ids match the checklist issue.
 upd=/var/lib/kestrel/update-run/status.json
 
 # ---------------------------------------------------------------- 1. update to this beta
@@ -151,83 +153,67 @@ else
   check 1.5 SKIP "settings unchanged by the update" "no in-place update recorded"
 fi
 
-# ---------------------------------------------------------------- 2. recovered-networks core service (#36)
-sec "2. recovered-networks core service (#36)"
-imp=$(as_dev "$VENV_PY" -I -c 'import kestrel_pi.recovered as c
-print(all(hasattr(c, n) for n in ("RecoveredStore", "ingest_text", "parse_potfile_line")))' 2>&1)
+# ---------------------------------------------------------------- 2. network-location core service (#45)
+sec "2. network-location core service (#45)"
+imp=$(as_dev "$VENV_PY" -I -c 'import kestrel_pi.geo as g
+print(all(hasattr(g, n) for n in ("GeoStore", "classify", "fmt_coord", "osm_url", "RECORDED", "ESTIMATED")))' 2>&1)
 if [ "$imp" = True ]; then
-  check 2.1 PASS "installed package provides kestrel_pi.recovered" "RecoveredStore + ingest_text + parser"
+  check 2.1 PASS "installed package provides kestrel_pi.geo" "GeoStore + classify + fmt_coord + osm_url"
 else
-  check 2.1 FAIL "installed package provides kestrel_pi.recovered" "$(printf '%s' "$imp" | tr '\n' ' ' | cut -c1-120)"
+  check 2.1 FAIL "installed package provides kestrel_pi.geo" "$(printf '%s' "$imp" | tr '\n' ' ' | cut -c1-120)"
 fi
 # Round-trip through a throwaway store the device user owns (placeholder data
-# only; never the real store): proves the installed parser reads both formats,
-# dedups, and writes a 0600 potfile.
+# only; never the real store): proves the installed reader reads a recorded GPS
+# sidecar and an estimated geo cache, prefers the recorded fix, classifies the
+# source, and formats the coordinate and the map link.
 dtmp=$(as_dev mktemp -d 2>/dev/null)
 if [ -n "$dtmp" ]; then
   rt=$(as_dev "$VENV_PY" -I - "$dtmp" <<'PY' 2>&1
-import os, stat, sys
-from kestrel_pi import recovered
+import json, os, sys
+from kestrel_pi import geo
 store = sys.argv[1]
-text = ("0123456789abcdef0123456789abcdef:00005e0053aa:00005e005301:My Network:correct-horse\n"
-        "00005e0053bb:00005e005302:Cafe Guest:s3cret\n"
-        "00005e0053aa:00005e005301:My Network:correct-horse\n"
-        "garbage line\n")
-res = recovered.ingest_text(store, text)
-counts = recovered.RecoveredStore(store).counts()
-pots = [f for f in os.listdir(os.path.join(store, "cracked")) if f.endswith(".potfile")]
-mode = stat.S_IMODE(os.stat(os.path.join(store, "cracked", pots[0])).st_mode) if pots else -1
-ok = (res == {"imported": 2, "skipped": 1}
-      and counts == {"recovered_aps": 2, "recovered_essids": 2} and mode == 0o600)
-print("OK" if ok else "BAD", res, counts, oct(mode))
+with open(os.path.join(store, "cap.hc22000.gps.json"), "w") as h:
+    json.dump({"00:00:5E:00:53:AA": {"lat": 12.34567, "lon": -45.67890,
+               "fix_time": "2026-01-01T00:00:00Z", "source": "gpsd"}}, h)
+os.makedirs(os.path.join(store, "geo"), exist_ok=True)
+with open(os.path.join(store, "geo", "wigle-cache.json"), "w") as h:
+    json.dump({"00:00:5E:00:53:AA": {"bssid": "00:00:5E:00:53:AA", "lat": 1.0,
+               "lon": 2.0, "source": "wigle-search", "query_time": "2026-06-01T00:00:00Z"},
+               "00:00:5E:00:53:BB": {"bssid": "00:00:5E:00:53:BB", "lat": 12.34567,
+               "lon": -45.67890, "source": "wigle-search", "query_time": "2026-01-01T00:00:00Z"}}, h)
+g = geo.GeoStore(store)
+a = g.lookup_bssid("00:00:5E:00:53:AA")   # both files have it: recorded must win
+b = g.lookup_bssid("00:00:5E:00:53:BB")   # estimated only
+ok = (a is not None and a.cls == "recorded" and a.label == "onboard GPS"
+      and b is not None and b.cls == "estimated" and b.label == "WiGLE"
+      and g.counts() == {"located_aps": 2}
+      and geo.classify("gpsd")[0] == "recorded"
+      and geo.classify("brand-new-src") == ("estimated", "brand-new-src")
+      and geo.fmt_coord(12.3456789) == "12.34568"
+      and geo.osm_url(12.34567, -45.6789).startswith("https://www.openstreetmap.org/"))
+print("OK" if ok else "BAD", a and a.cls, b and b.cls, g.counts())
 PY
 )
   as_dev rm -rf "$dtmp" 2>/dev/null
   if printf '%s\n' "$rt" | grep -q '^OK'; then
-    check 2.2 PASS "parser + store round-trip (both formats, dedup, 0600)" "imported 2, skipped 1, 2 APs"
+    check 2.2 PASS "reader round-trip (sidecar + geo cache, recorded-beats-estimated, classify)" "2 located APs, recorded preferred"
   else
-    check 2.2 FAIL "parser + store round-trip" "$(printf '%s' "$rt" | tr '\n' ' ' | cut -c1-160)"
+    check 2.2 FAIL "reader round-trip" "$(printf '%s' "$rt" | tr '\n' ' ' | cut -c1-160)"
   fi
 else
-  check 2.2 SKIP "parser + store round-trip" "could not make a throwaway dir"
+  check 2.2 SKIP "reader round-trip" "could not make a throwaway dir"
 fi
-# 2.3 (recovered_aps in /status.json) is emitted from the dashboard section below
+# 2.3 (located_aps in /status.json) is emitted from the dashboard section below
 # when the optional login is given.
-check 2.4 MANUAL "/networks shows a recovered badge and the card shows recovered N of M" "by hand"
+check 2.4 MANUAL "/networks shows a location with an OpenStreetMap link on a located network's row" "by hand"
 
-# ---------------------------------------------------------------- 3. passphrase visibility (#36)
-sec "3. passphrase visibility (#36)"
-check 3.1 MANUAL "with the web login on, a recovered row reveals its passphrase" "by hand"
-check 3.2 MANUAL "show_passphrases=false hides the passphrase; badge+count stay; login off never shows it" "by hand"
-# 3.3 (saved live, no restart) is in the config-tests section below.
-
-# ---------------------------------------------------------------- 5. recovered import: CLI (#36)
-sec "5. recovered import - CLI (#36)"
-if grep -q 'cmd_recovered()' "$CLI" && grep -q 'recovered) cmd_recovered' "$CLI"; then
-  check 5.1 PASS "installed CLI has the recovered subcommand" "import | list | clear"
-else
-  check 5.1 FAIL "installed CLI has the recovered subcommand" ""
-fi
-clist=$(as_dev "$CLI" recovered list 2>&1)
-if printf '%s\n' "$clist" | grep -qi 'recovered record'; then
-  check 5.2 PASS "kestrel recovered list prints counts only (no passphrase)" "$(printf '%s' "$clist" | head -1 | cut -c1-80)"
-else
-  check 5.2 INFO "kestrel recovered list" "ran; output not shown (it can name imported files)"
-fi
-check 5.3 MANUAL "the web Import recovered results upload accepts a potfile and shows the summary" "by hand"
-
-# ---------------------------------------------------------------- 6. recovered store privacy (#36)
-sec "6. recovered store privacy (#36)"
-crkdir=$STORE/cracked
-if [ -d "$crkdir" ]; then
-  dp=$(stat -c '%a' "$crkdir")
-  nbad=$(find "$crkdir" -maxdepth 1 -type f -name '*.potfile' ! -perm 600 2>/dev/null | wc -l)
-  { [ "$dp" = 700 ] && [ "$nbad" -eq 0 ]; } \
-    && check 6.1 PASS "recovered dir 0700, potfiles 0600" "dir=$dp potfiles ok" \
-    || check 6.1 FAIL "recovered dir 0700, potfiles 0600" "dir=$dp not-0600=$nbad"
-else
-  check 6.1 SKIP "recovered dir 0700, potfiles 0600" "no recovered store yet"
-fi
+# ---------------------------------------------------------------- 3. location display + gating (#45)
+sec "3. location display + gating (#45)"
+check 3.1 MANUAL "recorded shows the solid pin glyph; estimated shows the approx (~) mark" "by hand (needs gps and/or wigle data)"
+check 3.2 MANUAL "with the web login off, no coordinates or map link show on any row" "by hand"
+check 3.4 MANUAL "show_locations=false hides the coords/link but keeps a 'location hidden' marker" "by hand"
+# 3.3 (show_locations saved live, no restart) and 4.x (allow-list, live key) are
+# in the config-tests section below.
 
 # ---------------------------------------------------------------- config tests (throwaway copy)
 sec "config tests (throwaway copy of config.toml; commands blocked)"
@@ -256,23 +242,19 @@ def check(cid, ok, what, detail=""): print("CHECK %-5s %-6s %s :: %s" % (cid, "P
 def apply(ch):
     try: return ctl.apply_change(ch)
     except Exception as e: return {"ok": False, "error": "exc %s" % type(e).__name__}
-# recovered networks (#36): the passphrase-visibility toggle and the import caps.
-# 3.3: show_passphrases saves live via the socket (not root_only, no restart)
-r = apply({"target":"config-set","table":"web","key":"show_passphrases","value":False})
-check("3.3", bool(r.get("ok")) and read("web.show_passphrases") is False and not r.get("restart"),
-      "web.show_passphrases saved live, no daemon restart", "ok=%s restart=%s" % (r.get("ok"), r.get("restart")))
-# 4.1: the new keys are in the root allow-list with the right specs
+# network locations (#45): the show_locations visibility toggle.
+# 3.3: show_locations saves live via the socket (not root_only, no restart)
+r = apply({"target":"config-set","table":"web","key":"show_locations","value":False})
+check("3.3", bool(r.get("ok")) and read("web.show_locations") is False and not r.get("restart"),
+      "web.show_locations saved live, no daemon restart", "ok=%s restart=%s" % (r.get("ok"), r.get("restart")))
+# 4.1: the new key is in the root allow-list with the right spec
 spec = getattr(ctl, "CONFIG_SETTABLE", {})
-want = {"web.show_passphrases": {"type": "bool"},
-        "recovered.max_import_mb": {"type": "int", "min": 1},
-        "recovered.max_import_lines": {"type": "int", "min": 1}}
-check("4.1", all(spec.get(k) == v for k, v in want.items()),
-      "show_passphrases + [recovered] caps settable in the allow-list", "")
-# 4.2: the apply socket saves the [recovered] import caps
-cur = read("recovered.max_import_mb", 2); want2 = int(cur) + 1
-r = apply({"target":"config-set","table":"recovered","key":"max_import_mb","value":want2})
-check("4.2", bool(r.get("ok")) and read("recovered.max_import_mb") == want2,
-      "apply socket saves [recovered] max_import_mb", "ok=%s" % r.get("ok"))
+check("4.1", spec.get("web.show_locations") == {"type": "bool"},
+      "web.show_locations settable in the allow-list", "")
+# 4.2: it is a live web key (saved without a daemon restart)
+live = getattr(ctl, "_WEB_LIVE_KEYS", frozenset())
+check("4.2", "show_locations" in live,
+      "web.show_locations is a live web key (no restart)", "")
 PY
 [ "$(sha256sum "$CONFIG" | awk '{print $1}')" = "$cfg_sum_before" ] \
   && check 0.1 PASS "real config.toml untouched by the tests" "checksum identical" \
@@ -314,8 +296,8 @@ except Exception as exc:
     sys.exit(0)
 print("version:", s.get("version"))
 cap = s.get("capture", {}) or {}
-print("capture:", {k: cap.get(k) for k in ("state", "enabled", "hashline_files", "recovered_aps")})
-print("CHECK %-5s %-6s %s :: %s" % ("2.3", "PASS" if "recovered_aps" in cap else "FAIL", "recovered_aps present in /status.json capture", cap.get("recovered_aps")))
+print("capture:", {k: cap.get(k) for k in ("state", "enabled", "hashline_files", "located_aps")})
+print("CHECK %-5s %-6s %s :: %s" % ("2.3", "PASS" if "located_aps" in cap else "FAIL", "located_aps present in /status.json capture", cap.get("located_aps")))
 print("environment:", s.get("environment"))
 ag = s.get("agent", {}) or {}
 print("agent:", {k: v for k, v in ag.items() if isinstance(v, (str, int, float, bool)) or v is None})
@@ -342,18 +324,16 @@ cat >>"$raw" <<'EOF'
 ===== by hand (the script can't see these) =====
 1.x  with the updates plugin's beta OFF, this beta is NOT offered; with beta ON
      it is offered and applies in place
-2.1  the Plugins page shows updates repo/host/token read-only (terminal only)
-3.x  a new handshake from your own test AP is saved (dashboard count goes up)
-3.10 the Environment card shows a radios-in-range count, not "unknown"
-5.3  an existing learned model still loads (/agent shows learned, not baseline)
-6.x  re-run setup on a failing host / set up a new host
-7.x  a real wpa-sec / wigle upload of your own test capture
-8.1  the hidden prompts, the --set/--psk warnings printing, Wi-Fi via --psk-stdin
-9.2  the e-ink shows PWND / AP / NET and they match the dashboard numbers
-10.3 unplug the GPS live: the card goes to no-signal and the daemon + dashboard
-     stay up (the regression fixed in beta.4)
-12   the failed NetworkManager-wait-online unit: new, or present on 1.0.5 too?
-     fresh-flash smoke test; how the dashboard and /guide look on a phone
+2.4  a located network's row on /networks shows its coordinate as an
+     OpenStreetMap link (the link opens that spot)
+3.1  recorded (onboard GPS) shows the solid pin; estimated (e.g. WiGLE) shows
+     the "approximately" (~) mark + hollow ring  (needs gps and/or wigle data)
+3.2  with the web login OFF, no coordinates or map link appear on any row
+3.4  show_locations=false keeps a muted "location hidden" marker but hides the
+     coordinate and the link; back to true shows them again (no restart)
+3.5  the legend under the table explains the two glyphs; a network with no known
+     location shows nothing (no empty cell)
+9.x  how the Captured networks page and /guide look on a phone
 EOF
 
 # ---------------------------------------------------------------- redact and save
