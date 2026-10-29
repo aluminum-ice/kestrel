@@ -1,14 +1,15 @@
 """The plugin API surface: the ``Plugin`` base class and the hook catalogue.
 
-This mirrors legacy pwnagotchi's plugin API so community plugins port with
-light changes: a plugin is a module that defines a ``Plugin`` subclass with
-no-op ``on_*`` methods it overrides. The legacy ``@plugins.on`` decorator
-style is not supported, and declarations must be plain literals in the class
-body (:mod:`.declarations`): root reads them without importing the plugin. The deviations from legacy are additive
-declarations the loader reads (``__target_api__``, ``__capabilities__``,
-``__options__``, ``__requires__``/``__provides__``) and a typed ``self.context``
-in place of a global singleton; the method bodies a ported plugin carries are
-unchanged.
+This is modelled on legacy pwnagotchi's plugin API: a plugin is a module that
+defines a ``Plugin`` subclass with no-op ``on_*`` methods it overrides, under
+the familiar hook names. It is not drop-in compatible: several hooks take
+different arguments (a typed event, and ``self.context`` in place of
+pwnagotchi's ``agent`` object), so a ported plugin needs its hook signatures
+and any ``agent`` calls updated. The legacy ``@plugins.on`` decorator style is
+not supported, and declarations must be plain literals in the class body
+(:mod:`.declarations`): root reads them without importing the plugin. The
+declarations the loader reads are ``__target_api__``, ``__capabilities__``,
+``__options__`` and ``__requires__``/``__provides__``.
 """
 
 from __future__ import annotations

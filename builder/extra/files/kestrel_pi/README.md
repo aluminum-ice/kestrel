@@ -4,7 +4,7 @@ The on-device Python runtime for Kestrel, a Raspberry Pi Wi-Fi
 capture-and-learning device. It bundles three cooperating pieces:
 
 - **A plugin host daemon** (`kestrel-daemon`) that loads plugins and
-  dispatches a pwnagotchi-compatible `on_*` hook API off its event loop,
+  dispatches an `on_*` hook API modelled on pwnagotchi's off its event loop,
   drawing on the device's connectivity and capture state.
 - **A web dashboard** served on the device's management link — a
   dependency-free, server-rendered status and control surface for capture,

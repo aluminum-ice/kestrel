@@ -1,8 +1,9 @@
 """Non-blocking, isolated hook dispatch (improvement 1).
 
-Legacy pwnagotchi runs hooks synchronously in the agent loop, so one plugin
-doing network I/O in ``on_handshake`` stalls everyone. Here the daemon owns a
-bounded worker pool and dispatches hooks off the event loop:
+Legacy pwnagotchi runs hooks on unbounded background threads with no deadline,
+so nothing notices a slow hook or sets aside a stuck plugin, and a hung
+plugin's work silently piles up. Here the daemon owns a bounded worker pool and
+dispatches hooks off the event loop:
 
 * **Non-blocking:** :meth:`Dispatcher.dispatch` returns immediately; a slow or
   hung plugin never holds up capture/connectivity events or its peers.
