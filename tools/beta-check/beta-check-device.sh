@@ -455,8 +455,9 @@ for value, tag in sorted(subs, key=lambda s: -len(s[0])):
     if value:
         text = text.replace(value, tag)
 # The hostname often matches a path or project name (/var/lib/<name>), so only a
-# standalone token is masked, never part of a path, URL or file name.
-if hostname:
+# standalone token is masked, never part of a path, URL or file name. The shipped
+# default "kestrel" is public and is also the CLI's name, so it is left as is.
+if hostname and hostname != "kestrel":
     text = re.sub(r"(?<![\w./-])%s(?![\w./-])" % re.escape(hostname), "<hostname>", text)
 for name in set(sys.argv[2:]):
     if name and name != "root":

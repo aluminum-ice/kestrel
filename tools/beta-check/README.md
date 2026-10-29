@@ -77,9 +77,10 @@ these. They come on top of the [Non-negotiable rules](../../CLAUDE.md#non-negoti
   leave it. Other journal excerpts go through `jscrub` (quoted text blanked,
   lines cut short).
 - The report is redacted on the device before it's copied back: MACs, IPs,
-  GPS-like coordinates, the hostname, account names, every configured host and
-  secret value in `config.toml`, and capture file names. Add a pattern to the
-  redactor whenever a new check could print a new kind of identifier.
+  GPS-like coordinates, the hostname (unless it's the shipped default `kestrel`,
+  which is public and is also the CLI's name), account names, every configured
+  host and secret value in `config.toml`, and capture file names. Add a pattern
+  to the redactor whenever a new check could print a new kind of identifier.
 
 **Checked before it's attached**
 
