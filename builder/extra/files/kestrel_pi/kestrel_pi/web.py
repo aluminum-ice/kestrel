@@ -43,6 +43,7 @@ from .applyclient import APPLY_SOCKET, apply_change
 from .connectivity import MANAGEMENT_INTERFACES
 from .geo import fmt_coord
 from .plugins import PluginPage, PluginRedirect
+from .webtls import COOKIE_NAME, LoginThrottle, SessionSigner
 
 log = logging.getLogger(__name__)
 
@@ -220,6 +221,49 @@ def management_addresses(interfaces=MANAGEMENT_INTERFACES):
     dashboard's network-address disclosure. Loopback and the capture dongle are
     never listed; an interface with no address reads as not connected."""
     return [(iface, iface_ipv4(iface)) for iface in interfaces]
+
+
+def tls_enabled(web_cfg):
+    """``[web] tls``: HTTPS on the management links, on unless set off."""
+    value = (web_cfg or {}).get("tls", "on")
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in ("off", "false", "no", "0")
+
+
+def tls_port(web_cfg):
+    """``[web] tls_port`` as a valid port, defaulting to 8443."""
+    try:
+        port = int((web_cfg or {}).get("tls_port", 8443))
+    except (TypeError, ValueError):
+        return 8443
+    return port if 1 <= port <= 65535 else 8443
+
+
+def is_loopback(addr):
+    return bool(addr) and (addr == "::1" or addr.startswith("127."))
+
+
+_HOSTNAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
+
+
+def https_redirect_app(port):
+    """A tiny WSGI app for the plain-HTTP port on a management link while HTTPS
+    is on: every request is sent, with its path and query, to the same host on
+    the HTTPS port. 307 (temporary, method kept) so a browser doesn't remember
+    the redirect if HTTPS is later turned off."""
+    def app(environ, start_response):
+        host = (environ.get("HTTP_HOST") or "").rsplit(":", 1)[0]
+        if not _HOSTNAME_RE.fullmatch(host):
+            host = environ.get("SERVER_NAME") or "127.0.0.1"
+        path = quote(environ.get("PATH_INFO") or "/", safe="/:@!$&'()*+,;=-._~")
+        query = environ.get("QUERY_STRING") or ""
+        location = "https://%s:%d%s%s" % (host, port, path, ("?" + query) if query else "")
+        start_response("307 Temporary Redirect", [
+            ("Location", location), ("Content-Type", "text/plain; charset=utf-8"),
+            ("Cache-Control", "no-store")])
+        return [b"The dashboard is served over HTTPS.\n"]
+    return app
 
 
 def refresh_seconds(web_cfg):
@@ -491,7 +535,7 @@ def _refused_table(daemon, record, change):
 
 def create_app(daemon):
     """Build the Flask app for ``daemon`` (a :class:`~kestrel_pi.daemon.Daemon`)."""
-    from flask import Flask, Response, jsonify, redirect, request
+    from flask import Flask, Response, g, jsonify, redirect, request
 
     app = Flask("kestrel_pi")
     web_cfg = daemon.config.get("web", {}) or {}
@@ -530,14 +574,118 @@ def create_app(daemon):
     def html(body, status=200):
         return Response(body, status=status, mimetype="text/html")
 
+    # Sign-in (system/basic): a browser off the device signs in once on /login
+    # and then carries a signed session cookie, so the password isn't re-sent on
+    # every request. Basic credentials still work for scripts over HTTPS or on
+    # loopback (and everywhere while [web] tls is off); loopback keeps the plain
+    # Basic challenge for on-device tools.
+    mode = (web_cfg.get("auth") or "none").lower()
+    sign_in = mode in ("system", "basic")
+    signer = SessionSigner()
+    throttle = LoginThrottle()
+
+    def _basic_allowed():
+        return (is_loopback(request.remote_addr) or request.is_secure
+                or not tls_enabled(web_cfg))
+
+    def _session_user():
+        if not sign_in:
+            return None
+        got = signer.verify(request.cookies.get(COOKIE_NAME))
+        if got is None:
+            return None
+        user, born, seen = got
+        want = (system_login_user(web_cfg) if mode == "system"
+                else str(web_cfg.get("username") or ""))
+        if not want or not _same(user, want):
+            return None
+        g.kestrel_session = (user, born, seen)
+        return user
+
+    def _credentials_ok(user, password):
+        if mode == "system":
+            return (_same(user, system_login_user(web_cfg))
+                    and _verify_system_login(user, password))
+        want_user = str(web_cfg.get("username") or "")
+        want_pass = str(web_cfg.get("password") or "")
+        return bool(want_user and want_pass and _same(user, want_user)
+                    and _same(password, want_pass))
+
+    def _set_session(resp, value, born):
+        resp.set_cookie(COOKIE_NAME, value, max_age=signer.max_age(born), path="/",
+                        httponly=True, secure=request.is_secure, samesite="Strict")
+
+    def _login_user_hint():
+        return (system_login_user(web_cfg) if mode == "system"
+                else str(web_cfg.get("username") or ""))
+
     @app.before_request
     def _auth_gate():  # noqa: ANN202
-        if not _check_auth(web_cfg, request):
-            resp = Response("authentication required", 401)
-            if (web_cfg.get("auth") or "none").lower() in ("basic", "system"):
-                resp.headers["WWW-Authenticate"] = 'Basic realm="Kestrel"'
+        if sign_in and request.path == "/login":
+            return None
+        if sign_in:
+            if _session_user() is not None:
+                return None
+            if (request.authorization is not None and _basic_allowed()
+                    and _check_auth(web_cfg, request)):
+                return None
+        elif _check_auth(web_cfg, request):
+            return None
+        # Not signed in. A browser opening a page from off the device goes to
+        # the sign-in form; anything else gets a 401 (with the Basic challenge
+        # only where Basic credentials are accepted).
+        if (sign_in and not is_loopback(request.remote_addr)
+                and request.method == "GET"
+                and "text/html" in (request.headers.get("Accept") or "")):
+            return redirect("/login?next=" + quote(request.full_path.rstrip("?"), safe=""))
+        resp = Response("authentication required", 401)
+        if sign_in and _basic_allowed():
+            resp.headers["WWW-Authenticate"] = 'Basic realm="Kestrel"'
+        return resp
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():  # noqa: ANN202
+        if not sign_in:
+            return redirect("/")
+        nxt = _safe_next(request.values.get("next"))
+        if request.method == "GET":
+            if _session_user() is not None:
+                return redirect(nxt)
+            return html(_render_login(signer.login_token(), nxt, _login_user_hint()))
+        addr = request.remote_addr or ""
+        user = (request.form.get("username") or "").strip()
+        wait = throttle.wait_seconds(addr)
+        if wait:
+            resp = html(_render_login(signer.login_token(), nxt, user,
+                                      error="Too many attempts. Try again in %d "
+                                            "seconds." % wait), 429)
+            resp.headers["Retry-After"] = str(wait)
             return resp
-        return None
+        if not signer.check_login_token(request.form.get("lt")):
+            return html(_render_login(signer.login_token(), nxt, user,
+                                      error="This sign-in page expired. Please try "
+                                            "again."), 400)
+        if not _credentials_ok(user, request.form.get("password") or ""):
+            throttle.fail(addr)
+            daemon.log.warning("web: failed sign-in from %s", addr)
+            return html(_render_login(signer.login_token(), nxt, user,
+                                      error="Wrong username or password."), 401)
+        throttle.success(addr)
+        resp = redirect(nxt, 303)
+        value = signer.issue(user)
+        _set_session(resp, value, signer.verify(value)[1])
+        return resp
+
+    @app.route("/logout", methods=["GET", "POST"])
+    def logout():  # noqa: ANN202
+        if request.method == "GET":
+            return html(_render_logout(control()))
+        if not _same(request.form.get("csrf") or "", csrf_token):
+            return redirect("/logout", 303)
+        resp = redirect("/login" if sign_in else "/", 303)
+        resp.delete_cookie(COOKIE_NAME, path="/", httponly=True,
+                           secure=request.is_secure, samesite="Strict")
+        return resp
 
     @app.get("/status.json")
     def status_json():  # noqa: ANN202
@@ -1043,6 +1191,13 @@ def create_app(daemon):
         resp.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
         resp.headers.setdefault("Referrer-Policy", "no-referrer")
         resp.headers.setdefault("Cache-Control", "no-store")
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        # Slide a live session's idle window (at most every few minutes), never
+        # past its absolute lifetime.
+        sess = g.get("kestrel_session")
+        if sess and resp.status_code < 400 and signer.needs_reissue(sess[2]) \
+                and COOKIE_NAME not in resp.headers.get("Set-Cookie", ""):
+            _set_session(resp, signer.issue(sess[0], born=sess[1]), sess[1])
         return resp
 
     def _plugins_redirect_url(redirect, ctl):
@@ -1455,16 +1610,58 @@ def _doc_footer():
     string so the link stays signed in; outside a request context (unit tests),
     the plain /guide link is used."""
     qs = ""
+    signout = ""
     try:
-        from flask import has_request_context, request
+        from flask import g, has_request_context, request
         if has_request_context():
             token = request.args.get("token")
             if token:
                 qs = "?token=" + quote(token, safe="")
+            if g.get("kestrel_session"):
+                signout = " &middot; <a href='/logout'>Sign out</a>"
     except Exception:  # noqa: BLE001 - the footer must never break a page
         return ""
     return ("<footer class='docfoot'><a href='/guide" + qs
-            + "'>Documentation</a></footer>")
+            + "'>Documentation</a>" + signout + "</footer>")
+
+
+def _safe_next(value):
+    """Where to go after signing in: a same-site path only, never another host
+    (no ``//host``, no backslash tricks, no header-splitting characters)."""
+    value = value or ""
+    if (not value.startswith("/") or value.startswith("//") or "\\" in value
+            or any(c in value for c in "\r\n\t") or value.startswith("/login")):
+        return "/"
+    return value
+
+
+def _render_login(token, nxt, user, error=None):
+    """The sign-in form. Server-rendered, no JavaScript; the hidden ``lt`` token
+    stops another site from signing a browser in to someone else's session."""
+    msg = ('<p class="msg err" role="alert">' + _esc(error) + "</p>") if error else ""
+    body = ("<h1>Sign in</h1>" + msg
+            + '<form method="post" action="/login" class="card">'
+            '<input type="hidden" name="lt" value="' + _esc(token) + '">'
+            '<input type="hidden" name="next" value="' + _esc(nxt) + '">'
+            '<label for="u">Username</label>'
+            '<input id="u" type="text" name="username" autocomplete="username" '
+            'autocapitalize="none" spellcheck="false" required value="' + _esc(user) + '">'
+            '<label for="p">Password</label>'
+            '<input id="p" type="password" name="password" '
+            'autocomplete="current-password" required autofocus>'
+            '<p><button type="submit">Sign in</button></p>'
+            "</form>"
+            '<p class="hint">Use the device account: the same login as SSH.</p>')
+    return _page("Sign in - Kestrel", body)
+
+
+def _render_logout(control):
+    body = ("<h1>Sign out</h1>"
+            "<p>Sign this browser out of the dashboard?</p>"
+            '<form method="post" action="/logout">' + _csrf_field(control)
+            + '<p><button type="submit">Sign out</button> '
+            '<a href="/">Back to the dashboard</a></p></form>')
+    return _page("Sign out - Kestrel", body)
 
 
 def _page(title, body, head=""):
@@ -3930,18 +4127,28 @@ def _js(value):
     return json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e")
 
 
-def _default_make_server(host, port, app):
+def _default_make_server(host, port, app, ssl_context=None):
     """The production server factory: a threaded werkzeug server. Imported
     lazily (and injectable) so the package imports and unit-tests without
-    werkzeug installed."""
+    werkzeug installed.
+
+    With ``ssl_context`` the listening socket is wrapped here rather than by
+    werkzeug, with the handshake deferred to the connection's own thread (it
+    runs on first read, under the handler's timeout), so a client that stalls
+    mid-handshake can't hold up the accept loop."""
     from werkzeug.serving import WSGIRequestHandler, make_server
 
     # No per-request access log in the journal: it would record the token
     # (token auth rides in the query string) and a line a second while the
     # page waits for a restart. Warnings and errors still log.
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
-    return make_server(host, port, app, threaded=True,
-                       request_handler=_request_handler(WSGIRequestHandler))
+    server = make_server(host, port, app, threaded=True,
+                         request_handler=_request_handler(WSGIRequestHandler))
+    if ssl_context is not None:
+        server.socket = ssl_context.wrap_socket(
+            server.socket, server_side=True, do_handshake_on_connect=False)
+        server.ssl_context = ssl_context     # werkzeug reads it for wsgi.url_scheme
+    return server
 
 
 # Stall limit on each web connection's socket reads and writes. The threaded
@@ -3973,14 +4180,19 @@ class WebServer:
     "no address") must not drop the page off the interface the operator is on."""
 
     def __init__(self, app, hosts, port, logger, server_factory=None,
-                 unbind_after=2):
+                 unbind_after=2, tls=None):
         self.app = app
         self.hosts = list(dict.fromkeys(hosts))
         self.port = int(port)
         self.log = logger
         self._make_server = server_factory or _default_make_server
         self._unbind_after = max(1, int(unbind_after))
-        self._bound = {}        # host -> (server, thread)
+        # (https_port, ssl_context) or None. With it, a management address is
+        # served over HTTPS on https_port, and `port` there only redirects to
+        # it; loopback stays plain HTTP on `port` for on-device tools.
+        self._tls = tls
+        self._redirect = https_redirect_app(tls[0]) if tls else None
+        self._bound = {}        # host -> [(server, thread, port), ...]
         self._missing = {}      # bound host -> consecutive reconciles without it
         self._lock = threading.Lock()
 
@@ -4017,25 +4229,41 @@ class WebServer:
                 self._unbind_locked(host)
 
     # -- helpers; call with self._lock held ------------------------------
+    def _listeners(self, host):
+        """``[(port, app, ssl_context), ...]`` to serve on ``host``."""
+        if self._tls is None or is_loopback(host):
+            return [(self.port, self.app, None)]
+        https_port, ctx = self._tls
+        return [(https_port, self.app, ctx), (self.port, self._redirect, None)]
+
     def _bind_locked(self, host):
-        try:
-            server = self._make_server(host, self.port, self.app)
-        except OSError as exc:
-            self.log.warning("web: cannot bind %s:%s (%s)", host, self.port, exc)
-            return
-        thread = threading.Thread(
-            target=server.serve_forever,
-            name="pwn-web-%s" % host, daemon=True,
-        )
-        thread.start()
-        self._bound[host] = (server, thread)
-        self.log.info("web: serving on %s:%s", host, self.port)
+        served = []
+        for port, app, ctx in self._listeners(host):
+            try:
+                if ctx is None:
+                    server = self._make_server(host, port, app)
+                else:
+                    server = self._make_server(host, port, app, ssl_context=ctx)
+            except OSError as exc:
+                self.log.warning("web: cannot bind %s:%s (%s)", host, port, exc)
+                continue
+            thread = threading.Thread(
+                target=server.serve_forever,
+                name="pwn-web-%s-%s" % (host, port), daemon=True,
+            )
+            thread.start()
+            served.append((server, thread, port))
+            self.log.info("web: serving %s on %s:%s",
+                          "HTTPS" if ctx is not None else
+                          ("redirect" if app is self._redirect else "HTTP"), host, port)
+        if served:
+            self._bound[host] = served
 
     def _unbind_locked(self, host):
         self._missing.pop(host, None)
-        server, _thread = self._bound.pop(host)
-        try:
-            server.shutdown()
-        except Exception:  # noqa: BLE001
-            pass
-        self.log.info("web: stopped serving on %s:%s", host, self.port)
+        for server, _thread, port in self._bound.pop(host):
+            try:
+                server.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+            self.log.info("web: stopped serving on %s:%s", host, port)
