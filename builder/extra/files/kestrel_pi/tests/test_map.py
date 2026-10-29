@@ -124,7 +124,7 @@ def test_close_points_cluster_and_far_ones_do_not():
 def test_map_draws_recorded_and_estimated_differently(store, tmp_path):
     body = _page(_plugin(store, tmp_path)).body
     assert "<svg" in body and "Map of located captured networks" in body
-    assert "var(--accent)" in body                    # a recorded pin
+    assert 'fill="%s"/>' % MAP.PLAIN_FILL in body        # a recorded pin (not recovered)
     assert ">~</text>" in body                        # an estimated ring
     assert "/networks?view=ap&amp;q=00%3A00%3A5E%3A00%3A53%3A0A" in body
     assert "3 of 3 located networks in view" in body
@@ -228,6 +228,68 @@ def test_the_page_links_back_with_the_token(store, tmp_path):
     body = _page(_plugin(store, tmp_path), token="abc").body
     assert '<a href="/plugins?token=abc">&larr; Plugins</a>' in body
     assert '<a href="/?token=abc">Dashboard</a>' in body
+
+
+def _recover(p, store, *macs):
+    """Give ``p`` the core recovered service over a potfile recovering ``macs``."""
+    from kestrel_pi.recovered import RecoveredStore
+
+    cracked = store / "cracked"
+    cracked.mkdir(exist_ok=True)
+    (cracked / "wpa-sec.potfile").write_text("".join(
+        "%s:00005e0053ff:My Network:made-up-pass\n" % m.replace(":", "").lower() for m in macs))
+    recovered = RecoveredStore(str(store))
+    p.context.services.provide("recovered", lambda: recovered, owner="daemon")
+    return p
+
+
+def _svg(body, which="wide-only"):
+    return body.split('class="%s"' % which, 1)[1].split("</svg>", 1)[0]
+
+
+def test_recovered_networks_are_green_with_a_lock_and_the_rest_gray(store, tmp_path):
+    p = _recover(_plugin(store, tmp_path), store, A)
+    svg = _svg(_page(p).body)
+    a_pin = svg.split("00:00:5E:00:53:0A", 1)[1].split("</a>", 1)[0]
+    assert "passphrase recovered" in a_pin and 'fill="%s"/>' % MAP.RECOVERED_FILL in a_pin
+    assert 'v-2.5 a2.5 2.5 0 0 1 5 0' in a_pin                  # the lock, not colour alone
+    c_pin = svg.split("00:00:5E:00:53:0C", 1)[1].split("</a>", 1)[0]
+    assert "passphrase not recovered" in c_pin and MAP.RECOVERED_FILL not in c_pin
+    b_ring = svg.split("00:00:5E:00:53:0B", 1)[1].split("</a>", 1)[0]
+    assert 'stroke="%s"' % MAP.PLAIN_FILL in b_ring and "a2.5 2.5" not in b_ring
+    body = _page(p).body
+    assert "made-up-pass" not in body                            # never the passphrase
+    assert "Green with a" in body and "gray</b>: not recovered" in body
+
+
+def test_a_square_is_green_if_any_network_in_it_is_recovered(store, tmp_path):
+    wide = "%f,%f,%f,%f" % (LAT - 40, LON - 60, LAT + 40, LON + 60)
+    plain = _svg(_page(_plugin(store, tmp_path), bbox=wide).body)
+    square = plain.split("<rect", 1)[1].split("</a>", 1)[0]
+    assert 'fill="%s"' % MAP.PLAIN_FILL in square and "a2.5 2.5" not in square
+    p = _recover(_plugin(store, tmp_path), store, B)
+    svg = _svg(_page(p, bbox=wide).body)
+    square = svg.split("tap to", 1)[0].rsplit("<a ", 1)[1] + svg.split("tap to", 1)[1].split("</a>", 1)[0]
+    assert "1 recovered" in square
+    assert 'fill="%s"' % MAP.RECOVERED_FILL in square and "a2.5 2.5" in square
+
+
+def test_the_spot_list_marks_recovered_networks(tmp_path):
+    d = tmp_path / "capture"
+    d.mkdir()
+    macs = ["00:00:5E:00:53:%02X" % i for i in range(1, 4)]
+    (d / "x.hc22000").write_text("".join(_line(m, "Library WiFi") + "\n" for m in macs))
+    now = _iso(datetime.now(timezone.utc))
+    (d / "x.hc22000.gps.json").write_text(json.dumps({
+        m.replace(":", "").lower(): {"lat": LAT, "lon": LON, "fix_time": now, "source": "gpsd"}
+        for m in macs}))
+    p = _recover(_plugin(d, tmp_path), d, macs[0])
+    spot = "%f,%f,%f,%f" % (LAT - 1e-5, LON - 1e-5, LAT + 1e-5, LON + 1e-5)
+    body = _page(p, spot=spot).body
+    listed = body.split('id="spot"', 1)[1]
+    assert listed.count('&#128274;</span>recovered</span>') == 1   # the lock badge
+    assert listed.count(">not recovered</span>") == 2
+    assert "made-up-pass" not in body
 
 
 def test_gates(store, tmp_path):

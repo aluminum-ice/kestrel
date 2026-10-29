@@ -29,6 +29,10 @@ Press **Map** on the plugin's row on the Plugins page.
   in; **Reset view** (next to the filters) zooms back out. Networks captured from
   the same spot share its location, so no zoom separates them: tapping their
   square lists them under the map instead.
+- **Green with a lock** means the network's passphrase has been recovered;
+  **gray** means it hasn't. A square is green when at least one network in it
+  is recovered, and the list under the map marks each one **🔒 recovered** or
+  "not recovered". The passphrase itself is never shown on the map.
 - **A single network** links to its row on Captured networks, which has its
   OpenStreetMap link.
 - **Filters** above the map: all, recorded only, estimated only, or the last 7
