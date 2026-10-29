@@ -50,9 +50,9 @@
 #   * files the device user owns are read as that user, never as root;
 #   * it runs at low CPU and I/O priority.
 # The report is redacted on the device before it leaves (MACs, IPs, GPS-like
-# coordinates, the hostname, account names, configured hosts and every secret
-# value in config.toml, capture file names), and journal excerpts are limited to
-# error lines. Read it before you share it.
+# coordinates, a hostname other than the default, account names, configured
+# hosts and every secret value in config.toml, capture file names), and journal
+# excerpts are limited to error lines. Read it before you share it.
 
 set -eu
 
