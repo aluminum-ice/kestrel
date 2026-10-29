@@ -5,9 +5,9 @@ and serves the device web dashboard. The daemon ships **enabled** but does
 nothing on its own — it just runs its event loop and the status page until you
 enable a plugin. Every bundled plugin ships **disabled**.
 
-The thirteen reference plugins are: `memtemp`, `session-stats`, `gps`, `wpa-sec`,
+The fourteen reference plugins are: `memtemp`, `session-stats`, `gps`, `wpa-sec`,
 `wigle`, `backup`, `ups-hat`, `eink`, `updates`, `remote-train`, `downloads`,
-`map`, and `notify`.
+`map`, `notify`, and `hat-buttons`.
 Each has its
 own setup guide where it needs one (see the [index](user-guides.md)).
 
