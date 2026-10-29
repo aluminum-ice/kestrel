@@ -19,9 +19,13 @@ EXPECT_VERSION=<version> OUT_DIR=<folder> bash pull-beta-check.sh <user>@<host> 
 
 It asks for your SSH login once, sudo on the device if it needs it, and
 optionally the dashboard password (adds plugin health and agent state; press
-Enter to skip). `OUT_DIR` (default: the current folder) must be outside any git
-checkout, so the report can't be committed; `.gitignore` and the real-data
-check also refuse `kestrel-beta-check-*` as a backstop.
+Enter to skip). To skip that second prompt, set `KESTREL_WEB_PASSWORD` (the
+dashboard login, which is the device login): it is forwarded over SSH's
+encrypted env channel, never on a command line, and the device's sshd must
+allow it (`AcceptEnv KESTREL_WEB_PASSWORD`) or it is dropped and the device
+falls back to prompting. `OUT_DIR` (default: the current folder) must be
+outside any git checkout, so the report can't be committed; `.gitignore` and
+the real-data check also refuse `kestrel-beta-check-*` as a backstop.
 
 The report is private: read it, then hand it to Claude for review (a folder
 outside the repo that Claude's session can read is simplest). Don't attach it
@@ -44,8 +48,9 @@ these. They come on top of the [Non-negotiable rules](../../CLAUDE.md#non-negoti
   is read from the device (the user `kestrel-daemon` runs as), and default
   endpoints are read from the installed plugin declarations. Test values are
   RFC 2606/5737 placeholders only.
-- Passwords are typed only into prompts (SSH, sudo, the optional dashboard
-  login), never passed on a command line or stored.
+- Passwords are typed into prompts (SSH, sudo, the optional dashboard login) or
+  passed through `KESTREL_WEB_PASSWORD` over SSH's env channel, never on a
+  command line or stored.
 
 **Read-only, and the management link is untouchable**
 

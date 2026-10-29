@@ -62,12 +62,18 @@ check() { printf 'CHECK %-5s %-6s %s :: %s\n' "$1" "$2" "$3" "${4:-}"; }
 svc_active() { systemctl is-active "$1" 2>/dev/null || true; }
 
 # Optional dashboard login, asked up front so the rest runs unattended.
+# KESTREL_WEB_PASSWORD, when set (e.g. forwarded by pull-beta-check.sh over
+# SSH's env channel, never on a command line), is used as-is and the prompt is
+# skipped, so the fetch can run unattended. Capture it into web_pw and drop it
+# from the environment so the many child processes below don't inherit it.
 web_auth=$(cfg web.auth system)
-web_pw=""
-if [ "$web_auth" = "system" ] && [ -t 0 ]; then
+web_pw="${KESTREL_WEB_PASSWORD:-}"
+unset KESTREL_WEB_PASSWORD 2>/dev/null || true
+if [ -z "$web_pw" ] && [ "$web_auth" = "system" ] && [ -t 0 ]; then
   echo "Optional: the dashboard's /status.json adds plugin health, agent and"
   echo "environment state to the report. Type the device login password"
-  printf 'to include it (input hidden), or press Enter to skip: '
+  echo "(or set KESTREL_WEB_PASSWORD to skip this prompt)."
+  printf 'Type it to include it (input hidden), or press Enter to skip: '
   IFS= read -rs web_pw || web_pw=""
   echo
 fi

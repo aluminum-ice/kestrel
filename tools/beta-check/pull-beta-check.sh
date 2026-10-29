@@ -20,10 +20,18 @@
 #                    be committed by accident.
 #   EXPECT_VERSION   the version the device should be on (e.g. 1.0.6-beta.1);
 #                    without it the version is reported but not judged
+#   KESTREL_WEB_PASSWORD
+#                    the dashboard login (= the device login), to include the
+#                    authenticated /status.json readings without a second
+#                    prompt on the device. Forwarded over SSH's encrypted env
+#                    channel, never on a command line (so it can't show up in
+#                    `ps`); the device's sshd must allow it (AcceptEnv
+#                    KESTREL_WEB_PASSWORD), otherwise it is dropped and the
+#                    device script falls back to its prompt.
 #
 # You'll be asked for your SSH login (once) and, on the device, for sudo and
-# optionally the dashboard password (all typed on the device's terminal, never
-# stored or passed on a command line).
+# (unless KESTREL_WEB_PASSWORD is set) the dashboard password (all typed on the
+# device's terminal, never stored or passed on a command line).
 #
 # What it does on the device: copies beta-check-device.sh into a private temp folder,
 # runs it once with sudo, reads back the report and deletes the folder. That
@@ -109,8 +117,21 @@ here=$(cd "$(dirname "$0")" && pwd)
 device_script=$here/beta-check-device.sh
 "${ssh_cmd[@]}" "$target" "cat > '$remote_dir/check.sh'" < "$device_script"
 
+# Forward the optional dashboard password to the device over SSH's env channel
+# (encrypted, never on a command line, so it can't show up in `ps` here or
+# there) and let sudo keep it for the check script. Only when it is set; if the
+# device's sshd doesn't accept it the var is simply absent and the device
+# script prompts for it instead.
+run_ssh=("${ssh_cmd[@]}" -t)
+remote_sudo="sudo"
+if [ -n "${KESTREL_WEB_PASSWORD:-}" ]; then
+  run_ssh+=(-o SendEnv=KESTREL_WEB_PASSWORD)
+  remote_sudo="sudo --preserve-env=KESTREL_WEB_PASSWORD"
+  echo "Forwarding KESTREL_WEB_PASSWORD to the device for /status.json (dropped if its sshd doesn't allow it)."
+fi
+
 echo "Running the checks on the device (sudo will ask for your password if it needs it) ..."
-"${ssh_cmd[@]}" -t "$target" "sudo bash '$remote_dir/check.sh' '$remote_dir' '$expect'"
+"${run_ssh[@]}" "$target" "$remote_sudo bash '$remote_dir/check.sh' '$remote_dir' '$expect'"
 
 # One plain text file: no archive, so no local owner names or OS metadata
 # (an archive made on a Mac records both) can travel with it.
