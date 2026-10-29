@@ -80,6 +80,10 @@ Usage: $PROG <command>
                      Require a web-only login instead
   web auth token     Require a generated token (printed once)
   web auth none      No login: read-only page, plugin controls off
+  web fingerprint    Show the HTTPS certificate fingerprint to compare in your browser
+  web tls on|off     Serve the dashboard over HTTPS on the management links (default on)
+  web tls regenerate Make a new HTTPS certificate (the fingerprint changes)
+  web logout-all     Sign every browser out of the dashboard
   backup             Backup menu (remote target, key setup, run now)
   backup status      Show the remote target and whether passwordless SSH works
   backup setup       Install the device's SSH key on the remote (asks its
@@ -895,16 +899,57 @@ web_controls_on() {
     esac
 }
 
+# The dashboard's HTTPS certificate and session key live in the daemon
+# account's own state directory (kestrel_pi.webtls); root touches them only as
+# pi (run_as_pi), never directly.
+web_state_dir() {
+    local home
+    home=$(getent passwd pi | cut -d: -f6)
+    echo "${home:-/home/pi}/.local/state/kestrel-web"
+}
+
+# True unless [web] tls is set off (HTTPS is on by default).
+web_tls_on() {
+    case "$(cfg web.tls on)" in
+        off|false|False|no|0) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# The certificate's SHA-256 fingerprint (AB:CD:...), or nothing if there is
+# none yet or this account can't read it.
+web_fingerprint() {
+    local cert
+    cert="$(web_state_dir)/cert.pem"
+    if [ "$(id -u)" != 0 ] && [ "$(id -un)" != pi ]; then
+        return 0
+    fi
+    run_as_pi openssl x509 -in "$cert" -noout -fingerprint -sha256 2>/dev/null \
+        | sed 's/^.*=//'
+}
+
 cmd_web_status() {
-    local port iface ip mode
+    local port tport iface ip mode fp
     port=$(cfg web.port 8080)
+    tport=$(cfg web.tls_port 8443)
     mode=$(cfg web.auth system)
-    echo "Web page (port $port):"
+    echo "Web page:"
     echo "  http://127.0.0.1:$port/ (on the device)"
     for iface in bnep0 wlan0; do
         ip=$(iface_ipv4 "$iface")
-        [ -n "$ip" ] && echo "  http://${ip%%/*}:$port/ ($iface)"
+        [ -n "$ip" ] || continue
+        if web_tls_on; then
+            echo "  https://${ip%%/*}:$tport/ ($iface)"
+        else
+            echo "  http://${ip%%/*}:$port/ ($iface)"
+        fi
     done
+    if web_tls_on; then
+        fp=$(web_fingerprint)
+        echo "HTTPS: on (certificate SHA-256 ${fp:-not shown: run with sudo, or wait for the daemon to make it})"
+    else
+        echo "HTTPS: off (the sign-in is not encrypted; turn it on with 'sudo $PROG web tls on')"
+    fi
     if [ "$mode" = system ]; then
         echo "auth: system (device login: $(cfg web.username "$(id -un)"))"
     else
@@ -963,7 +1008,11 @@ cmd_web_auth() {
             printf '%s' "$token" | config_set_string web token
             config_set web auth '"token"'
             echo "token: $token"
-            echo "open the page as http://<device>:$(cfg web.port 8080)/?token=$token"
+            if web_tls_on; then
+                echo "open the page as https://<device>:$(cfg web.tls_port 8443)/?token=$token"
+            else
+                echo "open the page as http://<device>:$(cfg web.port 8080)/?token=$token"
+            fi
             echo "(or send 'Authorization: Bearer <token>'); it is not shown again"
             ;;
         none)
@@ -979,8 +1028,9 @@ cmd_web_menu() {
     have_whiptail || { cmd_web_status; return 0; }
     while true; do
         local choice
-        choice=$(whiptail --title "kestrel web page" --menu "Web page and plugin controls" 17 72 6 \
+        choice=$(whiptail --title "kestrel web page" --menu "Web page and plugin controls" 18 72 7 \
             status "Show the page address and whether plugin controls are on" \
+            fingerprint "Show the HTTPS certificate fingerprint" \
             system "Log in with the device account, same as SSH (default)" \
             basic "Require a separate web-only username/password" \
             token "Require a generated token (turns plugin controls on)" \
@@ -988,6 +1038,7 @@ cmd_web_menu() {
             quit "Back" 3>&1 1>&2 2>&3) || return 0
         case "$choice" in
             status) run_box "Web page" 16 72 cmd_web_status ;;
+            fingerprint) run_box "HTTPS certificate" 10 76 cmd_web_fingerprint ;;
             system) run_box "Web auth" 12 72 cmd_web_auth system ;;
             # Not run_box: basic prompts with its own whiptail boxes.
             basic) ( cmd_web_auth basic ) || true ;;
@@ -998,12 +1049,59 @@ cmd_web_menu() {
     done
 }
 
+cmd_web_fingerprint() {
+    local fp
+    fp=$(web_fingerprint)
+    [ -n "$fp" ] || die "no HTTPS certificate to show (HTTPS off, the daemon hasn't started yet, or run with sudo)"
+    echo "$fp"
+}
+
+# Wait (briefly) for the restarted daemon to make its certificate, then show it.
+_web_show_new_fingerprint() {
+    local i fp
+    for i in $(seq 1 20); do
+        fp=$(web_fingerprint)
+        [ -n "$fp" ] && { echo "certificate SHA-256: $fp"; return 0; }
+        sleep 1
+    done
+    echo "the certificate isn't ready yet; check with '$PROG web fingerprint'"
+}
+
+cmd_web_tls() {
+    need_root
+    case "${1:-}" in
+        on) config_set web tls '"on"' ;;
+        off) config_set web tls '"off"' ;;
+        regenerate)
+            run_as_pi rm -f "$(web_state_dir)/cert.pem" "$(web_state_dir)/key.pem"
+            ;;
+        *) die "usage: $PROG web tls on | off | regenerate" ;;
+    esac
+    systemctl restart "$PWN_DAEMON_SERVICE"
+    case "$1" in
+        off) log "HTTPS off; the dashboard is plain HTTP on port $(cfg web.port 8080) and the sign-in is not encrypted. Daemon restarted." ;;
+        on) log "HTTPS on, port $(cfg web.tls_port 8443). Daemon restarted."; _web_show_new_fingerprint ;;
+        regenerate) log "new HTTPS certificate made; browsers will ask you to trust it again. Daemon restarted."; _web_show_new_fingerprint ;;
+    esac
+}
+
+cmd_web_logout_all() {
+    need_root
+    # A new session key invalidates every signed-in browser.
+    run_as_pi rm -f "$(web_state_dir)/session.key"
+    systemctl restart "$PWN_DAEMON_SERVICE"
+    log "every browser is signed out of the dashboard; daemon restarted"
+}
+
 cmd_web() {
     [ $# -gt 0 ] || { cmd_web_menu; return; }
     local sub=$1; shift
     case "$sub" in
         status) cmd_web_status ;;
         auth) cmd_web_auth "$@" ;;
+        fingerprint) cmd_web_fingerprint ;;
+        tls) cmd_web_tls "$@" ;;
+        logout-all) cmd_web_logout_all ;;
         *) die "unknown 'web' subcommand: $sub" ;;
     esac
 }

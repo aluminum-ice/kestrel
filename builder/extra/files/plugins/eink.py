@@ -37,7 +37,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from kestrel_pi import Plugin
+from kestrel_pi import Plugin, webtls
 from kestrel_pi.connectivity import MANAGEMENT_INTERFACES
 
 # Panel geometry: the 2.7" HAT is 264x176 landscape (176x264 native portrait;
@@ -353,6 +353,13 @@ class EinkFace(Plugin):
         "show_brand_glyph": {"type": "bool", "default": True},
         # The address row: each management link's IPv4, so a headless device
         # can be found without the router's client list.
+        # For this many minutes after the daemon starts, the voice line shows
+        # the start of the dashboard's HTTPS certificate fingerprint, to compare
+        # with the browser on first sign-in. 0 never shows it.
+        "show_fingerprint_minutes": {
+            "type": "int", "default": 10,
+            "help": "Minutes after start-up that the panel shows the start of the "
+                    "dashboard's HTTPS certificate fingerprint (0 = never)."},
         "show_ip": {"type": "bool", "default": True,
                     "help": "Show the Bluetooth tether and Wi-Fi addresses on the "
                             "panel, so you can find the dashboard without a "
@@ -397,6 +404,9 @@ class EinkFace(Plugin):
         self._voice_rot = 0             # advances on each mood change (rotates
         #                                 the phrase without a per-tick redraw)
         self._look_toggle = False
+        self._started = time.monotonic()
+        self._fp = None                 # dashboard certificate fingerprint
+        self._fp_checked = None         # monotonic time of the last lookup
         self._buttons_seq = None        # last `buttons` service seq drawn
         # mood trackers
         self._reward_ema = None
@@ -773,7 +783,7 @@ class EinkFace(Plugin):
         self._buttons_seq = buttons.get("seq")
         if buttons.get("screen") == "info":
             return self._rotated(self._info_image(state))
-        voice = buttons.get("prompt") or voice
+        prompt = buttons.get("prompt")
         img = Image.new("1", (PANEL_W, PANEL_H), 255)   # white
         draw = ImageDraw.Draw(img)
         tiny = _font(11)
@@ -815,12 +825,21 @@ class EinkFace(Plugin):
         if opts.get("show_mascot", True):
             glyph = self._face_glyph(mood)
             draw.text((10, 32), glyph, font=big, fill=0)
-            if voice:
-                vx = min(max(10 + _text_w(draw, glyph, big) + 10, 150), 170)
-                vy = 34
-                for line in _wrap_text(draw, voice, tiny, PANEL_W - 6 - vx)[:3]:
-                    draw.text((vx, vy), line, font=tiny, fill=0)
-                    vy += 13
+            vx = min(max(10 + _text_w(draw, glyph, big) + 10, 150), 170)
+            # The voice slot, in order: a HAT-key prompt (it answers a press
+            # just made, e.g. "Press KEY4 again to shut down"), then just after
+            # start-up the start of the HTTPS fingerprint (for checking the
+            # browser's certificate warning), then the mood's voice.
+            if prompt:
+                lines = _wrap_text(draw, prompt, tiny, PANEL_W - 6 - vx)[:3]
+            else:
+                lines = self._fingerprint_lines()
+            if not lines and voice:
+                lines = _wrap_text(draw, voice, tiny, PANEL_W - 6 - vx)[:3]
+            vy = 34
+            for line in lines:
+                draw.text((vx, vy), line, font=tiny, fill=0)
+                vy += 13
 
         # compact, symbol-led status on one line: a chip glyph + the agent mode,
         # then an antenna glyph + capture state. Mood is the face itself; motion
@@ -967,6 +986,26 @@ class EinkFace(Plugin):
         draw.text((10, PANEL_H - 20), "KEY1 to close", font=_font(11), fill=0)
         return img
 
+    def _fingerprint_lines(self):
+        """``["HTTPS key", "AB:CD:EF:12", "34:56:78:9A"]`` (the start of the
+        dashboard certificate's SHA-256 fingerprint) during the first
+        ``show_fingerprint_minutes`` after start-up, else ``[]``. A method so the
+        user-guide screenshot fixture can turn it off."""
+        try:
+            minutes = int(self.context.options.get("show_fingerprint_minutes", 10) or 0)
+        except (TypeError, ValueError):
+            minutes = 10
+        now = time.monotonic()
+        if minutes <= 0 or now - self._started > minutes * 60:
+            return []
+        if self._fp is None and (self._fp_checked is None or now - self._fp_checked >= 30):
+            self._fp_checked = now
+            self._fp = webtls.fingerprint()
+        if not self._fp:
+            return []
+        parts = self._fp.split(":")
+        return ["HTTPS key", ":".join(parts[:4]), ":".join(parts[4:8])]
+
     def _addresses(self):
         """``[(iface, ipv4), ...]`` for the management links that have an
         address, Bluetooth tether first. A method so a caller (the tests, the
@@ -1045,12 +1084,8 @@ def _installed_version():
 
 
 def _dashboard_fingerprint():
-    """The dashboard's HTTPS certificate fingerprint, when this release has
-    HTTPS (``kestrel_pi.webtls``) and the certificate exists; else None."""
-    try:
-        from kestrel_pi import webtls
-    except ImportError:
-        return None
+    """The dashboard's HTTPS certificate fingerprint, or None when there is no
+    certificate (HTTPS off, or the daemon hasn't made one yet)."""
     try:
         return webtls.fingerprint()
     except Exception:  # noqa: BLE001

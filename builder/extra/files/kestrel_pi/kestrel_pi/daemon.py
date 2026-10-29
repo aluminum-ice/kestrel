@@ -417,9 +417,31 @@ class Daemon:
             return
         hosts = resolve_bind_hosts(self.web_cfg.get("bind", "management"))
         self._web = WebServer(create_app(self), hosts, self.web_cfg.get("port", 8080),
-                              self.log.getChild("web"))
+                              self.log.getChild("web"), tls=self._web_tls())
         if not self._web.start():
             self.log.warning("web subsystem bound no interfaces")
+
+    def _web_tls(self):
+        """``(https_port, ssl_context)`` for the dashboard, or None when [web] tls
+        is off. The certificate is made (as pi) on first start. If HTTPS can't be
+        set up the page falls back to plain HTTP rather than locking the operator
+        out, and says so in the journal."""
+        from .web import tls_enabled, tls_port
+
+        if not tls_enabled(self.web_cfg):
+            return None
+        try:
+            import socket
+
+            from .webtls import ensure_certificate, fingerprint, server_context
+
+            cert, key = ensure_certificate(socket.gethostname())
+            ctx = server_context(cert, key)
+        except Exception as exc:  # noqa: BLE001 - never lose the page over TLS
+            self.log.error("web: HTTPS unavailable (%s); serving plain HTTP", exc)
+            return None
+        self.log.info("web: HTTPS certificate SHA-256 %s", fingerprint(cert))
+        return tls_port(self.web_cfg), ctx
 
     def _spawn(self, target, name):
         thread = threading.Thread(target=target, name=name, daemon=True)
