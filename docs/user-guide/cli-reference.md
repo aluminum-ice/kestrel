@@ -98,6 +98,10 @@ See [Managing plugins](managing-plugins.md) and the per-plugin guides in the [in
 | `sudo kestrel web auth basic [--user NAME] [--password-stdin]` | Require a web-only username/password instead. `--password-stdin` reads the password from stdin (for scripts). |
 | `sudo kestrel web auth token` | Require a generated access token (printed once). |
 | `sudo kestrel web auth none` | No login: a read-only page with the write controls off. |
+| `kestrel web fingerprint` | Print the dashboard's HTTPS certificate fingerprint, to compare with your browser's on first sign-in (run with `sudo` if it says it can't show it). |
+| `sudo kestrel web tls on` \| `off` | Serve the dashboard over HTTPS on the management links (the default), or plain HTTP. |
+| `sudo kestrel web tls regenerate` | Make a new HTTPS certificate; browsers will ask you to trust it again. |
+| `sudo kestrel web logout-all` | Sign every browser out of the dashboard (do this after changing the device password). |
 
 See [Using the device web dashboard](web-dashboard.md).
 

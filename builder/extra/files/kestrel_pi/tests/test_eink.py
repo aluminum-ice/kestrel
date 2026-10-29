@@ -654,3 +654,26 @@ def test_addresses_lists_only_links_with_an_address(tmp_path, monkeypatch):
 
 def test_iface_ipv4_is_none_for_a_missing_interface():
     assert EINK._iface_ipv4("kestrel-none0") is None
+
+
+# --- the HTTPS fingerprint after start-up -----------------------------------------
+
+_FP = ":".join(["AB", "CD", "EF", "12", "34", "56", "78", "9A"] + ["00"] * 24)
+
+
+def test_fingerprint_shows_in_the_first_minutes(tmp_path, monkeypatch):
+    monkeypatch.setattr(EINK.webtls, "fingerprint", lambda *a: _FP)
+    p = _plugin(tmp_path)
+    assert p._fingerprint_lines() == ["HTTPS key", "AB:CD:EF:12", "34:56:78:9A"]
+    voiced = p._compose_image(UIState(), "awake", "on a roll!")
+    p._started -= 11 * 60                       # past the default 10 minutes
+    assert p._fingerprint_lines() == []
+    later = p._compose_image(UIState(), "awake", "on a roll!")
+    assert list(voiced.getdata()) != list(later.getdata())   # the voice is back
+
+
+def test_fingerprint_off_or_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(EINK.webtls, "fingerprint", lambda *a: _FP)
+    assert _plugin(tmp_path, {"show_fingerprint_minutes": 0})._fingerprint_lines() == []
+    monkeypatch.setattr(EINK.webtls, "fingerprint", lambda *a: None)
+    assert _plugin(tmp_path)._fingerprint_lines() == []

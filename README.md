@@ -44,7 +44,7 @@ Found a security problem in Kestrel itself? Please report it privately, as descr
 
 ## Web interface
 
-The device serves a mobile-first web dashboard over its management link (Bluetooth PAN or Wi-Fi). It shows live status, how busy the RF environment is around you, per-plugin readout cards and the learning agent, and it drives capture, plugins and power — all server-rendered, dependency-free and dark-mode aware.
+The device serves a mobile-first web dashboard over its management link (Bluetooth PAN or Wi-Fi), over HTTPS with a sign-in page. It shows live status, how busy the RF environment is around you, per-plugin readout cards and the learning agent, and it drives capture, plugins and power — all server-rendered, dependency-free and dark-mode aware.
 
 <p align="center">
   <img src="docs/images/web-ui.png" alt="Kestrel web UI on a phone: the dashboard, plugins and AI agent pages" width="840">

@@ -185,8 +185,9 @@ auth = "system"             # system | basic | token | none
 # system (default): log in with the device account (same username/password you
 #   SSH in with); the web login can never drift from the SSH login because it is
 #   verified against the account, not a stored copy. The page requires this login
-#   to view and to change plugins. Note the page is plain HTTP on the management
-#   link, so the login travels unencrypted there.
+#   to view and to change plugins. Off the device the page is HTTPS (port 8443;
+#   port 8080 there forwards to it) with a sign-in page; see
+#   `sudo kestrel web tls` and `sudo kestrel web fingerprint`.
 # basic: a web-only username/password set below. token: a web-only token below.
 # none: open, read-only page (no plugin controls). Set this with
 #   `sudo kestrel web auth <mode>` rather than by hand.
