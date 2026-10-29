@@ -133,4 +133,5 @@ class Ntfy(Plugin):
                    "can read your alerts.</li>" % (esc(self._topic()), esc(server)))
         else:
             row = "<li>The topic is shown only with the web login on.</li>"
-        return self.context.page("ntfy alerts", self.alerts.status_page("ntfy alerts", [row]))
+        return self.context.page("ntfy alerts", self.alerts.status_page(
+            "ntfy alerts", [row], token=(getattr(request, "args", {}) or {}).get("token") or ""))

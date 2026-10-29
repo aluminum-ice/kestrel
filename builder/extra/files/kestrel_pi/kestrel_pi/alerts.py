@@ -27,6 +27,7 @@ import os
 import tempfile
 import threading
 import time
+from urllib.parse import urlencode
 
 from . import httpsafe
 from .config import DEFAULT_CONFIG_PATH, load_config
@@ -354,10 +355,12 @@ class Alerts:
             return context.redirect("Test notification failed: %s" % exc, error=True)
         return context.redirect("Test notification sent.")
 
-    def status_page(self, title, setup_rows):
-        """The plugin's status page: its own ``setup_rows`` (already escaped
-        ``<li>`` items), then the shared lines."""
+    def status_page(self, title, setup_rows, token=""):
+        """The plugin's status page: links back, its own ``setup_rows`` (already
+        escaped ``<li>`` items), then the shared lines. ``token`` is the page's
+        sign-in token, kept on the links back."""
         esc = self.plugin.context.esc
+        qs = ("?" + urlencode([("token", token)])) if token else ""
         with self._lock:
             queued, sent, error = len(self.queue), self.sent_total, self.last_error
         rows = list(setup_rows)
@@ -365,7 +368,9 @@ class Alerts:
         rows.append("<li>Sent since start: %d &middot; waiting: %d</li>" % (sent, queued))
         if error:
             rows.append('<li class="err">Last error: %s</li>' % esc(error))
-        return ("<h1>%s</h1><ul>" % esc(title) + "".join(rows) + "</ul>"
+        return ('<p><a href="' + esc("/plugins" + qs) + '">&larr; Plugins</a> &middot; '
+                '<a href="' + esc("/" + qs) + '">Dashboard</a></p>'
+                + "<h1>%s</h1><ul>" % esc(title) + "".join(rows) + "</ul>"
                 '<p class="hint">Use <b>Send test</b> on the Plugins page to check the '
                 "setup. Alerts raised while offline wait and are sent when the device "
                 "is back online.</p>")
