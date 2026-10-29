@@ -91,10 +91,12 @@ echo "uptime:     $(uptime -p 2>/dev/null)"
 echo "python3:    $(/usr/bin/python3 -V 2>&1)"
 echo "web auth:   $web_auth"
 
-# ================================================================ 1.0.9-beta.1 checks (#50-#55)
-# HTTPS dashboard and sign-in (#51), the e-ink address row (#50), and four new
-# plugins: downloads (#52), map (#53), notify (#54), hat-buttons (#55). The
-# CHECK ids match the checklist issue.
+# ================================================================ 1.0.9 checks (#50-#55, #58-#60)
+# Beta 1: HTTPS dashboard and sign-in (#51), the e-ink address row (#50), and
+# four new plugins: downloads (#52), map (#53), notify (#54), hat-buttons (#55).
+# Beta 2: the certificate within Apple's limit (#58), the plugin row buttons
+# (#59) and the report's redaction (#60), as sections 9-11. Beta 1's checks stay,
+# so one report serves both checklist issues. The CHECK ids match them.
 upd=/var/lib/kestrel/update-run/status.json
 
 # ---------------------------------------------------------------- 1. update to this beta
@@ -239,6 +241,82 @@ for id in 3.2 3.3 3.4 4.3 4.4 4.5 4.6 4.7 4.8 5.3 5.4 5.5 5.6 5.7 5.8 5.9 \
   check "$id" MANUAL "see the checklist" "by hand"
 done
 
+# ---------------------------------------------------------------- 9-11. beta 2 fixes (#58-#60)
+sec "9. certificate within Apple's 825-day limit (#58)"
+# The span is read from the public certificate as the device user; the
+# certificate and its fingerprint never go in the report.
+span=$(as_dev "$VENV_PY" -I - "$WEBSTATE/cert.pem" <<'PY' 2>&1
+import sys
+from cryptography import x509
+with open(sys.argv[1], "rb") as handle:
+    cert = x509.load_pem_x509_certificate(handle.read())
+start = getattr(cert, "not_valid_before_utc", None) or cert.not_valid_before
+end = getattr(cert, "not_valid_after_utc", None) or cert.not_valid_after
+print((end - start).days)
+PY
+)
+echo "  certificate validity span: $span days"
+if [ "$tls" = off ]; then
+  check 9.1 SKIP "certificate valid for no more than 825 days" "[web] tls is off"
+elif printf '%s' "$span" | grep -qxE '[0-9]+' && [ "$span" -le 825 ]; then
+  check 9.1 PASS "certificate valid for no more than 825 days" "$span days"
+else
+  check 9.1 FAIL "certificate valid for no more than 825 days" "$(printf '%s' "$span" | tr '\n' ' ' | cut -c1-120)"
+fi
+started=$(printf '%s\n' "$updinfo" | sed -n 's/^started_at: //p' | cut -d. -f1)
+made=$(as_dev stat -c '%Y' "$WEBSTATE/cert.pem" 2>/dev/null)
+if [ "$tls" = off ] || [ -z "$made" ]; then
+  check 9.2 SKIP "the beta 1 certificate was replaced after the update" "no certificate"
+elif [ -z "$started" ]; then
+  check 9.2 SKIP "the beta 1 certificate was replaced after the update" "no in-place update recorded"
+elif [ "$made" -ge "$started" ]; then
+  check 9.2 PASS "the beta 1 certificate was replaced after the update" "made after the update started"
+else
+  check 9.2 INFO "the beta 1 certificate was replaced after the update" "made before this update (a fresh flash, or already compliant)"
+fi
+for id in 9.3 9.4 9.5; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
+
+sec "10. plugin row buttons (#59)"
+# Reads the installed plugins' __actions__ declarations (plugin source only, no
+# capture content) and runs them through the daemon's own normalizer.
+btn=$(as_dev "$VENV_PY" -I - "$LIBDIR/plugins" <<'PY' 2>&1
+import ast, glob, os, sys
+from kestrel_pi.plugins import normalize_actions
+dropped, labels = [], {}
+for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.py"))):
+    name = os.path.basename(path)[:-3]
+    with open(path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "__actions__" for t in node.targets):
+            try:
+                declared = ast.literal_eval(node.value)
+            except ValueError:
+                dropped.append(name + " (not a literal)")
+                continue
+            kept = normalize_actions(declared)
+            labels[name] = [a["label"] for a in kept]
+            if len(kept) != len(declared):
+                dropped.append(name)
+want = {"downloads": "Download", "map": "Map", "notify": "Status"}
+missing = sorted(n for n, label in want.items() if label not in labels.get(n, []))
+print("PASS" if not dropped and not missing else "FAIL",
+      "dropped=%s missing=%s" % (sorted(dropped), missing))
+PY
+)
+case "$btn" in
+  PASS*) check 10.1 PASS "every installed plugin's row buttons are kept" "${btn#PASS }" ;;
+  *)     check 10.1 FAIL "every installed plugin's row buttons are kept" "$(printf '%s' "${btn#FAIL }" | tr '\n' ' ' | cut -c1-160)" ;;
+esac
+# 10.2 (the buttons in the running daemon's /status.json) is in the dashboard section.
+check 10.3 MANUAL "see the checklist" "by hand"
+
+sec "11. report redaction (#60)"
+check 11.1 MANUAL "see the checklist" "by hand"
+
 # ---------------------------------------------------------------- config tests (throwaway copy)
 sec "config tests (throwaway copy of config.toml; commands blocked)"
 cfg_sum_before=$(sha256sum "$CONFIG" | awk '{print $1}')
@@ -341,6 +419,7 @@ elif mode in ("basic", "system"):
     if not pw:
         print("(skipped: no password given)")
         chk("2.4", "SKIP", "loopback /status.json with Basic credentials", "no password given")
+        chk("10.2", "SKIP", "the running daemon offers the row buttons", "no password given")
         sys.exit(0)
     req.add_header("Authorization", "Basic " + base64.b64encode(
         ("%s:%s" % (user, pw)).encode()).decode())
@@ -350,6 +429,7 @@ except Exception as exc:
     print("(not available: %s)" % type(exc).__name__)
     chk("2.4", "FAIL" if mode in ("basic", "system") else "INFO",
         "loopback /status.json with Basic credentials", type(exc).__name__)
+    chk("10.2", "SKIP", "the running daemon offers the row buttons", "no /status.json")
     sys.exit(0)
 if mode in ("basic", "system"):
     chk("2.4", "PASS", "loopback /status.json with Basic credentials", "plain HTTP on 127.0.0.1")
@@ -365,6 +445,17 @@ for p in s.get("plugins", []):
     keep = {k: p.get(k) for k in ("state", "reason", "last_error", "warnings", "overruns",
                                    "capability_violations") if p.get(k) not in (None, "", [], 0)}
     print("plugin %-13s %s" % (p.get("name"), keep))
+# 10.2: an enabled, loaded downloads/map/notify offers its main-page button.
+offered = {p.get("name"): [a.get("label") for a in (p.get("actions") or []) if isinstance(a, dict)]
+           for p in s.get("plugins", []) if p.get("state") == "loaded"}
+want = {"downloads": "Download", "map": "Map", "notify": "Status"}
+on = sorted(n for n in want if n in offered)
+if not on:
+    chk("10.2", "SKIP", "the running daemon offers the row buttons", "none of downloads, map, notify loaded")
+else:
+    bad = [n for n in on if want[n] not in offered[n]]
+    chk("10.2", "FAIL" if bad else "PASS", "the running daemon offers the row buttons",
+        ("missing: %s" % ", ".join(bad)) if bad else "checked: %s" % ", ".join(on))
 w = s.get("widgets", {}) or {}
 for name in ("wpa-sec", "wigle", "backup", "remote-train", "updates", "notify", "hat-buttons"):
     if name in w:
@@ -400,6 +491,12 @@ cat >>"$raw" <<'EOF'
 7.x  each key on the "Last key press" card (confirms the pins); info screen;
      confirm prompt (also in the first ten minutes after boot) and cancel;
      shutdown; reboot; KEY2 stops capture; Pi 5 and Zero 2 W, V1 and V2 HATs
+9.x  Brave or Chrome on a Mac no longer calls the certificate "not standards
+     compliant"; iPhone Safari lets you proceed; a browser that trusted the
+     beta 1 certificate asks once more, and the new fingerprint matches
+10.x Download, Map, Status and Send test show on the Plugins page for the
+     enabled plugins, and each opens its page
+11.x this report reads "kestrel web fingerprint", not "<hostname> web ..."
 EOF
 
 # ---------------------------------------------------------------- redact and save
