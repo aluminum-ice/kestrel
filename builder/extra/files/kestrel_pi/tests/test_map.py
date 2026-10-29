@@ -287,8 +287,14 @@ def test_the_spot_list_marks_recovered_networks(tmp_path):
     spot = "%f,%f,%f,%f" % (LAT - 1e-5, LON - 1e-5, LAT + 1e-5, LON + 1e-5)
     body = _page(p, spot=spot).body
     listed = body.split('id="spot"', 1)[1]
-    assert listed.count('&#128274;</span>recovered</span>') == 1   # the lock badge
-    assert listed.count(">not recovered</span>") == 2
+    items = listed.split("<ul", 1)[1].split("</ul>", 1)[0]
+    assert items.count('title="passphrase recovered"') == 1
+    assert items.count('<span aria-hidden="true">&#128274;</span>') == 1   # the lock glyph
+    assert items.count('title="passphrase not recovered"') == 2          # no glyph
+    assert items.count('<span aria-hidden="true">&#128205;</span>') == 3  # recorded pins
+    import re
+    visible = re.sub(r'<span class="vh">[^<]*</span>|title="[^"]*"', "", items)
+    assert "recovered" not in visible and "recorded" not in visible    # glyphs, not words
     assert "made-up-pass" not in body
 
 

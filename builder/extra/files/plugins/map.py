@@ -353,22 +353,34 @@ class CaptureMap(Plugin):
         here = [(b, loc) for b, loc in points if s <= loc.lat <= n and w <= loc.lon <= e]
         if not here:
             return ""
+        def glyph(symbol, text, width=""):
+            # The glyphs Captured networks uses, each with a tooltip and hidden
+            # text (the shared stylesheet's .vh) so it never rests on the glyph
+            # alone; an empty symbol still tells a screen reader its text.
+            style = ' style="display:inline-block;width:%s"' % width if width else ""
+            return ('<span title="' + esc(text) + '"' + style + '>'
+                    + ('<span aria-hidden="true">' + symbol + "</span>" if symbol else "")
+                    + '<span class="vh">' + esc(text) + "</span></span>")
+
         rows = []
         for bssid, loc in here:
             href = "/networks?" + urlencode(
                 [("view", "ap"), ("q", bssid)] + ([("token", token)] if token else []))
-            # The same "recovered" badge as the Captured networks page, so every
-            # line says either way (the shared stylesheet's .crk).
-            status = ('<span class="crk"><span class="lock" aria-hidden="true">&#128274;'
-                      "</span>recovered</span>" if bssid in recovered else
-                      '<span class="crk-hidden" style="margin-left:.5em">not recovered</span>')
-            rows.append('<li><a href="' + esc(href) + '">'
+            done = bssid in recovered
+            lock = glyph("&#128274;" if done else "", "passphrase recovered" if done
+                         else "passphrase not recovered", width="1.4em")
+            where = (glyph("&#128205;", "recorded, onboard GPS") if loc.recorded
+                     else glyph("&#8776;&#9675;", "estimated, " + loc.label))
+            rows.append('<li style="margin:.25em 0">' + lock + where + ' <a href="'
+                        + esc(href) + '">'
                         + esc(", ".join(names.get(bssid) or ["(hidden network)"]))
-                        + "</a>" + status + " <small>" + esc(bssid) + " &middot; "
-                        + esc("recorded" if loc.recorded else "estimated") + "</small></li>")
+                        + "</a> <small>" + esc(bssid) + "</small></li>")
         return ('<h2 id="spot">%d networks at this spot</h2>' % len(here)
                 + '<p class="hint">Captured from the same place, so they share one '
-                "location and no zoom separates them.</p><ul>" + "".join(rows) + "</ul>")
+                "location and no zoom separates them. &#128274; passphrase recovered "
+                "&middot; &#128205; recorded by the onboard GPS &middot; &#8776;&#9675; "
+                'estimated.</p><ul style="list-style:none;padding-left:0">'
+                + "".join(rows) + "</ul>")
 
     def _url(self, which, bbox, token, base="", spot=None):
         params = []
