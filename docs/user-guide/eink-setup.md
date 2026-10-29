@@ -37,6 +37,10 @@ reference plugin it ships **disabled**.
   capture is sweeping this window (a channel list, a band like `2.4G`, `sweep`
   or `hunt`) while capturing. `CH` is the configured plan, not a live tuned
   channel (the radio hops within the plan).
+- Shows an **address row**: the device's address on each connected management
+  link, behind the same Bluetooth and Wi-Fi symbols as the top strip, so you
+  can open the dashboard on a headless device without checking your router's
+  client list. A link with no address is left out. Turn it off with `show_ip`.
 - Shows a **bottom counter row**: `PWND` captured handshakes (a key glyph) and
   `AP` distinct captured access points, each the lifetime total with the count
   from this session in parentheses, e.g. `200 (30)`.
@@ -99,6 +103,7 @@ never drift apart.
 | `refresh_seconds` | `10` | How often the face re-renders (`10` is the floor). The panel only redraws when the face actually changes, to limit e-ink wear, so a faster cadence mainly makes it react sooner. |
 | `show_mascot` | `true` | Draw the emoticon face (and its voice line). |
 | `show_brand_glyph` | `true` | Draw the small corner Kestrel mark. |
+| `show_ip` | `true` | Draw the address row: the Bluetooth tether and Wi-Fi addresses. Turn it off if the panel is visible to people who shouldn't see them. |
 | `battery_low_percent` | `10` | Show the tired face at or below this charge while on battery (needs `ups-hat`). |
 | `bored_epochs` | `15` | Idle event-loop epochs before the face looks bored. |
 | `sad_epochs` | `25` | Idle event-loop epochs before the face looks sad. |
