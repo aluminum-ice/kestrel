@@ -99,7 +99,7 @@ class Downloads(Plugin):
     # Reads the capture store and serves its own page; nothing leaves the
     # device except to the operator's own signed-in browser.
     __capabilities__ = ("capture-read", "web")
-    __actions__ = ({"label": "Download", "path": "", "method": "get"},)
+    __actions__ = ({"label": "Download", "path": "index", "method": "get"},)
     __options__ = {
         "include_locations": {
             "type": "bool", "default": False,
