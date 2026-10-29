@@ -1582,6 +1582,25 @@ _STATUS_CSS = (
     ".crk-hidden{color:var(--muted);font-style:italic;}"
     ".crkimport{margin:1.2em 0;}"
     ".crkimport>summary{cursor:pointer;color:var(--link);}"
+    # Captured networks: the back link and the import control share the top
+    # row (the control a small button that opens full width below it); view and
+    # sort share one row; the pager repeats beside the count above the table.
+    ".nethead{display:flex;align-items:center;justify-content:space-between;"
+    "gap:.4em 1em;flex-wrap:wrap;margin:1em 0 .4em;}"
+    ".nethead .crkimport{margin:0;}"
+    ".nethead .crkimport[open]{flex-basis:100%;}"
+    ".nethead .crkimport form{padding:.7em .8em;border:1px solid var(--border);"
+    "border-radius:8px;background:var(--card);}"
+    ".nethead .crkimport>summary{display:inline-block;list-style:none;padding:.35em .8em;"
+    "border:1px solid var(--border);border-radius:8px;background:var(--card);"
+    "font-size:.9rem;}"
+    ".nethead .crkimport>summary::-webkit-details-marker{display:none;}"
+    ".netbar{display:flex;flex-wrap:wrap;align-items:center;gap:0 1.2em;margin:.3em 0 .2em;}"
+    ".netbar .viewtabs{margin:.2em 0;}"
+    ".countbar{display:flex;justify-content:space-between;align-items:center;gap:.5em 1em;"
+    "flex-wrap:wrap;margin:.2em 0 .8em;}"
+    ".countbar .count{margin:0;}"
+    ".countbar .pager{margin:0;gap:.8em;}"
     ".crkimport form{margin-top:.7em;display:flex;flex-wrap:wrap;gap:.6em;"
     "align-items:center;}"
     ".crkimport .hint{flex-basis:100%;margin:0;}"
@@ -3075,11 +3094,11 @@ def _recovered_import_form(control, view):
               + ('<input type="hidden" name="token" value="' + _esc(token)
                  + '">' if token else ""))
     return (
-        '<details class="crkimport"><summary>Import recovered results</summary>'
+        '<details class="crkimport"><summary>Import results</summary>'
         '<form method="post" action="/recovered/import" '
         'enctype="multipart/form-data">' + hidden
-        + '<p class="hint">Upload a wpa-sec results file or a hashcat '
-        "<em>separated</em> potfile (BSSID, ESSID and passphrase per line). The "
+        + '<p class="hint"><b>Import recovered results:</b> upload a wpa-sec results '
+        "file or a hashcat <em>separated</em> potfile (BSSID, ESSID and passphrase per line). The "
         "default hashcat.potfile is not supported &mdash; export with a "
         "separated outfile format instead. These are passphrases for networks "
         "you are authorized to test.</p>"
@@ -3282,7 +3301,7 @@ def _render_networks(rows_in, control=None, query="", page=1,
         + '<button type="submit">Search</button></form>'
     )
 
-    pager = ""
+    pager = top_pager = ""
     if pages > 1:
         prev_cls = ' class="off"' if page <= 1 else ""
         next_cls = ' class="off"' if page >= pages else ""
@@ -3292,6 +3311,15 @@ def _render_networks(rows_in, control=None, query="", page=1,
             + '<span class="sub">page ' + str(page) + " of " + str(pages) + "</span>"
             + '<a' + next_cls + ' href="' + _esc(link(page=min(pages, page + 1)))
             + '">Next &rarr;</a></div>'
+        )
+        # A compact copy beside the count, so a long page can be turned
+        # without scrolling to the bottom.
+        top_pager = (
+            '<div class="pager"><a' + prev_cls + ' href="'
+            + _esc(link(page=max(1, page - 1))) + '" aria-label="Previous page">&larr;</a>'
+            + '<span class="sub">' + str(page) + " / " + str(pages) + "</span>"
+            + '<a' + next_cls + ' href="' + _esc(link(page=min(pages, page + 1)))
+            + '" aria-label="Next page">&rarr;</a></div>'
         )
 
     if ap_view:
@@ -3303,13 +3331,14 @@ def _render_networks(rows_in, control=None, query="", page=1,
         head_cells = ("<th>network</th><th>access points</th>"
                       "<th>handshakes</th><th>last seen</th>")
 
-    back = '<p><a href="' + _esc(_url("/", control)) + '">&larr; Dashboard</a></p>'
     banner = ""
     if message:
         banner = ('<p class="msg' + (" err" if error else "") + '">'
                   + _esc(message) + "</p>")
     # The import control writes to the recovered store, so it needs web auth on
     # (like every other write); read-only pages don't show it.
+    # It sits at the top beside the back link, not under a long table, and
+    # opens in place.
     import_form = _recovered_import_form(control, view) if auth_on else ""
     # The glyph legend shows only when the login is on (locations render only
     # then) and at least one row on this view carries a location to explain.
@@ -3317,11 +3346,13 @@ def _render_networks(rows_in, control=None, query="", page=1,
     legend = _location_legend() if (auth_on and has_locations) else ""
     return _page(
         "captured " + noun + "s - Kestrel",
-        back + "<h1>" + heading + "</h1>" + banner + tabs + sorttabs + search
-        + '<p class="count">' + count + "</p>"
+        '<div class="nethead"><a href="' + _esc(_url("/", control)) + '">&larr; Dashboard</a>'
+        + import_form + "</div><h1>" + heading + "</h1>"
+        + banner + '<div class="netbar">' + tabs + sorttabs + "</div>" + search
+        + '<div class="countbar"><p class="count">' + count + "</p>" + top_pager + "</div>"
         + "<div class='wrap'><table><thead><tr>" + head_cells
         + "</tr></thead><tbody>" + body_rows
-        + "</tbody></table></div>" + legend + pager + import_form,
+        + "</tbody></table></div>" + legend + pager,
     )
 
 

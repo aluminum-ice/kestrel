@@ -287,7 +287,7 @@ The device never cracks anything — but once you recover a passphrase (with the
 
 Import a potfile you produced elsewhere — the **wpa-sec download** (`bssid:station:essid:psk`) or the **hashcat separated** format (`hash:bssid:station:essid:psk`); the default `hashcat.potfile` is not supported:
 
-- Dashboard: **Import recovered results** on the Captured networks page (login required).
+- Dashboard: **Import results** at the top of the Captured networks page (login required).
 - Terminal: `kestrel recovered import <file>` (merge), `kestrel recovered list` (counts by source, no passphrases), `kestrel recovered clear --yes` (remove imports). Imports are bounded by `[recovered] max_import_mb` and `max_import_lines`. Only import passphrases for networks you are authorized to test.
 
 ### Network locations
