@@ -369,16 +369,16 @@ Draws the classic animated "tamagotchi" face on a Waveshare 2.7" e-Paper HAT, so
 
 The face reads the learning agent's state and the battery when those are available (the agent and `ups-hat`), and degrades cleanly when they are not. The faces themselves are the classic pwnagotchi emoticons and can be overridden per mood in `config.toml` under `[plugins.eink.faces]`.
 
-### wpa-sec (upload and crack results)
+### wpa-sec (upload and fetch recovered results)
 
 Uploads captured handshakes to [wpa-sec.stanev.org](https://wpa-sec.stanev.org), a distributed cracking service, and downloads the passwords recovered under your key. Off by default, and a network plugin, so enabling it takes the authorized-use acknowledgment.
 
 - Get your key: sign in at [wpa-sec.stanev.org](https://wpa-sec.stanev.org) and copy your personal key (a long hex string). It is both your upload credential and the key your results are filed under. Keep it private.
 - Enable: `sudo kestrel plugins enable wpa-sec` in a terminal, which asks for the key with the input hidden (or enter it on the plugin's web config page). For scripts, pass it on stdin with `--set-stdin api_key`, never with `--set`, which puts it in your shell history and the system journal.
 - Options: `endpoint` (default `https://wpa-sec.stanev.org`), `download_results` (default `true`), `results_interval_seconds` (default `3600`), `timeout` (default `30`).
-- It queues new handshakes while offline and uploads on reconnect (repackaging to a `.cap` first). With `download_results` on it fetches every network cracked under your key, from any device, to `/var/lib/kestrel/capture/cracked/wpa-sec.potfile`. Set `download_results = false` to upload only.
-- The card shows Uploaded (this session), Queued, and Cracked. "already submitted" in the log is harmless (wpa-sec de-duplicates server-side).
-- With the web login on, the plugin's row on the Plugins page has a **Show** button. It opens a page listing the SSID and recovered passphrase of every cracked network, with a search box (by SSID) and paging, so it stays usable with thousands of results. Because it shows passphrases it is only available, and only rendered, when you are signed in (`[web] auth` on).
+- It queues new handshakes while offline and uploads on reconnect (repackaging to a `.cap` first). With `download_results` on it fetches every network recovered under your key, from any device, to `/var/lib/kestrel/capture/cracked/wpa-sec.potfile`. Set `download_results = false` to upload only.
+- The card shows Uploaded (this session), Queued, and Recovered. "already submitted" in the log is harmless (wpa-sec de-duplicates server-side).
+- With the web login on, the plugin's row on the Plugins page has a **Show** button. It opens a page listing the SSID and recovered passphrase of every recovered network, with a search box (by SSID) and paging, so it stays usable with thousands of results. Because it shows passphrases it is only available, and only rendered, when you are signed in (`[web] auth` on).
 
 ### wigle (wardriving uploads)
 
