@@ -10,7 +10,7 @@ This is the public, secrets-free base image for Kestrel, a Raspberry Pi Wi-Fi ca
 
 Architecture and developer reference live under [`docs/developer/`](docs/developer/); operator guides under [`docs/user-guide/`](docs/user-guide/).
 
-Consciously deferred improvements are tracked in [`docs/developer/deferred.md`](docs/developer/deferred.md). When you defer something (a review finding, a known limitation), add an entry there in the same change; when you do one, remove its entry in the same change.
+Consciously deferred improvements are tracked in [`docs/developer/deferred.md`](docs/developer/deferred.md). When you defer something (a review finding, a known limitation), add an entry there in the same change; when you do one, remove its entry in the same change. **Never write a security weakness** (a vulnerability, an unfixed security finding, a way to attack or abuse a feature) there or anywhere else in the repo, including code comments, docs, commit messages and PR descriptions: the repo is public, and a list of open weaknesses helps attackers. Those go in a private tracker outside the repository; a fix's PR describes the change, not the weakness it closed.
 
 Build pipeline:
 
