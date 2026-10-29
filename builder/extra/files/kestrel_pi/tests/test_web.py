@@ -1930,10 +1930,10 @@ def _redirect_banner(resp):
 def test_networks_import_form_shown_only_with_web_auth(monkeypatch, tmp_path):
     off, _ = _client(monkeypatch, tmp_path, {"auth": "none"},
                      networks=_nets("My Network"))
-    assert "Import recovered results" not in off.get("/networks").get_data(as_text=True)
+    assert "Import results" not in off.get("/networks").get_data(as_text=True)
     on, _ = _client(monkeypatch, tmp_path, BASIC, networks=_nets("My Network"))
     body = on.get("/networks", headers=_basic()).get_data(as_text=True)
-    assert "Import recovered results" in body
+    assert "Import results" in body and "Import recovered results:" in body
     assert 'action="/recovered/import"' in body and 'type="file"' in body
 
 

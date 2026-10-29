@@ -116,8 +116,9 @@ through a small privileged helper (the daemon itself runs unprivileged):
 - **Plugins** — a page to enable/disable plugins and edit their options, with the
   authorized-use acknowledgment for network plugins. See
   [Managing plugins](managing-plugins.md).
-- **Import recovered results** — a control on the Captured networks page for
-  uploading a potfile of known passphrases (wpa-sec or hashcat separated format).
+- **Import recovered results** — the **Import results** button at the top of the
+  Captured networks page, for uploading a potfile of known passphrases (wpa-sec
+  or hashcat separated format).
   See [Working with your
   captures](working-with-captures.md#importing-a-potfile).
 - **Reboot / Shut down** — each opens a confirmation page first. (Shutting down
