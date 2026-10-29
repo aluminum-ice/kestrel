@@ -497,6 +497,10 @@ Lets you download your handshake files straight from the dashboard. Off by defau
 
 A download needs the web login on and an encrypted connection: open the dashboard over `https://` (plain HTTP works only on the device itself). `max_mb` (default 200) caps the size of one download.
 
+### map (every located network on one map)
+
+Draws every captured network with a known location on one map, on the device itself. Off by default; display only, so no acknowledgment. Press **Map** on its row on the Plugins page: a **pin** is a location recorded by your GPS, a **ring with `~`** an estimate (for example from WiGLE), and a **square with a number** several networks close together (tap it to zoom in). A single network links to its row on Captured networks. Filters show all, recorded, estimated, or the last 7 days. There are no map tiles, only a light coordinate grid, a scale bar and a north arrow, so no tile server learns where you've been. Like the per-row locations, the map needs the web login and is hidden while `[web] show_locations` is off.
+
 ### remote-train (offload training to a desktop)
 
 The `remote-train` plugin automates the whole desktop-training loop: it pushes the episode logs to a desktop Linux host, runs the same trainer there in an isolated venv it owns, and pulls the finished model back, adopting it only when it is genuinely fresher. It ships disabled and, as a network plugin, takes the authorized-use acknowledgment. The training host is independent of the backup host.

@@ -277,6 +277,12 @@ class GeoStore:
             self._cache = (signature, by_bssid)
         return by_bssid
 
+    def locations(self):
+        """Every known location as ``{BSSID: Location}`` (a copy), with the same
+        recorded-beats-estimated choice as :meth:`lookup_bssid`. For a view of
+        all of them at once, such as the ``map`` plugin."""
+        return dict(self._parse())
+
     def lookup_bssid(self, bssid):
         """The :class:`Location` for ``bssid`` (normalized before lookup), or
         ``None``. The exact, unambiguous by-radio join."""

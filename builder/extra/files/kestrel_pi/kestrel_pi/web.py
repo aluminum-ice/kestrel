@@ -1506,8 +1506,13 @@ _STATUS_CSS = (
     # the authorized-use confirm block (capture / network plugins)
     ".ack{border:1px solid var(--msgerr-bd);background:var(--msgerr-bg);border-radius:8px;"
     "padding:.7em .85em;margin:.6em 0;}"
+    # two renderings of one thing (e.g. the map plugin's wide and phone-shaped
+    # maps): the page carries both and the stylesheet shows the one that fits
+    ".narrow-only{display:none;}"
     # phones: the table becomes stacked cards, each cell labelled by its header
     "@media(max-width:40em){"
+    ".wide-only{display:none;}"
+    ".narrow-only{display:block;}"
     ".widgets{grid-template-columns:1fr;}"
     # the capture action drops to its own full-width row under the capture line
     ".sact{margin-left:0;flex-basis:100%;}"
