@@ -171,7 +171,8 @@ def test_cmd_checkauth_denies_and_never_echoes_the_password(monkeypatch, capsys)
                             json.dumps({"username": "pi", "password": "hunter2"}).encode())))
     rc = ctl.cmd_checkauth()
     out, err = capsys.readouterr()
-    assert rc == 1 and json.loads(out) == {"ok": False}
+    # A denial is an answer: exit 0, so no failed kestrel-web-auth@ unit lingers.
+    assert rc == 0 and json.loads(out) == {"ok": False}
     assert "hunter2" not in out and "hunter2" not in err
 
 
@@ -338,7 +339,8 @@ def test_end_to_end_over_a_socket(env):
 def test_cmd_apply_bad_input(env, monkeypatch, capsys):
     _auth_on(env)
     rc, reply, _err, restarts = _run_apply(monkeypatch, capsys, b"{not json")
-    assert rc == 1 and reply["ok"] is False and restarts == []
+    # A refusal is an answer: exit 0, so no failed kestrel-plugins-apply@ unit.
+    assert rc == 0 and reply["ok"] is False and restarts == []
     big = b'{"plugin": "' + b"a" * (ctl.MAX_REQUEST + 10) + b'"}'
     rc, reply, _err, _r = _run_apply(monkeypatch, capsys, big)
     assert reply == {"ok": False, "error": "request too large"}

@@ -1184,7 +1184,10 @@ def cmd_checkauth():
                          % (username, "ok" if reply["ok"] else "denied"))
     sys.stdout.write(json.dumps(reply) + "\n")
     sys.stdout.flush()
-    return 0 if reply.get("ok") else 1
+    # A denied login is an answer, not a failure: each connection runs as its
+    # own kestrel-web-auth@ instance, and a non-zero exit would leave one
+    # "failed" unit behind per wrong password. Only a crash exits non-zero.
+    return 0
 
 
 def restart_daemon():
@@ -1287,7 +1290,9 @@ def cmd_apply():
         run_backup_restore()
     if reply.get("backup_now"):
         run_backup_now()
-    return 0 if reply.get("ok") else 1
+    # A refused change is an answer, not a failure (as in cmd_checkauth): a
+    # non-zero exit would leave a "failed" kestrel-plugins-apply@ instance.
+    return 0
 
 
 def main(argv):
