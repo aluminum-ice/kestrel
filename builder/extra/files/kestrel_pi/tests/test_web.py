@@ -2906,3 +2906,215 @@ def test_web_connections_time_out_on_a_stalled_request(monkeypatch):
             assert time.monotonic() - started < 3
     finally:
         server.shutdown()
+
+
+# -- HTTPS and sign-in --------------------------------------------------------------
+# Off-device requests come from an RFC 5737 address; the Flask test client's
+# default (127.0.0.1) is loopback, which keeps the plain Basic behaviour above.
+
+OFFBOX = {"REMOTE_ADDR": "192.0.2.5"}
+HTML = {"Accept": "text/html,application/xhtml+xml"}
+HTTPS = "https://kestrel.local:8443"
+PLAIN = "http://kestrel.local:8080"
+
+
+def _signin_client(monkeypatch, tmp_path, web_cfg=None):
+    calls = []
+
+    def fake_auth(username, password, socket_path=None, timeout=10):
+        calls.append((username, password))
+        return {"ok": username == "pi" and password == "letmein"}
+
+    monkeypatch.setattr(web, "_auth_check", fake_auth)
+    monkeypatch.setattr(web, "_auth_cache", {})
+    client, _ = _client(monkeypatch, tmp_path,
+                        web_cfg or {"auth": "system", "username": "pi"})
+    return client, calls
+
+
+def _login_token(body):
+    import re
+
+    return re.search(r'name="lt" value="([^"]+)"', body).group(1)
+
+
+def _sign_in(client, password="letmein", nxt="/", base=HTTPS):
+    page = client.get("/login", base_url=base, environ_base=OFFBOX, headers=HTML)
+    assert page.status_code == 200
+    return client.post("/login", base_url=base, environ_base=OFFBOX, data={
+        "lt": _login_token(page.get_data(as_text=True)), "next": nxt,
+        "username": "pi", "password": password})
+
+
+def test_offbox_browser_is_sent_to_sign_in(monkeypatch, tmp_path):
+    client, _ = _signin_client(monkeypatch, tmp_path)
+    resp = client.get("/networks?view=ap", base_url=HTTPS, environ_base=OFFBOX,
+                      headers=HTML)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].startswith("/login?next=%2Fnetworks%3Fview%3Dap")
+    page = client.get("/login", base_url=HTTPS, environ_base=OFFBOX, headers=HTML)
+    body = page.get_data(as_text=True)
+    assert 'type="password"' in body and 'name="lt"' in body
+    assert 'value="pi"' in body                    # the account is pre-filled
+
+
+def test_sign_in_sets_a_strict_session_cookie_and_returns_to_next(monkeypatch, tmp_path):
+    client, calls = _signin_client(monkeypatch, tmp_path)
+    resp = _sign_in(client, nxt="/networks")
+    assert resp.status_code == 303 and resp.headers["Location"].endswith("/networks")
+    cookie = resp.headers["Set-Cookie"]
+    for flag in ("kestrel_session=", "HttpOnly", "Secure", "SameSite=Strict", "Path=/"):
+        assert flag in cookie
+    assert "letmein" not in cookie
+    calls.clear()
+    page = client.get("/", base_url=HTTPS, environ_base=OFFBOX, headers=HTML)
+    assert page.status_code == 200
+    assert calls == []                                 # the cookie, not the password
+    assert "Sign out" in page.get_data(as_text=True)
+
+
+def test_wrong_password_and_forged_form_are_refused(monkeypatch, tmp_path):
+    client, _ = _signin_client(monkeypatch, tmp_path)
+    resp = _sign_in(client, password="nope")
+    assert resp.status_code == 401
+    assert "Wrong username or password" in resp.get_data(as_text=True)
+    assert "kestrel_session" not in resp.headers.get("Set-Cookie", "")
+    forged = client.post("/login", base_url=HTTPS, environ_base=OFFBOX, data={
+        "lt": "1.x.y", "username": "pi", "password": "letmein"})
+    assert forged.status_code == 400
+
+
+def test_sign_in_never_redirects_off_site(monkeypatch, tmp_path):
+    for nxt in ("//evil.example/", "https://evil.example/", "/\\evil.example",
+                "/x\r\nSet-Cookie: a=b", "/login"):
+        client, _ = _signin_client(monkeypatch, tmp_path)
+        resp = _sign_in(client, nxt=nxt)
+        assert resp.status_code == 303
+        assert resp.headers["Location"] in ("/", "http://localhost/",
+                                            HTTPS + "/"), nxt
+
+
+def test_repeated_failures_are_throttled(monkeypatch, tmp_path):
+    client, _ = _signin_client(monkeypatch, tmp_path)
+    for _ in range(5):
+        assert _sign_in(client, password="nope").status_code == 401
+    resp = _sign_in(client, password="letmein")
+    assert resp.status_code == 429
+    assert int(resp.headers["Retry-After"]) > 0
+    assert "Too many attempts" in resp.get_data(as_text=True)
+
+
+def test_sign_out_clears_the_session(monkeypatch, tmp_path):
+    client, _ = _signin_client(monkeypatch, tmp_path)
+    _sign_in(client)
+    page = client.get("/logout", base_url=HTTPS, environ_base=OFFBOX, headers=HTML)
+    assert page.status_code == 200
+    resp = client.post("/logout", base_url=HTTPS, environ_base=OFFBOX,
+                       data={"csrf": _csrf(page.get_data(as_text=True))})
+    assert resp.status_code == 303 and resp.headers["Location"].endswith("/login")
+    assert "kestrel_session=;" in resp.headers["Set-Cookie"]
+    again = client.get("/", base_url=HTTPS, environ_base=OFFBOX, headers=HTML)
+    assert again.status_code == 302
+
+
+def test_basic_credentials_only_over_https_or_loopback(monkeypatch, tmp_path):
+    client, _ = _signin_client(monkeypatch, tmp_path)
+    good = _basic("pi", "letmein")
+    # Scripts over HTTPS: fine, with the challenge on a miss.
+    assert client.get("/status.json", base_url=HTTPS, environ_base=OFFBOX,
+                      headers=good).status_code == 200
+    miss = client.get("/status.json", base_url=HTTPS, environ_base=OFFBOX)
+    assert miss.status_code == 401 and "WWW-Authenticate" in miss.headers
+    # Plain HTTP off the device while HTTPS is on: never accepted, no challenge.
+    plain = client.get("/status.json", base_url=PLAIN, environ_base=OFFBOX, headers=good)
+    assert plain.status_code == 401 and "WWW-Authenticate" not in plain.headers
+    # Loopback keeps working for on-device tools.
+    assert client.get("/status.json", headers=good).status_code == 200
+
+
+def test_tls_off_keeps_basic_working_off_the_device(monkeypatch, tmp_path):
+    client, _ = _signin_client(monkeypatch, tmp_path,
+                               {"auth": "system", "username": "pi", "tls": "off"})
+    assert client.get("/status.json", base_url=PLAIN, environ_base=OFFBOX,
+                      headers=_basic("pi", "letmein")).status_code == 200
+
+
+def test_session_for_another_account_is_refused(monkeypatch, tmp_path):
+    client, _ = _signin_client(monkeypatch, tmp_path)
+    _sign_in(client)
+    # The configured account changes: the old cookie no longer opens the page.
+    client2, _ = _signin_client(monkeypatch, tmp_path, {"auth": "system",
+                                                         "username": "alice"})
+    cookie = client.get_cookie("kestrel_session", domain="kestrel.local")
+    client2.set_cookie("kestrel_session", cookie.value, domain="kestrel.local")
+    assert client2.get("/", base_url=HTTPS, environ_base=OFFBOX,
+                       headers=HTML).status_code == 302
+
+
+def test_basic_mode_signs_in_with_its_stored_login(monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path, BASIC)
+    page = client.get("/login", base_url=HTTPS, environ_base=OFFBOX, headers=HTML)
+    resp = client.post("/login", base_url=HTTPS, environ_base=OFFBOX, data={
+        "lt": _login_token(page.get_data(as_text=True)), "next": "/",
+        "username": "pi", "password": "hunter2"})
+    assert resp.status_code == 303
+    assert client.get("/", base_url=HTTPS, environ_base=OFFBOX,
+                      headers=HTML).status_code == 200
+
+
+def test_no_sign_in_page_without_a_password_mode(monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"})
+    assert client.get("/login").status_code == 302
+    assert client.get("/").headers.get("X-Content-Type-Options") == "nosniff"
+
+
+# -- serving HTTPS ------------------------------------------------------------------
+
+def test_tls_settings_parse():
+    assert web.tls_enabled({}) is True
+    assert web.tls_enabled({"tls": "off"}) is False
+    assert web.tls_enabled({"tls": False}) is False
+    assert web.tls_port({}) == 8443
+    assert web.tls_port({"tls_port": 9443}) == 9443
+    assert web.tls_port({"tls_port": "nope"}) == 8443
+    assert web.tls_port({"tls_port": 70000}) == 8443
+
+
+def test_management_hosts_get_https_and_a_redirect():
+    made = []
+
+    def factory(host, port, app, ssl_context=None):
+        srv = _FakeServer(host, port, app)
+        srv.app = app
+        srv.ctx = ssl_context
+        made.append(srv)
+        return srv
+
+    ctx = object()
+    app = object()
+    ws = web.WebServer(app=app, hosts=["127.0.0.1", "192.0.2.50"], port=8080,
+                       logger=LOG, server_factory=factory, tls=(8443, ctx))
+    ws.start()
+    loop = [s for s in made if s.host == "127.0.0.1"]
+    mgmt = {s.port: s for s in made if s.host == "192.0.2.50"}
+    assert [(s.port, s.ctx) for s in loop] == [(8080, None)]   # loopback: plain HTTP
+    assert mgmt[8443].ctx is ctx and mgmt[8443].app is app
+    assert mgmt[8080].ctx is None and mgmt[8080].app is not app  # the redirect
+    ws.stop()
+    assert all(s.shut for s in made)
+
+
+def test_https_redirect_keeps_host_path_and_query():
+    app = web.https_redirect_app(8443)
+    seen = {}
+
+    def start(status, headers):
+        seen["status"], seen["headers"] = status, dict(headers)
+
+    app({"HTTP_HOST": "kestrel.local:8080", "PATH_INFO": "/networks",
+         "QUERY_STRING": "view=ap", "SERVER_NAME": "192.0.2.50"}, start)
+    assert seen["status"].startswith("307")
+    assert seen["headers"]["Location"] == "https://kestrel.local:8443/networks?view=ap"
+    app({"HTTP_HOST": "evil example\r\n", "PATH_INFO": "/", "SERVER_NAME": "192.0.2.50"},
+        start)
+    assert seen["headers"]["Location"] == "https://192.0.2.50:8443/"

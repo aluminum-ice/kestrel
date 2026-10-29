@@ -8,3 +8,15 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _private_web_state(tmp_path, monkeypatch):
+    """Keep the dashboard's certificate and session key (kestrel_pi.webtls) in a
+    per-test directory, never the real ~/.local/state of whoever runs the tests."""
+    from kestrel_pi import webtls
+
+    monkeypatch.setattr(webtls, "state_dir", lambda: str(tmp_path / "kestrel-web"))

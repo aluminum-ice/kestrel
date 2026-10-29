@@ -25,7 +25,7 @@ ways — both detect the dongle, present the same authorized-use acknowledgment
 If you've set up the [web dashboard](web-dashboard.md) with its login on, this is
 the simplest path:
 
-1. Open the dashboard (e.g. `http://kestrel.local:8080/`) and log in.
+1. Open the dashboard (e.g. `https://kestrel.local:8443/`) and sign in.
 2. Flip the **Capture** control on.
 3. Confirm the **authorized-use acknowledgment** when prompted.
 
