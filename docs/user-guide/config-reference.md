@@ -130,7 +130,9 @@ can leave them alone.
 | --- | --- | --- | --- |
 | `enabled` | `true` / `false` | `true` | Whether the dashboard is served. |
 | `bind` | `management` | `management` | Serve only over the management link (your tether/Wi-Fi), never the capture dongle. Leave as is. |
-| `port` | 1–65535 | `8080` | The dashboard's port. Changing it drops your current session and needs a daemon restart. |
+| `port` | 1–65535 | `8080` | The dashboard's plain-HTTP port. With `tls` on it serves the device itself (`127.0.0.1`) and only forwards to HTTPS on the management links. Changing it drops your current session and needs a daemon restart. |
+| `tls` | `on` / `off` | `on` | Serve the dashboard over HTTPS on the management links, with a sign-in page. Set it with `sudo kestrel web tls on\|off`. |
+| `tls_port` | 1–65535 | `8443` | The HTTPS port. Changing it drops your current session and needs a daemon restart. |
 | `refresh_seconds` | whole number (`0` = off) | `30` | How often the read-only dashboard refreshes itself. Below `epoch_seconds` it just re-draws the same numbers. |
 | `webhook_timeout_seconds` | whole number (`0` = off) | `30` | How long a plugin's own page or action may run before the browser gets a "still working" page instead of hanging; the plugin's work keeps going in the background. `0` waits forever. |
 | `auth` | `system` / `basic` / `token` / `none` | `system` | How the dashboard logs you in. `system` uses your device account (same as SSH). Set this with `web auth`, not by hand — a wrong value can lock you out. |

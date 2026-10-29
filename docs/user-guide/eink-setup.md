@@ -29,7 +29,9 @@ reference plugin it ships **disabled**.
 - Gives the mascot a **voice**: a short, cute phrase beside the face that
   matches its mood (and changes when the mood does), just like classic
   pwnagotchi. Override any mood's phrases in `config.toml` under
-  `[plugins.eink.voices]`.
+  `[plugins.eink.voices]`. For the first ten minutes after start-up the voice
+  line shows the start of the dashboard's HTTPS certificate fingerprint instead,
+  to compare with your browser on first sign-in (`show_fingerprint_minutes`).
 - Shows a **compact status on one line** just under the face: a chip glyph with
   the **agent** mode (`off` / `baseline` / `learned`) and an antenna glyph with
   the **capture** state. The mood is the face itself.
@@ -103,6 +105,7 @@ never drift apart.
 | `refresh_seconds` | `10` | How often the face re-renders (`10` is the floor). The panel only redraws when the face actually changes, to limit e-ink wear, so a faster cadence mainly makes it react sooner. |
 | `show_mascot` | `true` | Draw the emoticon face (and its voice line). |
 | `show_brand_glyph` | `true` | Draw the small corner Kestrel mark. |
+| `show_fingerprint_minutes` | `10` | For this many minutes after start-up, the voice line shows the start of the dashboard's HTTPS certificate fingerprint, to compare with your browser on first sign-in. `0` never shows it. |
 | `show_ip` | `true` | Draw the address row: the Bluetooth tether and Wi-Fi addresses. Turn it off if the panel is visible to people who shouldn't see them. |
 | `battery_low_percent` | `10` | Show the tired face at or below this charge while on battery (needs `ups-hat`). |
 | `bored_epochs` | `15` | Idle event-loop epochs before the face looks bored. |

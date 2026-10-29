@@ -258,6 +258,13 @@ SECTIONS = [
             _ro("web", "port", RO_LOCKOUT,
                 "Changing the port drops your session and needs a restart — use "
                 "the CLI.", cli=""),
+            _ro("web", "tls", RO_LOCKOUT,
+                "HTTPS on the management links (on by default). Turning it off "
+                "sends the sign-in unencrypted — use 'sudo kestrel web tls'.",
+                cli=""),
+            _ro("web", "tls_port", RO_LOCKOUT,
+                "The HTTPS port (8443 by default). Changing it drops your "
+                "session — CLI only.", cli=""),
             _edit("web", "refresh_seconds", "int", 30,
                   "Dashboard auto-refresh in seconds (0 = off). Below "
                   "epoch_seconds just re-renders the same numbers.",

@@ -39,6 +39,11 @@ WEB_DEFAULTS = {
     "enabled": True,
     "bind": "management",
     "port": 8080,
+    # HTTPS on the management links (on/off) and its port. With it on, `port`
+    # on those links only redirects to HTTPS; loopback keeps plain HTTP for
+    # on-device tools. Code defaults, so an updated device gets them too.
+    "tls": "on",
+    "tls_port": 8443,
     # system = the device login account (same credential as SSH); basic/token =
     # a web-only credential; none = open, read-only page.
     "auth": "system",
