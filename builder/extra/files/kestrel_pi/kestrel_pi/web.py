@@ -41,6 +41,7 @@ from urllib.parse import quote, urlencode
 from . import config_catalog
 from .applyclient import APPLY_SOCKET, apply_change
 from .connectivity import MANAGEMENT_INTERFACES
+from .geo import fmt_coord
 from .plugins import PluginPage, PluginRedirect
 
 log = logging.getLogger(__name__)
@@ -583,6 +584,11 @@ def create_app(daemon):
         # count are not secrets and show regardless.
         show_pass = bool((cfg.get("web") or {}).get("show_passphrases", True))
         by_bssid, by_essid = _recovered_maps(daemon, view, data)
+        # A captured network's location is annotated the same way, gated by the
+        # login plus show_locations (read live; code-defaults on when the key is
+        # absent, so an app-layer-updated device behaves identically).
+        show_loc = bool((cfg.get("web") or {}).get("show_locations", True))
+        loc_bssid, loc_essid = _location_maps(daemon, view, data)
         # A one-line banner after an import (set by /recovered/import's redirect).
         err = request.args.get("err")
         msg = err or request.args.get("msg")
@@ -590,8 +596,9 @@ def create_app(daemon):
             data, ctl, query=request.args.get("q", ""),
             page=request.args.get("page", 1), view=view, sort=sort,
             recovered_by_bssid=by_bssid, recovered_by_essid=by_essid,
-            show_passphrases=show_pass, auth_on=bool(ctl.get("ready")),
-            message=msg, error=bool(err)))
+            location_by_bssid=loc_bssid, location_by_essid=loc_essid,
+            show_locations=show_loc, show_passphrases=show_pass,
+            auth_on=bool(ctl.get("ready")), message=msg, error=bool(err)))
 
     def _back_to_networks(message, error=False, view=None, code=303):
         # POST-redirect-GET back to /networks with a one-line banner, keeping the
@@ -1418,6 +1425,22 @@ _STATUS_CSS = (
     ".crkimport form{margin-top:.7em;display:flex;flex-wrap:wrap;gap:.6em;"
     "align-items:center;}"
     ".crkimport .hint{flex-basis:100%;margin:0;}"
+    # Per-row location marker on /networks (recorded by onboard GPS vs estimated
+    # from an external source). Muted, appended inside the row's primary cell; the
+    # two classes differ by glyph shape (solid pin vs the "approximately" mark and
+    # a hollow ring) and by title/legend text, never by colour alone.
+    ".geo{display:block;margin-top:.25em;font-size:.82rem;color:var(--muted);"
+    "white-space:nowrap;}"
+    ".geo .geo-ic{margin-right:.35em;}"
+    ".geo a{color:var(--link);}"
+    ".geo .geo-more{margin-left:.4em;}"
+    ".geo .geo-hidden{font-style:italic;}"
+    ".geo-legend{font-size:.82rem;color:var(--muted);margin:.5em 0 0;}"
+    ".geo-legend .geo-ic{margin-right:.3em;}"
+    # Visually-hidden text: present for screen readers, off-screen visually, so a
+    # decorative glyph still carries its meaning without relying on the title tip.
+    ".vh{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;"
+    "overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}"
 )
 
 
@@ -2742,6 +2765,103 @@ def _recovered_cell(summary_html, pairs, auth_on, show_passphrases, with_bssid):
             + "</summary>" + panel + "</details>")
 
 
+def _location_maps(daemon, view, data):
+    """Build the location-annotation maps for ``/networks`` from the ``geo``
+    service. Returns ``(location_by_bssid, location_by_essid)`` -- both empty when
+    the store is absent or unreadable, so the page just shows no location markers.
+
+    By-AP view: each captured BSSID joined to its :class:`~kestrel_pi.geo.Location`.
+    By-network view: among a network's captured radios, the representative is the
+    location of the **most-recently-captured** radio that has one, and the value
+    is ``(Location, extra)`` where ``extra`` is how many *other* of that network's
+    radios are also located (the ``+N`` hint)."""
+    geo = daemon.services.get("geo")
+    by_bssid, by_essid = {}, {}
+    if geo is None:
+        return by_bssid, by_essid
+    try:
+        if view == "ap":
+            for row in data:
+                bssid = row.get("bssid")
+                if not bssid:
+                    continue
+                loc = geo.lookup_bssid(bssid)
+                if loc:
+                    by_bssid[bssid] = loc
+        else:
+            # essid -> list of (last_seen, Location) across its located radios.
+            located = {}
+            for ap in daemon.capture.captured_access_points():
+                bssid = ap.get("bssid")
+                loc = geo.lookup_bssid(bssid) if bssid else None
+                if not loc:
+                    continue
+                for essid in ap.get("essids") or []:
+                    located.setdefault(essid, []).append(
+                        (ap.get("last_seen") or 0, loc))
+            for row in data:
+                essid = row.get("essid")
+                hits = located.get(essid) if essid else None
+                if not hits:
+                    continue
+                hits.sort(key=lambda t: t[0], reverse=True)   # newest first
+                by_essid[essid] = (hits[0][1], len(hits) - 1)
+    except Exception:  # noqa: BLE001 - a geo-store read must never break the page
+        return {}, {}
+    return by_bssid, by_essid
+
+
+def _location_glyph(loc):
+    """The decorative glyph + its visually-hidden/title text for a location's
+    class: a solid pin for recorded, the "approximately" mark and a hollow ring
+    for estimated. Shape + text, never colour."""
+    if loc.recorded:
+        glyph, title = "&#128205;", "recorded, onboard GPS"      # 📍
+    else:
+        glyph, title = "&#8776;&#9675;", "estimated, " + loc.label   # ≈○
+    return ('<span class="geo-ic" title="' + _esc(title) + '">'
+            '<span aria-hidden="true">' + glyph + "</span>"
+            '<span class="vh">' + _esc(title) + "</span></span>")
+
+
+def _location_cell(loc, auth_on, show_locations, extra=0):
+    """The small muted location block appended inside a row's primary cell, or
+    ``""`` when there is no location or no web login.
+
+    Gating mirrors the recovered passphrase exactly -- a recorded location is
+    effectively where the operator was, so it is treated as sensitive:
+    - auth off: nothing location-related shows (return ``""``).
+    - auth on, ``show_locations`` off: the glyph + a muted 'location hidden'
+      note, so the operator knows a location exists without revealing it.
+    - auth on, ``show_locations`` on: the glyph + the coordinate as an
+      OpenStreetMap link (full precision in the href, 5 decimals shown), plus a
+      ``+N`` hint when more of the network's radios are located."""
+    if not loc or not auth_on:
+        return ""
+    marker = _location_glyph(loc)
+    if not show_locations:
+        return ('<span class="geo">' + marker
+                + '<span class="geo-hidden">location hidden</span></span>')
+    coords = fmt_coord(loc.lat) + ", " + fmt_coord(loc.lon)
+    url = loc.osm_url()
+    link = ('<a href="' + _esc(url) + '" target="_blank" '
+            'rel="noopener noreferrer">' + _esc(coords) + "</a>")
+    more = ('<span class="geo-more">+' + str(int(extra)) + "</span>"
+            if extra and extra > 0 else "")
+    return '<span class="geo">' + marker + link + more + "</span>"
+
+
+def _location_legend():
+    """The one-line caption under the table explaining the two location glyphs.
+    Shown only when the web login is on (locations render only then)."""
+    recorded = ('<span class="geo-ic"><span aria-hidden="true">&#128205;</span>'
+                "</span>recorded (onboard GPS)")
+    estimated = ('<span class="geo-ic"><span aria-hidden="true">'
+                 "&#8776;&#9675;</span></span>estimated (external source)")
+    return ('<p class="geo-legend">Location: ' + recorded + " &middot; "
+            + estimated + " &middot; links open OpenStreetMap.</p>")
+
+
 def _recovered_import_form(control, view):
     """The "Import recovered results" control on /networks, shown only with web
     auth on. A multipart POST to /recovered/import, CSRF-protected like every
@@ -2769,7 +2889,8 @@ def _recovered_import_form(control, view):
 def _render_networks(rows_in, control=None, query="", page=1,
                      per_page=NETWORKS_PER_PAGE, view="ssid", sort="name",
                      recovered_by_bssid=None, recovered_by_essid=None,
-                     show_passphrases=True, auth_on=False,
+                     location_by_bssid=None, location_by_essid=None,
+                     show_locations=False, show_passphrases=True, auth_on=False,
                      message=None, error=False):
     """The captured-networks page, in one of two views over the same store:
 
@@ -2794,6 +2915,8 @@ def _render_networks(rows_in, control=None, query="", page=1,
     rows_in = rows_in or []
     recovered_by_bssid = recovered_by_bssid or {}
     recovered_by_essid = recovered_by_essid or {}
+    location_by_bssid = location_by_bssid or {}
+    location_by_essid = location_by_essid or {}
     ap_view = view == "ap"
     # The by-AP list may carry a trailing "(unknown BSSID)" fold row for
     # handshakes whose BSSID didn't parse; it is shown but is not an access
@@ -2846,6 +2969,12 @@ def _render_networks(rows_in, control=None, query="", page=1,
             if bssid and bssid in recovered_by_bssid:
                 radio = _recovered_cell(radio, [(bssid, recovered_by_bssid[bssid])],
                                       auth_on, show_passphrases, with_bssid=False)
+            # A known location is appended inside the primary cell, after any
+            # recovered disclosure, so an absent location adds nothing (no empty
+            # column) and the 4-column layout holds.
+            loc = location_by_bssid.get(bssid) if bssid else None
+            if loc:
+                radio += _location_cell(loc, auth_on, show_locations)
             essids = r.get("essids") or []
             if essids:
                 names = ", ".join(_esc(e) for e in essids)
@@ -2864,6 +2993,10 @@ def _render_networks(rows_in, control=None, query="", page=1,
             if pairs:
                 name = _recovered_cell(name, pairs, auth_on, show_passphrases,
                                      with_bssid=True)
+            loc_hit = location_by_essid.get(essid) if essid else None
+            if loc_hit:
+                loc, extra = loc_hit
+                name += _location_cell(loc, auth_on, show_locations, extra=extra)
             rows.append(
                 "<tr><td data-label=\"network\">" + name + "</td>"
                 "<td data-label=\"access points\">" + _esc(r.get("bssids", 0))
@@ -2976,13 +3109,17 @@ def _render_networks(rows_in, control=None, query="", page=1,
     # The import control writes to the recovered store, so it needs web auth on
     # (like every other write); read-only pages don't show it.
     import_form = _recovered_import_form(control, view) if auth_on else ""
+    # The glyph legend shows only when the login is on (locations render only
+    # then) and at least one row on this view carries a location to explain.
+    has_locations = bool(location_by_bssid or location_by_essid)
+    legend = _location_legend() if (auth_on and has_locations) else ""
     return _page(
         "captured " + noun + "s - Kestrel",
         back + "<h1>" + heading + "</h1>" + banner + tabs + sorttabs + search
         + '<p class="count">' + count + "</p>"
         + "<div class='wrap'><table><thead><tr>" + head_cells
         + "</tr></thead><tbody>" + body_rows
-        + "</tbody></table></div>" + pager + import_form,
+        + "</tbody></table></div>" + legend + pager + import_form,
     )
 
 
