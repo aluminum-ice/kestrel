@@ -13,6 +13,10 @@ tile server sees the areas you view, as it would on openstreetmap.org. Leave
 ``tile_url`` empty for no background: the page then draws a light grid of
 latitude/longitude lines instead. There is no JavaScript.
 
+A marker is green with a lock when the network's passphrase has been recovered
+(read from the core ``recovered`` service, by BSSID) and gray when not; a
+cluster is green if any network in it is recovered.
+
 Nearby points are grouped into a counted cluster; following a cluster's link
 zooms the page to it. Networks captured from one spot share its fix, so no zoom
 separates them: such a cluster lists its networks under the map instead. A
@@ -51,6 +55,25 @@ EARTH_CIRCUMFERENCE_M = 40075016.686
 MAX_LAT = 85.05112878       # Web Mercator's limit
 MAX_TILE_ZOOM = 19
 DEFAULT_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+# A marker is green when the network's passphrase has been recovered and gray
+# when not, and a recovered one also carries a lock, so the difference never
+# rests on colour alone.
+RECOVERED_FILL = "#2e7d32"
+PLAIN_FILL = "#6b6b75"
+
+
+def _lock(cx, cy, colour):
+    """A small padlock (about 8 x 10 viewBox units) centred on ``cx, cy``."""
+    return ('<rect x="%.1f" y="%.1f" width="8" height="6" rx="1" fill="%s"/>'
+            '<path d="M%.1f %.1f v-2.5 a2.5 2.5 0 0 1 5 0 v2.5" fill="none" '
+            'stroke="%s" stroke-width="1.6"/>'
+            % (cx - 4, cy - 1, colour, cx - 2.5, cy - 1, colour))
+
+
+def _lock_badge(cx, cy):
+    """The lock in a white disc, pinned to a ring or a square's corner."""
+    return ('<circle cx="%.1f" cy="%.1f" r="7.5" fill="#fff" stroke="%s" '
+            'stroke-width="1.2"/>' % (cx, cy, RECOVERED_FILL) + _lock(cx, cy, RECOVERED_FILL))
 FILTERS = (("all", "All"), ("recorded", "Recorded"), ("estimated", "Estimated"),
            ("week", "Last 7 days"))
 
@@ -276,6 +299,7 @@ class CaptureMap(Plugin):
         else:
             bounds = bbox
         names = self._names()
+        recovered = self._recovered(points)
         margin = 0.1 if bbox is None else 0.0
         shown = 0
         for size, css in ((WIDE, "wide-only"), (NARROW, "narrow-only")):
@@ -283,16 +307,19 @@ class CaptureMap(Plugin):
             groups = cluster(points, proj)
             if size == WIDE:
                 shown = sum(len(g["members"]) for g in groups)
-            body += self._map(proj, groups, names, which, bbox, token, css, tiles)
+            body += self._map(proj, groups, names, which, bbox, token, css, tiles, recovered)
         body += ('<p class="hint">' + esc("%d of %d located networks in view" %
                                           (shown, len(points))) + "</p>")
         if spot:
-            body += self._spot_list(points, spot, names, token)
+            body += self._spot_list(points, spot, names, token, recovered)
         body += ('<p class="hint"><b>&#9679; Pin</b>: recorded by the onboard GPS. '
                  "<b>&#9675; ~</b>: estimated from an outside source. <b>Square with a "
                  "number</b>: several networks close together (tap to zoom in, or to list "
-                 "them when they were captured from the same spot). A single network "
-                 "links to its row on Captured networks.</p>")
+                 "them when they were captured from the same spot). <b>Green with a "
+                 '<span aria-hidden="true">&#128274;</span> lock</b>: the passphrase has '
+                 "been recovered (for a square, at least one network in it); <b>gray</b>: "
+                 "not recovered. A single network links to its row on Captured "
+                 "networks.</p>")
         if self.options.get("tile_url") and not tiles:
             body += ('<p class="msg err">The background map is off: <code>tile_url</code> '
                      "must be an https address with {z}, {x} and {y} in it.</p>")
@@ -307,24 +334,53 @@ class CaptureMap(Plugin):
             return url
         return ""
 
-    def _spot_list(self, points, spot, names, token):
+    def _recovered(self, points):
+        """The BSSIDs among ``points`` whose passphrase is known, from the core
+        ``recovered`` service. Empty when the service is absent or unreadable,
+        so the map then shows every marker gray."""
+        store = self.context.services.get("recovered")
+        if store is None:
+            return set()
+        try:
+            return {bssid for bssid, _loc in points if store.lookup_bssid(bssid)}
+        except Exception:  # noqa: BLE001 - a potfile problem never breaks the map
+            return set()
+
+    def _spot_list(self, points, spot, names, token, recovered=()):
         """The networks inside ``spot``: a cluster no zoom can separate."""
         esc = self.context.esc
         s, w, n, e = spot
         here = [(b, loc) for b, loc in points if s <= loc.lat <= n and w <= loc.lon <= e]
         if not here:
             return ""
+        def glyph(symbol, text, width=""):
+            # The glyphs Captured networks uses, each with a tooltip and hidden
+            # text (the shared stylesheet's .vh) so it never rests on the glyph
+            # alone; an empty symbol still tells a screen reader its text.
+            style = ' style="display:inline-block;width:%s"' % width if width else ""
+            return ('<span title="' + esc(text) + '"' + style + '>'
+                    + ('<span aria-hidden="true">' + symbol + "</span>" if symbol else "")
+                    + '<span class="vh">' + esc(text) + "</span></span>")
+
         rows = []
         for bssid, loc in here:
             href = "/networks?" + urlencode(
                 [("view", "ap"), ("q", bssid)] + ([("token", token)] if token else []))
-            rows.append('<li><a href="' + esc(href) + '">'
+            done = bssid in recovered
+            lock = glyph("&#128274;" if done else "", "passphrase recovered" if done
+                         else "passphrase not recovered", width="1.4em")
+            where = (glyph("&#128205;", "recorded, onboard GPS") if loc.recorded
+                     else glyph("&#8776;&#9675;", "estimated, " + loc.label))
+            rows.append('<li style="margin:.25em 0">' + lock + where + ' <a href="'
+                        + esc(href) + '">'
                         + esc(", ".join(names.get(bssid) or ["(hidden network)"]))
-                        + "</a> <small>" + esc(bssid) + " &middot; "
-                        + esc("recorded" if loc.recorded else "estimated") + "</small></li>")
+                        + "</a> <small>" + esc(bssid) + "</small></li>")
         return ('<h2 id="spot">%d networks at this spot</h2>' % len(here)
                 + '<p class="hint">Captured from the same place, so they share one '
-                "location and no zoom separates them.</p><ul>" + "".join(rows) + "</ul>")
+                "location and no zoom separates them. &#128274; passphrase recovered "
+                "&middot; &#128205; recorded by the onboard GPS &middot; &#8776;&#9675; "
+                'estimated.</p><ul style="list-style:none;padding-left:0">'
+                + "".join(rows) + "</ul>")
 
     def _url(self, which, bbox, token, base="", spot=None):
         params = []
@@ -354,7 +410,7 @@ class CaptureMap(Plugin):
                      + '"><b>Reset view</b></a>')
         return '<p class="smeta">Show: ' + " &middot; ".join(parts) + reset + "</p>"
 
-    def _map(self, proj, groups, names, which, bbox, token, css, tiles):
+    def _map(self, proj, groups, names, which, bbox, token, css, tiles, recovered=()):
         """One rendering: the tile layer (if any) under a see-through SVG."""
         ratio = "%d/%d" % (proj.w, proj.h)
         out = ['<div class="%s"><div style="position:relative;overflow:hidden;'
@@ -362,7 +418,7 @@ class CaptureMap(Plugin):
                'border-radius:8px">' % (css, ratio)]
         if tiles:
             out.append(self._tiles(proj, tiles))
-        out.append(self._svg(proj, groups, names, which, bbox, token, bool(tiles)))
+        out.append(self._svg(proj, groups, names, which, bbox, token, bool(tiles), recovered))
         if tiles:
             # The tile policy asks for the attribution on the map itself.
             out.append('<div style="position:absolute;right:0;bottom:0;font-size:11px;'
@@ -400,7 +456,7 @@ class CaptureMap(Plugin):
                                                  size / proj.h * 100.0))
         return "".join(out)
 
-    def _svg(self, proj, groups, names, which, bbox, token, tiles=False):
+    def _svg(self, proj, groups, names, which, bbox, token, tiles=False, recovered=()):
         esc = self.context.esc
         # Over tiles (light in both themes) the marks are dark with a light
         # halo; without tiles they follow the page's colours.
@@ -416,23 +472,28 @@ class CaptureMap(Plugin):
             x, y = g["x"], g["y"]
             if len(members) == 1:
                 bssid, loc, _, _ = members[0]
-                title = "%s\n%s\n%.5f, %.5f\n%s%s" % (
+                done = bssid in recovered
+                fill = RECOVERED_FILL if done else PLAIN_FILL
+                title = "%s\n%s\n%.5f, %.5f\n%s%s\n%s" % (
                     ", ".join(names.get(bssid) or ["(hidden network)"]), bssid,
-                    loc.lat, loc.lon, loc.label, (" · " + loc.when) if loc.when else "")
+                    loc.lat, loc.lon, loc.label, (" · " + loc.when) if loc.when else "",
+                    "passphrase recovered" if done else "passphrase not recovered")
                 href = "/networks?" + urlencode(
                     [("view", "ap"), ("q", bssid)] + ([("token", token)] if token else []))
                 if loc.recorded:
                     shape = ('<path d="M%.1f %.1f c-7 -9 -11 -14 -11 -20 a11 11 0 1 1 22 0 '
                              'c0 6 -4 11 -11 20 z" stroke="#fff" stroke-width="1.5" '
-                             'style="fill:var(--accent)"/>'
-                             '<circle cx="%.1f" cy="%.1f" r="4" fill="#fff"/>'
-                             % (x, y, x, y - 20))
+                             'fill="%s"/>' % (x, y, fill))
+                    shape += (_lock(x, y - 20, "#fff") if done else
+                              '<circle cx="%.1f" cy="%.1f" r="4" fill="#fff"/>' % (x, y - 20))
                 else:
                     shape = ('<circle cx="%.1f" cy="%.1f" r="9" fill="#fff" fill-opacity="%s" '
-                             'stroke="currentColor" stroke-width="2.5"/>'
+                             'stroke="%s" stroke-width="2.5"/>'
                              '<text x="%.1f" y="%.1f" font-size="14" text-anchor="middle" '
-                             'fill="currentColor">~</text>'
-                             % (x, y, "0.75" if tiles else "0", x, y + 4))
+                             'fill="%s">~</text>'
+                             % (x, y, "0.85" if tiles else "0", fill, x, y + 4, fill))
+                    if done:
+                        shape += _lock_badge(x + 10, y - 10)
                 out.append('<a href="' + esc(href) + '"><title>' + esc(title) + "</title>"
                            + shape + "</a>")
             else:
@@ -441,8 +502,10 @@ class CaptureMap(Plugin):
                 pad = 0.25 * max(max(lats) - min(lats), max(lons) - min(lons), 0.0005)
                 zoom = (max(-90, min(lats) - pad), max(-180, min(lons) - pad),
                         min(90, max(lats) + pad), min(180, max(lons) + pad))
-                counts = "%d networks (%d recorded, %d estimated)" % (
-                    len(members), g["recorded"], len(members) - g["recorded"])
+                done = sum(1 for m in members if m[0] in recovered)
+                fill = RECOVERED_FILL if done else PLAIN_FILL
+                counts = "%d networks (%d recorded, %d estimated; %d recovered)" % (
+                    len(members), g["recorded"], len(members) - g["recorded"], done)
                 # Zooming in as far as the map goes would still leave them in
                 # one square (one capture spot shares one fix): list them.
                 deepest = Projection(zoom, margin=0.0, size=(proj.w, proj.h))
@@ -458,10 +521,11 @@ class CaptureMap(Plugin):
                            + esc(title) + "</title>"
                            '<rect x="%.1f" y="%.1f" width="30" height="30" rx="6" '
                            'stroke="#fff" stroke-width="1.5" '
-                           'style="fill:var(--accent)" fill-opacity="0.9"/>'
+                           'fill="%s" fill-opacity="0.92"/>'
                            '<text x="%.1f" y="%.1f" font-size="14" font-weight="700" '
-                           'text-anchor="middle" fill="#fff">%s</text></a>'
-                           % (x - 15, y - 15, x, y + 5, esc(str(len(members)))))
+                           'text-anchor="middle" fill="#fff">%s</text>'
+                           % (x - 15, y - 15, fill, x, y + 5, esc(str(len(members))))
+                           + (_lock_badge(x + 15, y - 15) if done else "") + "</a>")
         out.append(self._scale_bar(proj, tiles))
         halo = ('<rect x="%d" y="14" width="32" height="54" rx="6" fill="#fff" '
                 'fill-opacity="0.75"/>' % (proj.w - 46)) if tiles else ""
