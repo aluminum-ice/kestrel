@@ -73,7 +73,10 @@ screen first and let it widen.
 - **One inline stylesheet, shared.** `_STATUS_CSS` holds the whole stylesheet
   and every page is wrapped by `_page(title, body, head="")`, so all pages
   (status, manage, applied) look the same and dark mode is automatic. A new page
-  goes through `_page()`; it does not carry its own `<style>`.
+  goes through `_page()`; it does not carry its own `<style>`. When one thing
+  needs a different rendering on a phone (the `map` plugin's portrait map), the
+  page carries both and marks them `.wide-only` / `.narrow-only`; the shared
+  stylesheet shows the one that fits at the 40em breakpoint.
 - **Assemble by concatenation, not `str.format`, for anything holding CSS or
   JS.** The stylesheet contains literal `{` `}`, which `str.format` reads as
   fields (this once 500'd the page with `KeyError: 'font-family'`). Per-row

@@ -43,6 +43,7 @@ for the person using the device.
 - [memtemp and session-stats](memtemp-session-stats.md) — built-in local readout cards.
 - [Remote training](remote-training.md) — train the learning agent on a desktop host over SSH.
 - [Downloads](downloads.md) — download your handshake files from the dashboard.
+- [Capture map](map.md) — every located captured network on one map, drawn on the device.
 
 ## The device web dashboard
 

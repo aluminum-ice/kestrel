@@ -263,3 +263,19 @@ def test_cache_invalidates_on_new_file(tmp_path):
     _write_sidecar(str(tmp_path), "cap-1",
                    {BSSID_A: _recorded(LAT, LON, "2026-01-01T00:00:00Z")})
     assert store.counts() == {"located_aps": 1}       # signature changed
+
+
+def test_locations_lists_every_radio_with_the_same_choice_as_lookup(tmp_path):
+    _write_sidecar(str(tmp_path), "My Network",
+                   {BSSID_A_BARE: _recorded(LAT, LON, "2026-01-02T03:04:05Z")})
+    _write_geo_cache(str(tmp_path), "wigle-cache", {
+        BSSID_A: _estimated(BSSID_A, LAT + 1, LON + 1, "2026-01-03T00:00:00Z"),
+        BSSID_B: _estimated(BSSID_B, LAT - 1, LON - 1, "2026-01-03T00:00:00Z"),
+    })
+    store = GeoStore(str(tmp_path))
+    found = store.locations()
+    assert set(found) == {BSSID_A, BSSID_B}
+    assert found[BSSID_A].recorded and found[BSSID_A] == store.lookup_bssid(BSSID_A)
+    assert not found[BSSID_B].recorded
+    found.clear()                                   # a copy: the cache is untouched
+    assert len(store.locations()) == 2
