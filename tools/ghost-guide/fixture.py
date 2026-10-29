@@ -205,6 +205,10 @@ class Demo:
         memtemp._fan_pct = False
         eink = self._instance("eink")
         eink._setup()
+        # The panel's address row would otherwise read this desktop's real
+        # interfaces; show the same placeholder link the dashboard shots use.
+        # (Harmless on releases from before the row existed.)
+        eink._addresses = lambda: [("bnep0", "192.168.44.1")]
         for name in ENABLED_PLUGINS:
             try:
                 self._instance(name).on_ui_setup(self.daemon.ui.for_plugin(name))

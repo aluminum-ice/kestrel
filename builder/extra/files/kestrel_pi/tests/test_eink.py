@@ -610,3 +610,47 @@ def test_forced_v2_reports_absent_when_busy_never_driven(tmp_path, monkeypatch):
     p._FORCED_TIMEOUT = 0.05
     assert p._ensure_panel() is None
     assert p._absent is True
+
+
+# --- the address row ----------------------------------------------------------
+
+_IP_BAND = (0, 122, EINK.PANEL_W, 140)   # between the info row and the counters
+
+
+def _ink(img, box):
+    """Black pixels inside ``box`` (x0, y0, x1, y1)."""
+    return sum(1 for px in img.crop(box).getdata() if px == 0)
+
+
+def test_ip_row_shows_each_link_address(tmp_path):
+    p = _plugin(tmp_path)
+    p._addresses = lambda: [("bnep0", "192.0.2.10"), ("wlan0", "198.51.100.7")]
+    img = p._compose_image(UIState(), "awake")
+    assert _ink(img, (0, 122, EINK.PANEL_W // 2, 140)) > 0       # the first link
+    assert _ink(img, (EINK.PANEL_W // 2, 122, EINK.PANEL_W, 140)) > 0   # the second
+
+
+def test_ip_row_hidden_by_the_option_or_without_an_address(tmp_path):
+    p = _plugin(tmp_path, {"show_ip": False})
+    p._addresses = lambda: [("bnep0", "192.0.2.10")]
+    assert _ink(p._compose_image(UIState(), "awake"), _IP_BAND) == 0
+    q = _plugin(tmp_path)
+    q._addresses = lambda: []
+    assert _ink(q._compose_image(UIState(), "awake"), _IP_BAND) == 0
+
+
+def test_ip_row_drops_an_address_that_would_not_fit(tmp_path):
+    p = _plugin(tmp_path)
+    p._addresses = lambda: [("bnep0", "198.51.100.254"), ("wlan0", "203.0.113.254"),
+                            ("wlan0", "192.0.2.254")]
+    img = p._compose_image(UIState(), "awake")
+    assert _ink(img, (EINK.PANEL_W - 8, 122, EINK.PANEL_W, 140)) == 0
+
+
+def test_addresses_lists_only_links_with_an_address(tmp_path, monkeypatch):
+    monkeypatch.setattr(EINK, "_iface_ipv4", lambda iface: {"wlan0": "192.0.2.20"}.get(iface))
+    assert _plugin(tmp_path)._addresses() == [("wlan0", "192.0.2.20")]
+
+
+def test_iface_ipv4_is_none_for_a_missing_interface():
+    assert EINK._iface_ipv4("kestrel-none0") is None

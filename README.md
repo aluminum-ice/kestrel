@@ -66,7 +66,7 @@ With the optional `eink` plugin and a Waveshare 2.7" e-Paper HAT, the device wea
   <img src="docs/images/eink-panel.png" alt="The Kestrel e-ink face: a top icon strip, the mascot face, agent and capture status, uptime and channel, how many radios are in range, handshake and AP counters, and the Kestrel mark" width="460">
 </p>
 
-The panel shows a top icon strip (Bluetooth PAN and Wi-Fi link, a GPS satellite with signal bars, and battery), the mascot face with a mood-matched voice line, the **agent** mode (`off` / `baseline` / `learned`) and **capture** state, uptime, the channel plan and how many radios are in range (`NEAR`), lifetime and session counters for captured handshakes (`PWND`) and access points (`AP`), and the Kestrel mark in the corner. With no HAT attached it still renders to the web mirror.
+The panel shows a top icon strip (Bluetooth PAN and Wi-Fi link, a GPS satellite with signal bars, and battery), the mascot face with a mood-matched voice line, the **agent** mode (`off` / `baseline` / `learned`) and **capture** state, uptime, the channel plan and how many radios are in range (`NEAR`), the device's address on each connected link (so you can find the dashboard without your router's client list), lifetime and session counters for captured handshakes (`PWND`) and access points (`AP`), and the Kestrel mark in the corner. With no HAT attached it still renders to the web mirror.
 
 ## What's in the image
 

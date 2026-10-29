@@ -26,14 +26,18 @@ the scripted baseline fallback), arbitrated by an explicit priority ladder in
 :func:`decide_mood`.
 """
 
+import fcntl
 import io
 import math
 import re
+import socket
+import struct
 import threading
 import time
 from dataclasses import dataclass
 
 from kestrel_pi import Plugin
+from kestrel_pi.connectivity import MANAGEMENT_INTERFACES
 
 # Panel geometry: the 2.7" HAT is 264x176 landscape (176x264 native portrait;
 # the Waveshare getbuffer rotates a landscape image to fit).
@@ -324,7 +328,7 @@ def _classify_speed(speed):
 
 class EinkFace(Plugin):
     __author__ = "kestrel"
-    __version__ = "0.1.0"
+    __version__ = "0.2.0"
     __license__ = "GPL3"
     __description__ = "e-ink tamagotchi face for the Waveshare 2.7\" e-Paper HAT."
 
@@ -346,6 +350,12 @@ class EinkFace(Plugin):
         "greyscale": {"type": "bool", "default": False},    # 4-gray (slow) off
         "show_mascot": {"type": "bool", "default": True},
         "show_brand_glyph": {"type": "bool", "default": True},
+        # The address row: each management link's IPv4, so a headless device
+        # can be found without the router's client list.
+        "show_ip": {"type": "bool", "default": True,
+                    "help": "Show the Bluetooth tether and Wi-Fi addresses on the "
+                            "panel, so you can find the dashboard without a "
+                            "router's client list."},
         "battery_low_percent": {"type": "int", "default": 10},
         "bored_epochs": {"type": "int", "default": 15},
         "sad_epochs": {"type": "int", "default": 25},
@@ -740,7 +750,9 @@ class EinkFace(Plugin):
         mood readout) with its voice line - a short mood-matched phrase - beside
         it; a compact symbol-led status row (a chip glyph + the agent's mode, an
         antenna glyph + capture state); an info row (``UP`` uptime and ``CH`` the
-        channel plan while capturing); a bottom counter row (``PWND`` captured
+        channel plan while capturing); an address row (each management link's
+        IPv4 behind its BT/Wi-Fi glyph, when ``show_ip`` is on); a bottom
+        counter row (``PWND`` captured
         handshakes with this session's count in parens, then ``AP`` distinct
         radios and ``NET`` distinct networks, both lifetime); and the Kestrel
         brand mark once in the
@@ -834,6 +846,25 @@ class EinkFace(Plugin):
             draw.text((ix + 22, iy), "NEAR %d" % int(env.get("radios_recent") or 0),
                       font=small, fill=0)
 
+        # address row: each management link's IPv4 behind the same BT/Wi-Fi
+        # glyph as the top strip, so a headless device can be found without the
+        # router's client list. A link with no address is left out, and an
+        # address that won't fit is dropped rather than drawn off the edge.
+        if opts.get("show_ip", True):
+            ay = 125
+            x = 12
+            for iface, ip in self._addresses():
+                gap = 12 if iface == "bnep0" else 18     # glyph width + spacing
+                need = gap + _text_w(draw, ip, tiny)
+                if x + need > PANEL_W - 10:
+                    break
+                if iface == "bnep0":
+                    _draw_bt(draw, x, ay + 1, 7, 11, True)
+                else:
+                    _draw_wifi(draw, x + 3, ay + 2, 10, 9, True)
+                draw.text((x + gap, ay), ip, font=tiny, fill=0)
+                x += need + 14
+
         # bottom counter row, on the Kestrel's baseline: the plain-English trio
         # "N handshakes from M access points across K networks". Handshakes
         # (PWND, a key glyph) carry this session's count in parens, e.g.
@@ -875,6 +906,17 @@ class EinkFace(Plugin):
         if rotation:
             img = img.rotate(rotation, expand=True)
         return img
+
+    def _addresses(self):
+        """``[(iface, ipv4), ...]`` for the management links that have an
+        address, Bluetooth tether first. A method so a caller (the tests, the
+        user-guide screenshot fixture) can substitute placeholder addresses."""
+        out = []
+        for iface in MANAGEMENT_INTERFACES:
+            ip = _iface_ipv4(iface)
+            if ip:
+                out.append((iface, ip))
+        return out
 
     # -- web mirror ------------------------------------------------------
     def on_webhook(self, path, request):
@@ -930,6 +972,23 @@ class EinkFace(Plugin):
 
 
 # --- small helpers ---------------------------------------------------------
+_SIOCGIFADDR = 0x8915
+
+
+def _iface_ipv4(iface):
+    """The IPv4 address on ``iface``, or None. A ``SIOCGIFADDR`` ioctl: no
+    subprocess and no privilege, so it is cheap enough to call every frame."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        packed = fcntl.ioctl(sock.fileno(), _SIOCGIFADDR,
+                             struct.pack("256s", iface.encode()[:15]))
+    except OSError:
+        return None
+    finally:
+        sock.close()
+    return socket.inet_ntoa(packed[20:24])
+
+
 def _as_float(value):
     try:
         return float(value)
