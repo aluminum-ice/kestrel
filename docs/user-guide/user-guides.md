@@ -42,6 +42,7 @@ for the person using the device.
 - [e-ink face](eink-setup.md) — animated tamagotchi face on the Waveshare 2.7" e-Paper HAT, with a live web mirror.
 - [memtemp and session-stats](memtemp-session-stats.md) — built-in local readout cards.
 - [Remote training](remote-training.md) — train the learning agent on a desktop host over SSH.
+- [Downloads](downloads.md) — download your handshake files from the dashboard.
 
 ## The device web dashboard
 

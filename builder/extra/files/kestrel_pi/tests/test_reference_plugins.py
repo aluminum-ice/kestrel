@@ -52,6 +52,7 @@ FULL_CONFIG = {
         "updates": {"enabled": True},
         "remote-train": {"enabled": True, "train_host": "h", "train_user": "u",
                          "train_path": "/remote"},
+        "downloads": {"enabled": True},
     }
 }
 
@@ -77,7 +78,8 @@ def test_all_reference_plugins_load(tmp_path):
     try:
         names = {r.name for r in loaded}
         assert names == {"memtemp", "session-stats", "gps", "wpa-sec", "wigle",
-                         "backup", "ups-hat", "updates", "remote-train"}
+                         "backup", "ups-hat", "updates", "remote-train",
+                         "downloads"}
         # gps provides position; wigle optionally requires it, so when gps is
         # enabled the loader still orders it ahead.
         order = [r.name for r in loaded]
