@@ -44,6 +44,7 @@ for the person using the device.
 - [Remote training](remote-training.md) — train the learning agent on a desktop host over SSH.
 - [Downloads](downloads.md) — download your handshake files from the dashboard.
 - [Capture map](map.md) — every located captured network on one map, drawn on the device.
+- [Notifications](notifications.md) — alerts to ntfy or Telegram: new handshakes, battery, updates.
 
 ## The device web dashboard
 
