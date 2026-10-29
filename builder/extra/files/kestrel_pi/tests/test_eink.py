@@ -654,3 +654,60 @@ def test_addresses_lists_only_links_with_an_address(tmp_path, monkeypatch):
 
 def test_iface_ipv4_is_none_for_a_missing_interface():
     assert EINK._iface_ipv4("kestrel-none0") is None
+
+
+# --- the HAT keys (the `buttons` service) -------------------------------------------
+
+def _with_buttons(p, state):
+    p.context.services.provide("buttons", lambda: dict(state))
+    return p
+
+
+def test_info_screen_replaces_the_face(tmp_path, monkeypatch):
+    monkeypatch.setattr(EINK, "VERSION_FILE", str(tmp_path / "version"))
+    (tmp_path / "version").write_text("1.2.3\n")
+    p = _plugin(tmp_path)
+    p._addresses = lambda: [("bnep0", "192.0.2.10")]
+    face = p._compose_image(UIState(uptime=600.0), "awake", "on a roll!")
+    _with_buttons(p, {"seq": 1, "screen": "info", "prompt": None})
+    info = p._compose_image(UIState(uptime=600.0), "awake", "on a roll!")
+    assert info.size == (EINK.PANEL_W, EINK.PANEL_H)
+    assert list(info.getdata()) != list(face.getdata())
+    assert EINK._installed_version() == "1.2.3"
+    assert p._buttons_seq == 1
+
+
+def test_a_button_prompt_takes_the_voice_slot(tmp_path):
+    p = _plugin(tmp_path)
+    plain = p._compose_image(UIState(), "awake", "on a roll!")
+    _with_buttons(p, {"seq": 2, "screen": None, "prompt": "Press KEY4 again to shut down"})
+    prompted = p._compose_image(UIState(), "awake", "on a roll!")
+    assert list(prompted.getdata()) != list(plain.getdata())
+
+
+def test_no_buttons_service_changes_nothing(tmp_path):
+    p = _plugin(tmp_path)
+    assert p._buttons_state() == {}
+    assert EINK._free_disk_text(str(tmp_path)).endswith("GB free")
+
+
+def test_a_key_press_wakes_the_render_loop(tmp_path, monkeypatch):
+    p = _plugin(tmp_path)
+    p.context.options = dict(p.context.options, refresh_seconds=60)
+    state = {"seq": 0, "screen": None, "prompt": None}
+    _with_buttons(p, state)
+    ticks = []
+    monkeypatch.setattr(p, "_tick", lambda: ticks.append(time.monotonic())
+                        or setattr(p, "_buttons_seq", state["seq"]))
+    worker = threading.Thread(target=p._run, daemon=True)
+    worker.start()
+    deadline = time.monotonic() + 3
+    while len(ticks) < 1 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    state["seq"] = 1                           # a key press
+    deadline = time.monotonic() + 3
+    while len(ticks) < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    p._stop.set()
+    worker.join(timeout=3)
+    assert len(ticks) >= 2 and ticks[1] - ticks[0] < 3   # not the 60 s refresh

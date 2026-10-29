@@ -85,6 +85,12 @@ The same from the terminal:
 sudo kestrel plugins enable eink
 ```
 
+## The HAT's buttons
+
+The HAT's four keys can show an info screen, stop capture, and reboot or shut
+down (after a second press): enable the `hat-buttons` plugin. See
+[The e-Paper HAT's buttons](hat-buttons.md).
+
 ## The live web mirror
 
 The Plugins page gains a **View** button that opens a page showing a

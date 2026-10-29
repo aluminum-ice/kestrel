@@ -29,6 +29,7 @@ the scripted baseline fallback), arbitrated by an explicit priority ladder in
 import fcntl
 import io
 import math
+import os
 import re
 import socket
 import struct
@@ -338,7 +339,7 @@ class EinkFace(Plugin):
     __capabilities__ = ("ui", "web")
     # All optional: the face degrades to capture/online/idle moods when the
     # agent is off, no UPS HAT is present, or there is no GPS fix.
-    __optional_requires__ = ("agent", "battery", "position")
+    __optional_requires__ = ("agent", "battery", "position", "buttons")
     # One row button: a read-only mirror of the exact panel frame (a GET, so no
     # auth/CSRF gate - it shows only the rendered face, no secret).
     __actions__ = ({"label": "View", "path": "display",
@@ -396,6 +397,7 @@ class EinkFace(Plugin):
         self._voice_rot = 0             # advances on each mood change (rotates
         #                                 the phrase without a per-tick redraw)
         self._look_toggle = False
+        self._buttons_seq = None        # last `buttons` service seq drawn
         # mood trackers
         self._reward_ema = None
         self._promo_marker = None
@@ -593,7 +595,14 @@ class EinkFace(Plugin):
             except Exception as exc:  # noqa: BLE001 - a render error never kills the loop
                 self._fault = True
                 self.log.debug("eink: render tick failed: %s", exc)
-            self._stop.wait(timeout=self._refresh_seconds())
+            # Sleep until the next render, but wake within a second when a HAT
+            # key is pressed (the `buttons` service's seq changes), so the info
+            # screen or a prompt appears at once.
+            deadline = time.monotonic() + self._refresh_seconds()
+            while not self._stop.is_set() and time.monotonic() < deadline:
+                if self._buttons_state().get("seq") != self._buttons_seq:
+                    break
+                self._stop.wait(timeout=1)
 
     def _refresh_seconds(self):
         return max(self._MIN_REFRESH,
@@ -759,12 +768,17 @@ class EinkFace(Plugin):
         lower-right - stooping when moving, hovering when parked. Also used for the
         web mirror, so it runs with no panel present."""
         from PIL import Image, ImageDraw
+        opts = self.context.options
+        buttons = self._buttons_state()
+        self._buttons_seq = buttons.get("seq")
+        if buttons.get("screen") == "info":
+            return self._rotated(self._info_image(state))
+        voice = buttons.get("prompt") or voice
         img = Image.new("1", (PANEL_W, PANEL_H), 255)   # white
         draw = ImageDraw.Draw(img)
         tiny = _font(11)
         small = _font(13)
         big = _font(30)
-        opts = self.context.options
 
         paths = (state.paths if state is not None else None) or {}
         battery = (state.battery if state is not None else None) or {}
@@ -902,9 +916,55 @@ class EinkFace(Plugin):
                                   (PANEL_W - 36, PANEL_H - 36))
             draw.polygon(pts, fill=0)
 
-        rotation = int(opts.get("rotation", 0) or 0)
-        if rotation:
-            img = img.rotate(rotation, expand=True)
+        return self._rotated(img)
+
+    def _rotated(self, img):
+        rotation = int(self.context.options.get("rotation", 0) or 0)
+        return img.rotate(rotation, expand=True) if rotation else img
+
+    def _buttons_state(self):
+        """The `buttons` service (the hat-buttons plugin), or ``{}``."""
+        try:
+            state = self.context.services.get("buttons")
+        except Exception:  # noqa: BLE001
+            return {}
+        return state if isinstance(state, dict) else {}
+
+    def _info_image(self, state):
+        """The info screen a short KEY1 press asks for: version, addresses, the
+        dashboard's HTTPS fingerprint (when the dashboard has one), uptime and
+        free disk space."""
+        from PIL import Image, ImageDraw
+        img = Image.new("1", (PANEL_W, PANEL_H), 255)
+        draw = ImageDraw.Draw(img)
+        small, title = _font(13), _font(18)
+        draw.text((10, 6), "Kestrel", font=title, fill=0)
+        _text_right(draw, PANEL_W - 10, 10, _installed_version(), small)
+        draw.line([(4, 30), (PANEL_W - 4, 30)], fill=0, width=1)
+        y = 38
+        addresses = self._addresses()
+        for iface, ip in addresses:
+            if iface == "bnep0":
+                _draw_bt(draw, 12, y + 1, 7, 11, True)
+            else:
+                _draw_wifi(draw, 15, y + 2, 10, 9, True)
+            draw.text((32, y), ip, font=small, fill=0)
+            y += 18
+        if not addresses:
+            draw.text((12, y), "No network link yet", font=small, fill=0)
+            y += 18
+        fp = _dashboard_fingerprint()
+        if fp:
+            draw.text((12, y), "HTTPS " + ":".join(fp.split(":")[:8]), font=small, fill=0)
+            y += 18
+        uptime = _fmt_uptime(state.uptime if state is not None else None)
+        if uptime:
+            draw.text((12, y), "UP " + uptime, font=small, fill=0)
+        free = _free_disk_text()
+        if free:
+            _text_right(draw, PANEL_W - 12, y, free, small)
+        draw.line([(4, PANEL_H - 24), (PANEL_W - 4, PANEL_H - 24)], fill=0, width=1)
+        draw.text((10, PANEL_H - 20), "KEY1 to close", font=_font(11), fill=0)
         return img
 
     def _addresses(self):
@@ -972,6 +1032,40 @@ class EinkFace(Plugin):
 
 
 # --- small helpers ---------------------------------------------------------
+VERSION_FILE = "/etc/kestrel/version"
+
+
+def _installed_version():
+    """The installed version stamp (``master`` on a development build)."""
+    try:
+        with open(VERSION_FILE) as handle:
+            return handle.readline().strip()[:24] or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def _dashboard_fingerprint():
+    """The dashboard's HTTPS certificate fingerprint, when this release has
+    HTTPS (``kestrel_pi.webtls``) and the certificate exists; else None."""
+    try:
+        from kestrel_pi import webtls
+    except ImportError:
+        return None
+    try:
+        return webtls.fingerprint()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _free_disk_text(path="/"):
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return ""
+    free = st.f_bavail * st.f_frsize
+    return "%.1f GB free" % (free / 1e9)
+
+
 _SIOCGIFADDR = 0x8915
 
 

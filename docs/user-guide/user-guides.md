@@ -45,6 +45,7 @@ for the person using the device.
 - [Downloads](downloads.md) — download your handshake files from the dashboard.
 - [Capture map](map.md) — every located captured network on one map, drawn on the device.
 - [Notifications](notifications.md) — alerts to ntfy or Telegram: new handshakes, battery, updates.
+- [HAT buttons](hat-buttons.md) — the e-Paper HAT's four keys: info screen, stop capture, reboot, shut down.
 
 ## The device web dashboard
 
