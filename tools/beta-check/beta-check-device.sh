@@ -91,12 +91,15 @@ echo "uptime:     $(uptime -p 2>/dev/null)"
 echo "python3:    $(/usr/bin/python3 -V 2>&1)"
 echo "web auth:   $web_auth"
 
-# ================================================================ 1.0.9 checks (#50-#55, #58-#60)
+# ================================================================ 1.0.9 checks (#50-#55, #58-#65)
 # Beta 1: HTTPS dashboard and sign-in (#51), the e-ink address row (#50), and
 # four new plugins: downloads (#52), map (#53), notify (#54), hat-buttons (#55).
 # Beta 2: the certificate within Apple's limit (#58), the plugin row buttons
-# (#59) and the report's redaction (#60), as sections 9-11. Beta 1's checks stay,
-# so one report serves both checklist issues. The CHECK ids match them.
+# (#59) and the report's redaction (#60), as sections 9-11. Beta 3: notify split
+# into ntfy and telegram (#62), the map's OpenStreetMap background (#64) and the
+# Captured networks controls (#65), as sections 12-14; notify's 6.x checks are
+# replaced by section 12. Earlier betas' checks stay, so one report serves every
+# 1.0.9 checklist issue. The CHECK ids match them.
 upd=/var/lib/kestrel/update-run/status.json
 
 # ---------------------------------------------------------------- 1. update to this beta
@@ -228,16 +231,9 @@ loc=$(as_dev "$VENV_PY" -I -c 'from kestrel_pi.geo import GeoStore
 print(callable(getattr(GeoStore, "locations", None)))' 2>&1)
 [ "$loc" = True ] && check 5.2 PASS "installed package provides GeoStore.locations()" "" \
   || check 5.2 FAIL "installed package provides GeoStore.locations()" "$(printf '%s' "$loc" | tr '\n' ' ' | cut -c1-120)"
-topic=$DEV_HOME/.local/state/kestrel-notify/topic
-if as_dev test -f "$topic"; then
-  [ "$(as_dev stat -c '%a' "$topic" 2>/dev/null)" = 600 ] \
-    && check 6.2 PASS "generated ntfy topic file is private" "0600 (contents not read)" \
-    || check 6.2 FAIL "generated ntfy topic file is private" "mode $(as_dev stat -c '%a' "$topic" 2>/dev/null)"
-else
-  check 6.2 SKIP "generated ntfy topic file is private" "no generated topic yet"
-fi
+# 6.x (notify) is replaced by section 12 (ntfy and telegram) in beta 3.
 for id in 3.2 3.3 3.4 4.3 4.4 4.5 4.6 4.7 4.8 5.3 5.4 5.5 5.6 5.7 5.8 5.9 \
-          6.3 6.4 6.5 6.6 6.7 6.8 6.9 7.2 7.3 7.4 7.5 7.6 7.7 7.8 7.9; do
+          7.2 7.3 7.4 7.5 7.6 7.7 7.8 7.9; do
   check "$id" MANUAL "see the checklist" "by hand"
 done
 
@@ -301,7 +297,7 @@ for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.py"))):
             labels[name] = [a["label"] for a in kept]
             if len(kept) != len(declared):
                 dropped.append(name)
-want = {"downloads": "Download", "map": "Map", "notify": "Status"}
+want = {"downloads": "Download", "map": "Map", "ntfy": "Status", "telegram": "Status"}
 missing = sorted(n for n, label in want.items() if label not in labels.get(n, []))
 print("PASS" if not dropped and not missing else "FAIL",
       "dropped=%s missing=%s" % (sorted(dropped), missing))
@@ -316,6 +312,38 @@ check 10.3 MANUAL "see the checklist" "by hand"
 
 sec "11. report redaction (#60)"
 check 11.1 MANUAL "see the checklist" "by hand"
+
+sec "12. ntfy and telegram (#62)"
+# 12.1 (declarations) is in the config tests below.
+if [ -e "$LIBDIR/plugins/notify.py" ]; then
+  check 12.2 FAIL "the old notify plugin is gone" "notify.py is still installed"
+else
+  check 12.2 PASS "the old notify plugin is gone" "the update removed notify.py"
+fi
+topic=$DEV_HOME/.local/state/kestrel-ntfy/topic
+if as_dev test -f "$topic"; then
+  [ "$(as_dev stat -c '%a' "$topic" 2>/dev/null)" = 600 ] \
+    && check 12.3 PASS "generated ntfy topic file is private" "0600 (contents not read)" \
+    || check 12.3 FAIL "generated ntfy topic file is private" "mode $(as_dev stat -c '%a' "$topic" 2>/dev/null)"
+else
+  check 12.3 SKIP "generated ntfy topic file is private" "no generated topic yet"
+fi
+for id in 12.4 12.5 12.6 12.7; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
+
+sec "13. map background (#64)"
+# 13.1 (tile_url declared) is in the config tests; 13.2 (the page) is in the
+# dashboard section.
+for id in 13.3 13.4 13.5 13.6 13.7 13.8; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
+
+sec "14. Captured networks controls (#65)"
+# 14.1 (the page) is in the dashboard section.
+for id in 14.2 14.3; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
 
 # ---------------------------------------------------------------- config tests (throwaway copy)
 sec "config tests (throwaway copy of config.toml; commands blocked)"
@@ -364,16 +392,29 @@ check("4.1", caps("downloads") == {"capture-read", "web"},
       "downloads: capture-read + web, no network", state("downloads"))
 check("5.1", caps("map") == {"capture-read", "location", "web"},
       "map: capture-read + location + web, no network", state("map"))
-check("6.1", "network" in caps("notify"),
-      "notify declares network (enabling takes the acknowledgment)", state("notify"))
 check("7.1", caps("hat-buttons") == {"ui"} and "buttons" in (decl("hat-buttons").get("provides") or ()),
       "hat-buttons: local only (ui), provides buttons", state("hat-buttons"))
 expected = {"memtemp", "session-stats", "gps", "wpa-sec", "wigle", "backup", "ups-hat", "eink",
-            "updates", "remote-train", "downloads", "map", "notify", "hat-buttons"}
+            "updates", "remote-train", "downloads", "map", "ntfy", "telegram", "hat-buttons"}
 invalid = sorted(n for n, v in plugs.items() if v[0] is None)
 missing = sorted(expected - set(plugs))
-check("8.1", not invalid and not missing, "all fourteen shipped plugins present and readable",
+check("8.1", not invalid and not missing, "all fifteen shipped plugins present and readable",
       "missing=%s invalid=%s" % (missing, invalid))
+# 12.1: one plugin per service, each with only its own secret options.
+def secrets(name):
+    return {k for k, v in (decl(name).get("options") or {}).items() if (v or {}).get("secret")}
+check("12.1", "network" in caps("ntfy") and "network" in caps("telegram")
+      and secrets("ntfy") == {"topic", "token"} and secrets("telegram") == {"bot_token", "chat_id"}
+      and "notify" not in plugs,
+      "ntfy and telegram declare network and only their own secrets; no notify",
+      "ntfy %s, telegram %s" % (state("ntfy"), state("telegram")))
+if read("plugins.notify") is not None:
+    print("note: config.toml still has an unused [plugins.notify] table")
+# 13.1: the map's background is OpenStreetMap by default, over https.
+tile = (decl("map").get("options") or {}).get("tile_url") or {}
+check("13.1", tile.get("default") == "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      "map declares tile_url, OpenStreetMap by default",
+      "tile_url %s" % ("set" if read("plugins.map.tile_url") is not None else "default"))
 PY
 [ "$(sha256sum "$CONFIG" | awk '{print $1}')" = "$cfg_sum_before" ] \
   && check 0.1 PASS "real config.toml untouched by the tests" "checksum identical" \
@@ -420,6 +461,8 @@ elif mode in ("basic", "system"):
         print("(skipped: no password given)")
         chk("2.4", "SKIP", "loopback /status.json with Basic credentials", "no password given")
         chk("10.2", "SKIP", "the running daemon offers the row buttons", "no password given")
+        chk("13.2", "SKIP", "the map page draws the attributed background", "no password given")
+        chk("14.1", "SKIP", "Captured networks has its controls at the top", "no password given")
         sys.exit(0)
     req.add_header("Authorization", "Basic " + base64.b64encode(
         ("%s:%s" % (user, pw)).encode()).decode())
@@ -430,6 +473,8 @@ except Exception as exc:
     chk("2.4", "FAIL" if mode in ("basic", "system") else "INFO",
         "loopback /status.json with Basic credentials", type(exc).__name__)
     chk("10.2", "SKIP", "the running daemon offers the row buttons", "no /status.json")
+    chk("13.2", "SKIP", "the map page draws the attributed background", "no /status.json")
+    chk("14.1", "SKIP", "Captured networks has its controls at the top", "no /status.json")
     sys.exit(0)
 if mode in ("basic", "system"):
     chk("2.4", "PASS", "loopback /status.json with Basic credentials", "plain HTTP on 127.0.0.1")
@@ -445,19 +490,59 @@ for p in s.get("plugins", []):
     keep = {k: p.get(k) for k in ("state", "reason", "last_error", "warnings", "overruns",
                                    "capability_violations") if p.get(k) not in (None, "", [], 0)}
     print("plugin %-13s %s" % (p.get("name"), keep))
-# 10.2: an enabled, loaded downloads/map/notify offers its main-page button.
+# 10.2: an enabled, loaded downloads/map/ntfy/telegram offers its main-page button.
 offered = {p.get("name"): [a.get("label") for a in (p.get("actions") or []) if isinstance(a, dict)]
            for p in s.get("plugins", []) if p.get("state") == "loaded"}
-want = {"downloads": "Download", "map": "Map", "notify": "Status"}
+want = {"downloads": "Download", "map": "Map", "ntfy": "Status", "telegram": "Status"}
 on = sorted(n for n in want if n in offered)
 if not on:
-    chk("10.2", "SKIP", "the running daemon offers the row buttons", "none of downloads, map, notify loaded")
+    chk("10.2", "SKIP", "the running daemon offers the row buttons",
+        "none of downloads, map, ntfy, telegram loaded")
 else:
     bad = [n for n in on if want[n] not in offered[n]]
     chk("10.2", "FAIL" if bad else "PASS", "the running daemon offers the row buttons",
         ("missing: %s" % ", ".join(bad)) if bad else "checked: %s" % ", ".join(on))
+# 13.2 and 14.1: pages read over loopback with the same credentials. Only
+# markers are checked; nothing from a page (locations, network names) is printed.
+def page(path):
+    r = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path))
+    for k, v in req.header_items():
+        r.add_header(k, v)
+    try:
+        resp = urllib.request.urlopen(r, timeout=20)
+        return resp.status, resp.headers, resp.read(4 * 1024 * 1024).decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.headers, ""
+    except Exception as exc:
+        return None, None, type(exc).__name__
+if "map" not in offered:
+    chk("13.2", "SKIP", "the map page draws the attributed background", "map not loaded")
+else:
+    code, hdrs, body = page("/plugins/map/")
+    policy = (hdrs or {}).get("Referrer-Policy") if hdrs else None
+    if code != 200:
+        chk("13.2", "FAIL", "the map page draws the attributed background", "HTTP %s" % code)
+    elif "OpenStreetMap</a> contributors" in body:
+        ok = 'referrerpolicy="origin"' in body and policy == "no-referrer"
+        chk("13.2", "PASS" if ok else "FAIL", "the map page draws the attributed background",
+            "tiles send the origin only; page Referrer-Policy %s" % policy)
+    else:
+        chk("13.2", "INFO", "the map page draws the attributed background",
+            "no background drawn (no located networks, or tile_url empty)")
+code, hdrs, body = page("/networks")
+if code != 200:
+    chk("14.1", "FAIL", "Captured networks has its controls at the top", "HTTP %s" % code)
+else:
+    top = body.split("<h1>", 1)[0]
+    # With the web login off the import control is hidden on purpose.
+    ok = ('class="nethead"' in top and 'class="countbar"' in body
+          and ("Import results" in top or mode == "none"))
+    chk("14.1", "PASS" if ok else "FAIL", "Captured networks has its controls at the top",
+        ("Import results above the heading" if mode != "none" else "web login off: no import")
+        if ok else "markers missing")
 w = s.get("widgets", {}) or {}
-for name in ("wpa-sec", "wigle", "backup", "remote-train", "updates", "notify", "hat-buttons"):
+for name in ("wpa-sec", "wigle", "backup", "remote-train", "updates", "ntfy", "telegram",
+             "hat-buttons"):
     if name in w:
         els = w[name]
         if isinstance(els, dict):
@@ -486,8 +571,6 @@ cat >>"$raw" <<'EOF'
      cracked/ or archive/ in a zip; refused with the web login off
 5.x  map markers, zoom and Show all, row links, filters, phone and dark mode,
      hidden with show_locations off, works with the device offline
-6.x  enabling notify asks for the acknowledgment; Send test; a digest (counts
-     only); on battery; capture stopped vs switched off; offline queue; Telegram
 7.x  each key on the "Last key press" card (confirms the pins); info screen;
      confirm prompt (also in the first ten minutes after boot) and cancel;
      shutdown; reboot; KEY2 stops capture; Pi 5 and Zero 2 W, V1 and V2 HATs
@@ -497,6 +580,14 @@ cat >>"$raw" <<'EOF'
 10.x Download, Map, Status and Send test show on the Plugins page for the
      enabled plugins, and each opens its page
 11.x this report reads "kestrel web fingerprint", not "<hostname> web ..."
+12.x enabling ntfy or telegram asks for the acknowledgment; ntfy Status shows a
+     topic and Send test arrives; a digest (counts only); on battery; capture
+     stopped vs switched off; offline queue; telegram Send test reaches your chat
+13.x the map shows streets under the pins and they line up; the attribution;
+     a square at one spot lists its networks; Reset view; back links; phone
+     and dark mode; tile_url empty shows the grid
+14.x Import results at the top opens the upload form in place; the arrows
+     beside the count turn the page; the phone layout
 EOF
 
 # ---------------------------------------------------------------- redact and save
@@ -527,12 +618,13 @@ try:
                 public.add(opt["default"])
 except Exception:
     pass
-secret_keys = {"api_key", "api_token", "api_name", "token", "password", "username"}
+secret_keys = {"api_key", "api_token", "api_name", "token", "password", "username",
+               "topic", "chat_id"}
 # Any *_token / *_topic / *_chat / *_key / *_password option is a secret too
-# (notify's ntfy_topic, ntfy_token, telegram_token, telegram_chat).
+# (ntfy's topic and token, telegram's bot_token and chat_id).
 secret_suffixes = ("_token", "_topic", "_chat", "_key", "_password", "_secret")
 host_keys = {"host", "train_host", "user", "train_user", "probe_url", "endpoint",
-             "repo", "path", "train_path", "ntfy_server"}
+             "repo", "path", "train_path", "server", "ntfy_server", "tile_url"}
 subs = []
 def walk(node):
     for k, v in node.items():
