@@ -91,9 +91,9 @@ echo "uptime:     $(uptime -p 2>/dev/null)"
 echo "python3:    $(/usr/bin/python3 -V 2>&1)"
 echo "web auth:   $web_auth"
 
-# ================================================================ 1.0.8-beta.1 checks (#45)
-# Network locations: show a captured network's lat/long on /networks, recorded
-# by the onboard GPS or estimated from an external source. Display-only; the
+# ================================================================ 1.0.9-beta.1 checks (#50-#55)
+# HTTPS dashboard and sign-in (#51), the e-ink address row (#50), and four new
+# plugins: downloads (#52), map (#53), notify (#54), hat-buttons (#55). The
 # CHECK ids match the checklist issue.
 upd=/var/lib/kestrel/update-run/status.json
 
@@ -153,67 +153,91 @@ else
   check 1.5 SKIP "settings unchanged by the update" "no in-place update recorded"
 fi
 
-# ---------------------------------------------------------------- 2. network-location core service (#45)
-sec "2. network-location core service (#45)"
-imp=$(as_dev "$VENV_PY" -I -c 'import kestrel_pi.geo as g
-print(all(hasattr(g, n) for n in ("GeoStore", "classify", "fmt_coord", "osm_url", "RECORDED", "ESTIMATED")))' 2>&1)
-if [ "$imp" = True ]; then
-  check 2.1 PASS "installed package provides kestrel_pi.geo" "GeoStore + classify + fmt_coord + osm_url"
+# ---------------------------------------------------------------- 2. HTTPS dashboard and sign-in (#51)
+sec "2. HTTPS dashboard and sign-in (#51)"
+tls=$(cfg web.tls on)
+port=$(cfg web.port 8080)
+tport=$(cfg web.tls_port 8443)
+echo "web.tls: $tls   port: $port   tls_port: $tport"
+WEBSTATE=$DEV_HOME/.local/state/kestrel-web
+for f in "" /cert.pem /key.pem; do
+  echo "  <web-state>$f: $(as_dev stat -c '%a' "$WEBSTATE$f" 2>/dev/null || echo missing)"
+done
+if [ "$(as_dev stat -c '%a' "$WEBSTATE" 2>/dev/null)" = 700 ] \
+    && [ "$(as_dev stat -c '%a' "$WEBSTATE/cert.pem" 2>/dev/null)" = 600 ] \
+    && [ "$(as_dev stat -c '%a' "$WEBSTATE/key.pem" 2>/dev/null)" = 600 ]; then
+  check 2.1 PASS "certificate made and private" "dir 700, cert.pem and key.pem 600"
+elif [ "$tls" = off ]; then
+  check 2.1 SKIP "certificate made and private" "[web] tls is off"
 else
-  check 2.1 FAIL "installed package provides kestrel_pi.geo" "$(printf '%s' "$imp" | tr '\n' ' ' | cut -c1-120)"
+  check 2.1 FAIL "certificate made and private" "see the modes above"
 fi
-# Round-trip through a throwaway store the device user owns (placeholder data
-# only; never the real store): proves the installed reader reads a recorded GPS
-# sidecar and an estimated geo cache, prefers the recorded fix, classifies the
-# source, and formats the coordinate and the map link.
-dtmp=$(as_dev mktemp -d 2>/dev/null)
-if [ -n "$dtmp" ]; then
-  rt=$(as_dev "$VENV_PY" -I - "$dtmp" <<'PY' 2>&1
-import json, os, sys
-from kestrel_pi import geo
-store = sys.argv[1]
-with open(os.path.join(store, "cap.hc22000.gps.json"), "w") as h:
-    json.dump({"00:00:5E:00:53:AA": {"lat": 12.34567, "lon": -45.67890,
-               "fix_time": "2026-01-01T00:00:00Z", "source": "gpsd"}}, h)
-os.makedirs(os.path.join(store, "geo"), exist_ok=True)
-with open(os.path.join(store, "geo", "wigle-cache.json"), "w") as h:
-    json.dump({"00:00:5E:00:53:AA": {"bssid": "00:00:5E:00:53:AA", "lat": 1.0,
-               "lon": 2.0, "source": "wigle-search", "query_time": "2026-06-01T00:00:00Z"},
-               "00:00:5E:00:53:BB": {"bssid": "00:00:5E:00:53:BB", "lat": 12.34567,
-               "lon": -45.67890, "source": "wigle-search", "query_time": "2026-01-01T00:00:00Z"}}, h)
-g = geo.GeoStore(store)
-a = g.lookup_bssid("00:00:5E:00:53:AA")   # both files have it: recorded must win
-b = g.lookup_bssid("00:00:5E:00:53:BB")   # estimated only
-ok = (a is not None and a.cls == "recorded" and a.label == "onboard GPS"
-      and b is not None and b.cls == "estimated" and b.label == "WiGLE"
-      and g.counts() == {"located_aps": 2}
-      and geo.classify("gpsd")[0] == "recorded"
-      and geo.classify("brand-new-src") == ("estimated", "brand-new-src")
-      and geo.fmt_coord(12.3456789) == "12.34568"
-      and geo.osm_url(12.34567, -45.6789).startswith("https://www.openstreetmap.org/"))
-print("OK" if ok else "BAD", a and a.cls, b and b.cls, g.counts())
-PY
-)
-  as_dev rm -rf "$dtmp" 2>/dev/null
-  if printf '%s\n' "$rt" | grep -q '^OK'; then
-    check 2.2 PASS "reader round-trip (sidecar + geo cache, recorded-beats-estimated, classify)" "2 located APs, recorded preferred"
-  else
-    check 2.2 FAIL "reader round-trip" "$(printf '%s' "$rt" | tr '\n' ' ' | cut -c1-160)"
-  fi
+# The fingerprint itself never goes in the report: only whether they match.
+fp_cli=$(timeout 20 "$CLI" web fingerprint 2>/dev/null | tail -1)
+fp_log=$(journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null \
+  | grep -oE 'HTTPS certificate SHA-256 [0-9A-F:]+' | tail -1 | awk '{print $NF}')
+if [ -n "$fp_cli" ] && [ "$fp_cli" = "$fp_log" ]; then
+  check 2.2 PASS "kestrel web fingerprint matches the daemon's journal" "values not shown"
+elif [ -z "$fp_log" ]; then
+  check 2.2 INFO "kestrel web fingerprint matches the daemon's journal" "no HTTPS line in this boot's daemon journal"
 else
-  check 2.2 SKIP "reader round-trip" "could not make a throwaway dir"
+  check 2.2 FAIL "kestrel web fingerprint matches the daemon's journal" "they differ (values not shown)"
 fi
-# 2.3 (located_aps in /status.json) is emitted from the dashboard section below
-# when the optional login is given.
-check 2.4 MANUAL "/networks shows a location with an OpenStreetMap link on a located network's row" "by hand"
+# Listening sockets only (read-only, no request): HTTPS and the forwarder on each
+# management address, plain HTTP on loopback. Addresses are counted, not shown.
+lst=$(ss -ltnH 2>/dev/null | awk '{print $4}')
+https_ext=$(printf '%s\n' "$lst" | grep -E ":$tport\$" | grep -vcE '^(127\.|\[::1\])' || true)
+http_ext=$(printf '%s\n' "$lst" | grep -E ":$port\$" | grep -vcE '^(127\.|\[::1\])' || true)
+http_lo=$(printf '%s\n' "$lst" | grep -cE "^127\.[0-9.]+:$port\$" || true)
+echo "  listeners: $tport off-loopback=$https_ext  $port off-loopback=$http_ext  $port loopback=$http_lo"
+if [ "$tls" = off ]; then
+  check 2.3 SKIP "HTTPS and the forwarder listen on each management address" "[web] tls is off"
+elif [ "${https_ext:-0}" -ge 1 ] && [ "$https_ext" = "$http_ext" ] && [ "${http_lo:-0}" -ge 1 ]; then
+  check 2.3 PASS "HTTPS and the forwarder listen on each management address" "$https_ext address(es); loopback plain HTTP too"
+else
+  check 2.3 FAIL "HTTPS and the forwarder listen on each management address" "see the listener counts above"
+fi
+# 2.4 (loopback Basic) and 2.5 (nosniff) come from the dashboard section below.
+cat_ok=$(as_dev "$VENV_PY" -I -c 'from kestrel_pi import config_catalog as c
+a, b = c.find("web", "tls"), c.find("web", "tls_port")
+print(bool(a) and bool(b) and a.get("editable") is False and b.get("editable") is False)' 2>&1)
+if [ "$cat_ok" = True ]; then
+  check 2.6 PASS "Advanced settings lists web.tls and web.tls_port read-only" ""
+else
+  check 2.6 FAIL "Advanced settings lists web.tls and web.tls_port read-only" "$(printf '%s' "$cat_ok" | tr '\n' ' ' | cut -c1-120)"
+fi
+# 2.7 (web.tls refused through the settings channel) is in the config tests below.
+for id in 2.8 2.9 2.10 2.11 2.12 2.13 2.14 2.15 2.16 2.17 2.18; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
 
-# ---------------------------------------------------------------- 3. location display + gating (#45)
-sec "3. location display + gating (#45)"
-check 3.1 MANUAL "recorded shows the solid pin glyph; estimated shows the approx (~) mark" "by hand (needs gps and/or wigle data)"
-check 3.2 MANUAL "with the web login off, no coordinates or map link show on any row" "by hand"
-check 3.4 MANUAL "show_locations=false hides the coords/link but keeps a 'location hidden' marker" "by hand"
-# 3.3 (show_locations saved live, no restart) and 4.x (allow-list, live key) are
-# in the config-tests section below.
+# ---------------------------------------------------------------- 3-7. the plugins (#50, #52-#55)
+sec "3-7. plugins (#50, #52-#55)"
+# 3.1, 4.1, 5.1, 6.1, 7.1 and 8.1 read the plugin declarations statically in the
+# config tests below.
+n=$(as_dev sh -c 'ls "$1" 2>/dev/null | grep -c "^export-.*\.zip$"' _ "$DEV_HOME/.local/state/kestrel-downloads" || true)
+if as_dev test -d "$DEV_HOME/.local/state/kestrel-downloads"; then
+  [ "${n:-0}" -eq 0 ] && check 4.2 PASS "no leftover export zips" "" \
+    || check 4.2 FAIL "no leftover export zips" "$n left"
+else
+  check 4.2 SKIP "no leftover export zips" "downloads hasn't been used yet"
+fi
+loc=$(as_dev "$VENV_PY" -I -c 'from kestrel_pi.geo import GeoStore
+print(callable(getattr(GeoStore, "locations", None)))' 2>&1)
+[ "$loc" = True ] && check 5.2 PASS "installed package provides GeoStore.locations()" "" \
+  || check 5.2 FAIL "installed package provides GeoStore.locations()" "$(printf '%s' "$loc" | tr '\n' ' ' | cut -c1-120)"
+topic=$DEV_HOME/.local/state/kestrel-notify/topic
+if as_dev test -f "$topic"; then
+  [ "$(as_dev stat -c '%a' "$topic" 2>/dev/null)" = 600 ] \
+    && check 6.2 PASS "generated ntfy topic file is private" "0600 (contents not read)" \
+    || check 6.2 FAIL "generated ntfy topic file is private" "mode $(as_dev stat -c '%a' "$topic" 2>/dev/null)"
+else
+  check 6.2 SKIP "generated ntfy topic file is private" "no generated topic yet"
+fi
+for id in 3.2 3.3 3.4 4.3 4.4 4.5 4.6 4.7 4.8 5.3 5.4 5.5 5.6 5.7 5.8 5.9 \
+          6.3 6.4 6.5 6.6 6.7 6.8 6.9 7.2 7.3 7.4 7.5 7.6 7.7 7.8 7.9; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
 
 # ---------------------------------------------------------------- config tests (throwaway copy)
 sec "config tests (throwaway copy of config.toml; commands blocked)"
@@ -242,19 +266,36 @@ def check(cid, ok, what, detail=""): print("CHECK %-5s %-6s %s :: %s" % (cid, "P
 def apply(ch):
     try: return ctl.apply_change(ch)
     except Exception as e: return {"ok": False, "error": "exc %s" % type(e).__name__}
-# network locations (#45): the show_locations visibility toggle.
-# 3.3: show_locations saves live via the socket (not root_only, no restart)
-r = apply({"target":"config-set","table":"web","key":"show_locations","value":False})
-check("3.3", bool(r.get("ok")) and read("web.show_locations") is False and not r.get("restart"),
-      "web.show_locations saved live, no daemon restart", "ok=%s restart=%s" % (r.get("ok"), r.get("restart")))
-# 4.1: the new key is in the root allow-list with the right spec
-spec = getattr(ctl, "CONFIG_SETTABLE", {})
-check("4.1", spec.get("web.show_locations") == {"type": "bool"},
-      "web.show_locations settable in the allow-list", "")
-# 4.2: it is a live web key (saved without a daemon restart)
-live = getattr(ctl, "_WEB_LIVE_KEYS", frozenset())
-check("4.2", "show_locations" in live,
-      "web.show_locations is a live web key (no restart)", "")
+# 2.7: HTTPS can only be switched from a terminal, never through the settings socket.
+before = read("web.tls")
+r = apply({"target": "config-set", "table": "web", "key": "tls", "value": "off"})
+check("2.7", not r.get("ok") and read("web.tls") == before,
+      "web.tls is refused through the settings channel (CLI only)", "error=%s" % r.get("error"))
+# Plugin declarations, read statically (nothing imported or run).
+plugs = ctl.static_plugins()
+def decl(name):
+    found = plugs.get(name)
+    return (found[0] or {}) if found else {}
+def caps(name): return set(decl(name).get("capabilities") or ())
+def state(name): return "enabled" if read("plugins.%s.enabled" % name) is True else "disabled"
+opts = decl("eink").get("options") or {}
+check("3.1", (opts.get("show_ip") or {}).get("default") is True
+      and (opts.get("show_fingerprint_minutes") or {}).get("default") == 10,
+      "eink declares show_ip (on) and show_fingerprint_minutes (10)", "")
+check("4.1", caps("downloads") == {"capture-read", "web"},
+      "downloads: capture-read + web, no network", state("downloads"))
+check("5.1", caps("map") == {"capture-read", "location", "web"},
+      "map: capture-read + location + web, no network", state("map"))
+check("6.1", "network" in caps("notify"),
+      "notify declares network (enabling takes the acknowledgment)", state("notify"))
+check("7.1", caps("hat-buttons") == {"ui"} and "buttons" in (decl("hat-buttons").get("provides") or ()),
+      "hat-buttons: local only (ui), provides buttons", state("hat-buttons"))
+expected = {"memtemp", "session-stats", "gps", "wpa-sec", "wigle", "backup", "ups-hat", "eink",
+            "updates", "remote-train", "downloads", "map", "notify", "hat-buttons"}
+invalid = sorted(n for n, v in plugs.items() if v[0] is None)
+missing = sorted(expected - set(plugs))
+check("8.1", not invalid and not missing, "all fourteen shipped plugins present and readable",
+      "missing=%s invalid=%s" % (missing, invalid))
 PY
 [ "$(sha256sum "$CONFIG" | awk '{print $1}')" = "$cfg_sum_before" ] \
   && check 0.1 PASS "real config.toml untouched by the tests" "checksum identical" \
@@ -266,13 +307,26 @@ PY
 {
 sec "dashboard /status.json (selected fields)"
 printf '%s\n' "$web_pw" | /usr/bin/python3 -I - <<'PY' 2>&1
-import base64, json, sys, tomllib, urllib.request
+import base64, json, sys, tomllib, urllib.error, urllib.request
 pw = sys.stdin.readline().rstrip("\n")
 with open("/etc/kestrel/config.toml", "rb") as h:
     cfg = tomllib.load(h)
 web = cfg.get("web", {}) or {}
 mode = str(web.get("auth", "system")).lower()
 port = int(web.get("port", 8080))
+def chk(cid, result, what, detail=""):
+    print("CHECK %-5s %-6s %s :: %s" % (cid, result, what, detail))
+# 2.5: every response carries nosniff, the sign-in refusal included (no password needed).
+try:
+    hdrs = urllib.request.urlopen("http://127.0.0.1:%d/status.json" % port, timeout=15).headers
+except urllib.error.HTTPError as exc:
+    hdrs = exc.headers
+except Exception as exc:
+    hdrs = None
+    chk("2.5", "INFO", "responses carry X-Content-Type-Options: nosniff", "no answer: %s" % type(exc).__name__)
+if hdrs is not None:
+    chk("2.5", "PASS" if hdrs.get("X-Content-Type-Options") == "nosniff" else "FAIL",
+        "responses carry X-Content-Type-Options: nosniff", "")
 req = urllib.request.Request("http://127.0.0.1:%d/status.json" % port)
 if mode == "token":
     req.add_header("Authorization", "Bearer %s" % web.get("token", ""))
@@ -286,6 +340,7 @@ elif mode in ("basic", "system"):
             capture_output=True, text=True).stdout.strip())
     if not pw:
         print("(skipped: no password given)")
+        chk("2.4", "SKIP", "loopback /status.json with Basic credentials", "no password given")
         sys.exit(0)
     req.add_header("Authorization", "Basic " + base64.b64encode(
         ("%s:%s" % (user, pw)).encode()).decode())
@@ -293,11 +348,14 @@ try:
     s = json.load(urllib.request.urlopen(req, timeout=15))
 except Exception as exc:
     print("(not available: %s)" % type(exc).__name__)
+    chk("2.4", "FAIL" if mode in ("basic", "system") else "INFO",
+        "loopback /status.json with Basic credentials", type(exc).__name__)
     sys.exit(0)
+if mode in ("basic", "system"):
+    chk("2.4", "PASS", "loopback /status.json with Basic credentials", "plain HTTP on 127.0.0.1")
 print("version:", s.get("version"))
 cap = s.get("capture", {}) or {}
 print("capture:", {k: cap.get(k) for k in ("state", "enabled", "hashline_files", "located_aps")})
-print("CHECK %-5s %-6s %s :: %s" % ("2.3", "PASS" if "located_aps" in cap else "FAIL", "located_aps present in /status.json capture", cap.get("located_aps")))
 print("environment:", s.get("environment"))
 ag = s.get("agent", {}) or {}
 print("agent:", {k: v for k, v in ag.items() if isinstance(v, (str, int, float, bool)) or v is None})
@@ -308,7 +366,7 @@ for p in s.get("plugins", []):
                                    "capability_violations") if p.get(k) not in (None, "", [], 0)}
     print("plugin %-13s %s" % (p.get("name"), keep))
 w = s.get("widgets", {}) or {}
-for name in ("wpa-sec", "wigle", "backup", "remote-train", "updates"):
+for name in ("wpa-sec", "wigle", "backup", "remote-train", "updates", "notify", "hat-buttons"):
     if name in w:
         els = w[name]
         if isinstance(els, dict):
@@ -322,18 +380,26 @@ web_pw=""
 cat >>"$raw" <<'EOF'
 
 ===== by hand (the script can't see these) =====
-1.x  with the updates plugin's beta OFF, this beta is NOT offered; with beta ON
-     it is offered and applies in place
-2.4  a located network's row on /networks shows its coordinate as an
-     OpenStreetMap link (the link opens that spot)
-3.1  recorded (onboard GPS) shows the solid pin; estimated (e.g. WiGLE) shows
-     the "approximately" (~) mark + hollow ring  (needs gps and/or wigle data)
-3.2  with the web login OFF, no coordinates or map link appear on any row
-3.4  show_locations=false keeps a muted "location hidden" marker but hides the
-     coordinate and the link; back to true shows them again (no restart)
-3.5  the legend under the table explains the two glyphs; a network with no known
-     location shows nothing (no empty cell)
-9.x  how the Captured networks page and /guide look on a phone
+1.6  with the updates plugin's beta OFF this beta is NOT offered; with beta ON it
+     is offered and applies in place
+2.x  kestrel web status shows https:// and "HTTPS: on"; first visit on iPhone and
+     Android (warning, fingerprint matches, proceed); an old :8080 bookmark lands
+     on the same page over HTTPS; sign in / wrong password / back to the page;
+     still signed in after a settings save; Sign out; the wait after wrong
+     passwords; logout-all; tls off then on keeps the fingerprint; e-ink shows
+     "HTTPS key" for ten minutes after boot
+3.x  the e-ink address row matches kestrel web status; one link up shows one
+     address; show_ip = false hides the row
+4.x  enabling downloads asks for no acknowledgment; each download from a phone
+     over HTTPS; hashcat accepts the combined file; "new since last"; no
+     cracked/ or archive/ in a zip; refused with the web login off
+5.x  map markers, zoom and Show all, row links, filters, phone and dark mode,
+     hidden with show_locations off, works with the device offline
+6.x  enabling notify asks for the acknowledgment; Send test; a digest (counts
+     only); on battery; capture stopped vs switched off; offline queue; Telegram
+7.x  each key on the "Last key press" card (confirms the pins); info screen;
+     confirm prompt (also in the first ten minutes after boot) and cancel;
+     shutdown; reboot; KEY2 stops capture; Pi 5 and Zero 2 W, V1 and V2 HATs
 EOF
 
 # ---------------------------------------------------------------- redact and save
@@ -365,15 +431,18 @@ try:
 except Exception:
     pass
 secret_keys = {"api_key", "api_token", "api_name", "token", "password", "username"}
+# Any *_token / *_topic / *_chat / *_key / *_password option is a secret too
+# (notify's ntfy_topic, ntfy_token, telegram_token, telegram_chat).
+secret_suffixes = ("_token", "_topic", "_chat", "_key", "_password", "_secret")
 host_keys = {"host", "train_host", "user", "train_user", "probe_url", "endpoint",
-             "repo", "path", "train_path"}
+             "repo", "path", "train_path", "ntfy_server"}
 subs = []
 def walk(node):
     for k, v in node.items():
         if isinstance(v, dict):
             walk(v)
         elif isinstance(v, str) and len(v) >= 3 and v not in public:
-            if k in secret_keys:
+            if k in secret_keys or k.endswith(secret_suffixes):
                 subs.append((v, "<secret>"))
             elif k in host_keys:
                 subs.append((v, "<host>"))
@@ -392,6 +461,9 @@ if hostname:
 for name in set(sys.argv[2:]):
     if name and name != "root":
         text = re.sub(r"(?<![\w-])%s(?![\w-])" % re.escape(name), "<user>", text)
+# A certificate fingerprint (colon-separated hex pairs, 8 or more) is device-
+# unique: masked before the MAC pattern could take a slice of it.
+text = re.sub(r"\b(?:[0-9A-Fa-f]{2}:){7,}[0-9A-Fa-f]{2}\b", "<fingerprint>", text)
 text = re.sub(r"\b([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b", "<mac>", text)
 text = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "<ipv4>", text)
 text = re.sub(r"(?<![\w:])(?:[0-9A-Fa-f]{1,4}:)*[0-9A-Fa-f]{0,4}::(?:[0-9A-Fa-f]{1,4}:)*[0-9A-Fa-f]{1,4}(?![\w:])", "<ipv6>", text)
