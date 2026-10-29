@@ -11,11 +11,12 @@ From a device on the same management link (your tethering phone, or a machine on
 the same Wi-Fi):
 
 ```
-http://kestrel.local:8080/
+https://kestrel.local:8443/
 ```
 
-or use the device's IP on the link, e.g. `http://172.20.10.14:8080/`. The port is
-`8080` by default (`[web] port`).
+or use the device's IP on the link, e.g. `https://172.20.10.14:8443/` (the e-ink
+panel's address row shows it). The HTTPS port is `8443` by default
+(`[web] tls_port`); an old `http://…:8080` link forwards there by itself.
 
 ## Logging in
 
@@ -32,9 +33,31 @@ Other modes, set with `sudo kestrel web auth <mode>`:
 - `token` — a generated token (printed once).
 - `none` — open, **read-only** page with no controls.
 
-The page is plain HTTP on the management link, so a login travels unencrypted
-there — fine for a trusted phone tether, but don't expose the link to untrusted
-networks.
+## Signing in and HTTPS
+
+Off the device the dashboard is served over **HTTPS** with a certificate the
+device makes for itself, so the first visit shows a "connection isn't private"
+warning: no public authority vouches for a device on your own network. Before
+going past it, compare the certificate's SHA-256 fingerprint (in the browser's
+certificate details) with the device's:
+
+- the e-ink panel shows its start for the first ten minutes after start-up;
+- `sudo kestrel web fingerprint` prints it in full.
+
+If they don't match, don't sign in. Otherwise proceed (iPhone: **Show Details →
+visit this website**; Android: **Advanced → Proceed**).
+
+You sign in once on the sign-in page; the browser stays signed in for up to a
+week, or until it's been idle for 12 hours. **Sign out** is at the bottom of every
+page. After changing the device password, `sudo kestrel web logout-all` signs
+every browser out. Several wrong passwords in a row make the page ask you to wait
+before the next try.
+
+Scripts can still send HTTP Basic credentials over HTTPS, and tools on the device
+use `http://127.0.0.1:8080/`. `sudo kestrel web tls off` serves plain HTTP instead
+if a browser can't cope (the sign-in is then not encrypted on the network),
+`sudo kestrel web tls on` turns HTTPS back on, and `sudo kestrel web tls
+regenerate` makes a new certificate.
 
 ## What you see
 
