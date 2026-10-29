@@ -1,6 +1,6 @@
 # Capture interface contract
 
-`contract_version: 4`
+`contract_version: 5`
 
 This is the stable surface the capture service exposes for the plugin system and
 the reinforcement-learning agent. It is the promise about what stays put, so
@@ -29,6 +29,14 @@ additive — a consumer that reads only the hashline store is unaffected — and
 best-effort: it is maintained going forward (handshakes already in the store
 when v4 shipped are not back-stamped), so a missing entry means "unknown", not
 "never seen".
+
+Version 5 pins the per-radio **location** files (under [Geo](#geo-locations)): the
+GPS sidecars a position producer writes next to each capture file, and the geo
+caches an external-lookup producer writes under `geo/`. It is additive — a
+consumer that reads only the hashline store is unaffected — and the files are
+best-effort: a producer may write none, so an absent file means "no known
+location", never an error. It formalizes an existing layout so a producer and
+the core location reader agree without either importing the other.
 
 This file is the normative reference.
 
@@ -138,6 +146,60 @@ This file is the normative reference.
     are stamped, so a BSSID absent here is "unknown" (a consumer falls back to
     the store file's mtime, then to nothing), never "never captured".
   - Maintained only while the collector runs; granularity is one poll (~10 s).
+
+## Geo (locations)
+
+A captured radio's position, when it is known, is written to the store as one of
+two file kinds and read back by the core location reader (`kestrel_pi/geo.py`,
+surfaced on the dashboard's Captured-networks page). The store is the only
+meeting point: a **producer** (today the `gps` and `wigle` plugins, but not
+limited to them) writes these files; the **consumer** reads every matching file
+and imports no producer. Both kinds are best-effort and optional — a device with
+no position producer simply has none, and the reader shows nothing.
+
+Every record carries a `source` string, which the reader maps to a **class**:
+
+- `gpsd`, `serial`, `auto` → **recorded** (an onboard-GPS fix taken at capture
+  time; precise, and it is where the operator was).
+- any other value → **estimated** (an external lookup of where the radio is
+  publicly known to be; e.g. `wigle-search`). An unrecognized `source` is
+  treated as estimated, labelled from the string, so a new producer needs no
+  reader change.
+
+For one BSSID a **recorded** fix always wins over an estimated one; within a
+class the **newest** timestamp wins (`fix_time` for recorded, `query_time` for
+estimated). Coordinates are validated (finite, in range) and a bad record is
+dropped.
+
+- **Recorded sidecar** — `<capture-file>.gps.json`, next to its `.hc22000` file
+  (so one sidecar per capture file; a BSSID may recur across sidecars). A map
+  keyed by BSSID as `AA:BB:CC:DD:EE:FF`:
+
+  ```json
+  {"AA:BB:CC:DD:EE:FF": {"lat": 12.34567, "lon": -45.67890, "alt": 100.0,
+                         "fix_time": "2026-01-01T00:00:00Z", "source": "gpsd"}}
+  ```
+
+  - Required: `lat`, `lon` (decimal degrees), `source`, `fix_time` (ISO-8601 Z).
+    `alt` and any further keys (e.g. `fix`/`sats`/`cn0`) are optional and ignored
+    by the location reader.
+  - A handshake with no parseable BSSID is keyed `"unknown"`; the reader skips
+    any non-MAC key, so that slot never becomes a location.
+
+- **Estimated cache** — `geo/<name>-cache.json` (the reader reads **every**
+  `geo/*.json`, so additional sources are additive by dropping another file). A
+  map keyed by BSSID:
+
+  ```json
+  {"AA:BB:CC:DD:EE:FF": {"bssid": "AA:BB:CC:DD:EE:FF", "lat": 12.34567,
+                         "lon": -45.67890, "source": "wigle-search",
+                         "query_time": "2026-01-01T00:00:00Z"}}
+  ```
+
+  - Required: `lat`, `lon`, `source`. `query_time` (ISO-8601 Z) orders duplicates;
+    `bssid` is redundant with the key and not required by the reader.
+  - Display-only: an estimated location is never uploaded or acted on, and the
+    reader never performs a lookup itself — that stays a producer's job.
 
 ## Control
 

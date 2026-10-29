@@ -136,6 +136,7 @@ can leave them alone.
 | `auth` | `system` / `basic` / `token` / `none` | `system` | How the dashboard logs you in. `system` uses your device account (same as SSH). Set this with `web auth`, not by hand — a wrong value can lock you out. |
 | `username` | text | `""` | `system`: the account to check (default: the login user). `basic`: the web username. |
 | `show_passphrases` | `true` / `false` | `true` | Show a recovered network's passphrase in its card on the Captured networks page. Needs the web login on; off keeps the "recovered" badge and count but hides the passphrase (for screen-sharing). Takes effect immediately. |
+| `show_locations` | `true` / `false` | `true` | Show a captured network's location (lat/long) on the Captured networks page as an OpenStreetMap link. Needs the web login on; off keeps a muted "location hidden" marker but hides the coordinates (for screen-sharing). Takes effect immediately. |
 | `probe_url` | URL or empty | `""` | An explicit address to test for "online". Empty uses the built-in check. |
 
 The dashboard `password` and `token` are secrets set by `web auth`; they are not

@@ -150,6 +150,16 @@ sidecar recording where it was taken, and the `wigle` plugin can submit observed
 networks with their coordinates to WiGLE. See [GPS](gps-setup.md) and
 [WiGLE](wigle-setup.md).
 
+When a network's location is known, it also shows on its row on the **Captured
+networks** page: a small coordinate linking to OpenStreetMap, with a solid pin
+for a location **recorded** by the onboard GPS and an *approximately* mark for
+one **estimated** from an external source like WiGLE (a recorded fix wins when
+both exist). Like a passphrase, it shows only with the web login on; set
+`[web] show_locations = false` to keep a muted "location hidden" marker while
+hiding the coordinates (for screen-sharing). It is display-only — the device
+never looks a location up or sends one anywhere — and a network with no known
+location shows nothing.
+
 ## Keeping the store from filling the card
 
 The store only grows unless you let housekeeping manage it — and housekeeping

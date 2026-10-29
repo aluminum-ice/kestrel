@@ -67,8 +67,12 @@ networks.
   thousands of networks. A network whose passphrase is known shows a **recovered**
   badge, and the dashboard card shows a **recovered N of M access points** count;
   with a login on, expand a recovered row to see the passphrase (unless
-  `show_passphrases` is off). See [Working with your
-  captures](working-with-captures.md#seeing-which-networks-are-recovered).
+  `show_passphrases` is off). A network whose location is known also shows a
+  small coordinate linking to OpenStreetMap on its row — a solid pin for a
+  location recorded by the onboard GPS, an *approximately* mark for one estimated
+  from a source like WiGLE — shown only with a login on, and hidden (leaving a
+  muted "location hidden" marker) when `show_locations` is off. See [Working with
+  your captures](working-with-captures.md#seeing-which-networks-are-recovered).
 - **Whitelist** — directly below Captured networks: a page of the APs that are
   never actively attacked (deauth) — they're still observed passively. It's
   searchable, and with a login you can **add a new AP** (an ESSID or a BSSID

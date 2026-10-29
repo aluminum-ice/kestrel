@@ -154,6 +154,23 @@ How to use this file:
   `GUIDE_MD`.
 - **Pick up when:** the unified `/networks` view has shipped and settled.
 
+## Network locations (`kestrel_pi.geo`)
+
+### Surface the located-APs count on the dashboard and e-ink
+
+- **What:** `status()["capture"]` carries a `located_aps` figure (captured APs
+  with a known location, joined like `recovered_aps`), but nothing shows it yet —
+  the dashboard navcard shows only the recovered count, and the e-ink face does
+  not read it. The per-row location on `/networks` is the only surface today.
+- **Why deferred:** the per-row display is the feature; a "located N of M" navcard
+  line and an e-ink readout are additive polish, and the field is already in
+  `status()` so no plumbing is lost by waiting.
+- **What to do:** render `located_aps` on the Captured-networks navcard next to
+  the recovered line (`_render_status`), and optionally feed it to the e-ink
+  face.
+- **Pick up when:** the per-row display has settled, or an operator asks for the
+  at-a-glance count.
+
 ## Ghost user-guide publisher (`tools/ghost-guide`)
 
 ### Remove superseded screenshots from Ghost
