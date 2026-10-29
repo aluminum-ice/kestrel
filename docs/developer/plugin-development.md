@@ -12,12 +12,17 @@ Everything here is the current behaviour of the framework
 [Capture interface contract](capture-interface.md); for web pages see [Web UI
 conventions](web-ui-conventions.md).
 
-> **Legacy pwnagotchi compatibility.** The API deliberately mirrors legacy
-> pwnagotchi: a plugin is a module with a `Plugin` subclass that overrides `on_*`
-> hooks. A ported plugin's method bodies are unchanged; the differences are
-> additive declarations the loader reads, and a typed `self.context` in place of
-> a global singleton. The legacy `@plugins.on("handshake")` module-function style
-> is **not** supported, and the class must subclass `Plugin` directly with its
+> **Porting from legacy pwnagotchi.** The API is modelled on legacy pwnagotchi:
+> a plugin is a module with a `Plugin` subclass that overrides `on_*` hooks with
+> the familiar names. It is **not** drop-in compatible, though. Several hooks
+> take different arguments, because kestrel passes a typed event and a typed
+> `self.context` where pwnagotchi passes its `agent` object (for example
+> `on_handshake(self, event)` instead of `on_handshake(self, agent, filename,
+> access_point, client_station)`, and `on_ready(self)` instead of
+> `on_ready(self, agent)`; see [The hooks](#the-hooks)). A ported plugin needs
+> its hook signatures and any `agent` calls updated, plus the declarations the
+> loader reads. The legacy `@plugins.on("handshake")` module-function style is
+> **not** supported, and the class must subclass `Plugin` directly with its
 > declarations as plain literals (see [Declarations the loader
 > reads](#declarations-the-loader-reads)).
 
@@ -204,8 +209,10 @@ the loader, in dependency order) and **events** (dispatched off the loop — see
 ## Non-blocking dispatch and threading
 
 This is the most important thing to understand as a plugin author. Legacy
-pwnagotchi ran hooks synchronously in the agent loop, so one plugin doing I/O in
-`on_handshake` stalled everyone. kestrel does **not**: event hooks run on a
+pwnagotchi also runs hooks on background threads (the original starts a new
+thread for every hook call; the community fork keeps one queue per plugin), but
+nothing bounds those threads, notices a slow hook or sets aside a stuck plugin,
+so a hung plugin's work silently piles up. kestrel runs event hooks on a
 bounded worker pool off the main loop, with these guarantees:
 
 - **Non-blocking.** Dispatch returns immediately; a slow or hung hook never holds

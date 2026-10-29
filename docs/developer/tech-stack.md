@@ -186,7 +186,7 @@ and installed by the playbook.
 | Component | Language | Notes |
 | --- | --- | --- |
 | **`kestrel_pi` package** | Python 3.11 | The plugin-host daemon, web server, plugin framework and learning agent. `pyproject.toml` version `0.3.0`, GPL-3.0-or-later. pip-installed into the venv from in-image source. Entry points: `kestrel-daemon`, `kestrel-agent`, `kestrel-agent-train`. Its runtime deps come from the venv (`pip.local.install`), not from `pyproject.toml`, so the build stays offline and pinned. |
-| **Reference plugins** | Python 3.11 | `builder/extra/files/plugins/*.py`. Legacy-pwnagotchi-compatible `Plugin` base + `on_*` hooks; honor `HOOK_API_VERSION`. |
+| **Reference plugins** | Python 3.11 | `builder/extra/files/plugins/*.py`. `Plugin` base + `on_*` hooks modelled on legacy pwnagotchi (not drop-in: several hook signatures differ); honor `HOOK_API_VERSION`. |
 | **Web pages** | Python (server-rendered) | No JS framework, no client build step — the pipeline has no JS toolchain. Styled with plain CSS. See [Web UI conventions](web-ui-conventions.md). |
 | **Phase 1 / capture shell helpers** | POSIX-ish Bash | The `kestrel` CLI, `common.sh`, capture launcher/collector, config tool. Keep a `.sh`/`.py` suffix in-repo (so `make lint` checks them); installed without it. Must pass `shellcheck --severity=error`. |
 

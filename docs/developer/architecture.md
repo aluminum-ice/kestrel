@@ -143,10 +143,12 @@ Plugins are the primary extension point and the first real application code. To
 write one, see [Writing a plugin](plugin-development.md); this section is the
 design overview.
 
-- **Source-compatible with legacy pwnagotchi**: a `Plugin` base class and `on_*`
-  hooks, so existing plugins port with minimal change. Declarations must be
-  plain literals on a direct `Plugin` subclass (root reads them statically), and
-  the legacy `@plugins.on` decorator style is not supported.
+- **Modelled on legacy pwnagotchi**: a `Plugin` base class and `on_*` hooks with
+  the familiar names, but not drop-in compatible: several hooks take a typed
+  event and `self.context` instead of pwnagotchi's `agent` object, so a ported
+  plugin needs its hook signatures updated. Declarations must be plain literals
+  on a direct `Plugin` subclass (root reads them statically), and the legacy
+  `@plugins.on` decorator style is not supported.
 - **Capabilities and permissions are declared, not implicit.** A plugin declares
   what it needs (e.g. the `network` capability). Enabling a plugin with the
   `network` capability requires the same authorized-use acknowledgment as
