@@ -29,9 +29,14 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-# Apple platforms refuse TLS server certificates valid for more than 825 days,
-# so a phone can always proceed past the warning; reissued 60 days before expiry.
-CERT_DAYS = 825
+# Apple platforms (and so Chromium-based browsers on a Mac) treat a TLS server
+# certificate whose validity period - notBefore to notAfter - is longer than 825
+# days as not standards compliant. The certificate spans CERT_DAYS in total,
+# starting a day back so a clock running slightly behind still accepts it, and
+# is reissued RENEW_DAYS before expiry, or at once if it breaks the limit.
+APPLE_MAX_DAYS = 825
+CERT_DAYS = 820
+BACKDATE_DAYS = 1
 RENEW_DAYS = 60
 CERT_NAME = "cert.pem"
 KEY_NAME = "key.pem"
@@ -87,7 +92,9 @@ def cert_path(directory=None):
 
 
 def _usable_cert(cert_file, key_file, now):
-    """True if the pair loads and the certificate isn't close to expiry."""
+    """True if the pair loads, the certificate isn't close to expiry, and its
+    validity period is within Apple's limit (a longer one, as 1.0.9-beta.1 made,
+    is reissued)."""
     try:
         from cryptography import x509
 
@@ -97,14 +104,19 @@ def _usable_cert(cert_file, key_file, now):
     except Exception:  # noqa: BLE001 - anything unreadable is regenerated
         return False
     expires = getattr(cert, "not_valid_after_utc", None)
-    if expires is None:     # cryptography < 42
+    starts = getattr(cert, "not_valid_before_utc", None)
+    if expires is None or starts is None:     # cryptography < 42
         expires = cert.not_valid_after.replace(tzinfo=timezone.utc)
+        starts = cert.not_valid_before.replace(tzinfo=timezone.utc)
+    if expires - starts > timedelta(days=APPLE_MAX_DAYS):
+        return False
     return expires - now > timedelta(days=RENEW_DAYS)
 
 
 def ensure_certificate(hostname, directory=None, now=None):
     """Return ``(cert_file, key_file)``, making a new self-signed pair if the
-    current one is missing, unreadable or within ``RENEW_DAYS`` of expiry."""
+    current one is missing, unreadable, within ``RENEW_DAYS`` of expiry, or
+    valid for longer than Apple's limit."""
     directory = directory or state_dir()
     now = now or datetime.now(timezone.utc)
     cert_file = os.path.join(directory, CERT_NAME)
@@ -126,8 +138,8 @@ def ensure_certificate(hostname, directory=None, now=None):
         .issuer_name(name)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(now - timedelta(days=2))
-        .not_valid_after(now + timedelta(days=CERT_DAYS))
+        .not_valid_before(now - timedelta(days=BACKDATE_DAYS))
+        .not_valid_after(now - timedelta(days=BACKDATE_DAYS) + timedelta(days=CERT_DAYS))
         .add_extension(x509.SubjectAlternativeName(
             [x509.DNSName(host + ".local"), x509.DNSName(host)]), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)

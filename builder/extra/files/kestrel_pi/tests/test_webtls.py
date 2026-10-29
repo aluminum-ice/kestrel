@@ -54,7 +54,8 @@ def test_certificate_names_and_validity(tmp_path):
         x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
     assert names == ["kestrel.local", "kestrel"]
     span = parsed.not_valid_after - parsed.not_valid_before
-    assert span <= timedelta(days=webtls.CERT_DAYS + 2)    # phones refuse > 825 days
+    # Apple (and Chromium on a Mac) call a longer span "not standards compliant".
+    assert span <= timedelta(days=825)
 
 
 @needs_crypto
@@ -69,6 +70,38 @@ def test_certificate_is_reissued_when_missing_or_near_expiry(tmp_path):
     later = datetime.now(timezone.utc) + timedelta(days=webtls.CERT_DAYS - 10)
     webtls.ensure_certificate("kestrel", d, now=later)
     assert webtls.fingerprint(cert) != second
+
+
+@needs_crypto
+@needs_crypto
+def test_a_certificate_over_the_apple_limit_is_reissued(tmp_path):
+    """1.0.9-beta.1 made certificates valid for 827 days; a device updated from
+    it gets a compliant one on the next start, not only near expiry."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    now = datetime.now(timezone.utc)
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "kestrel.local")])
+    old = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+           .public_key(key.public_key()).serial_number(x509.random_serial_number())
+           .not_valid_before(now - timedelta(days=2))
+           .not_valid_after(now + timedelta(days=825))
+           .add_extension(x509.SubjectAlternativeName([x509.DNSName("kestrel.local")]),
+                          critical=False)
+           .sign(key, hashes.SHA256()))
+    (tmp_path / "key.pem").write_bytes(key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption()))
+    (tmp_path / "cert.pem").write_bytes(old.public_bytes(serialization.Encoding.PEM))
+    before = webtls.fingerprint(str(tmp_path / "cert.pem"))
+    cert, _ = webtls.ensure_certificate("kestrel", str(tmp_path))
+    assert webtls.fingerprint(cert) != before
+    with open(cert, "rb") as handle:
+        new = x509.load_pem_x509_certificate(handle.read())
+    assert new.not_valid_after - new.not_valid_before <= timedelta(days=825)
 
 
 @needs_crypto
