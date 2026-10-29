@@ -5,22 +5,27 @@ captured network whose location is known: recorded by the onboard GPS (the
 `gps` plugin's sidecars) or estimated from an outside source such as WiGLE. It
 is the all-at-once view of the per-row locations on the Captured networks page.
 
-There are no map tiles and no JavaScript: the page draws its own light grid of
-latitude/longitude lines, a scale bar and a north arrow, so no tile server ever
-learns which areas you have been capturing in. Nearby points are grouped into a
-counted cluster; following a cluster's link zooms the page to it, and a single
-point links to its row on the Captured networks page (which has its
-OpenStreetMap link).
+The background is OpenStreetMap tiles (``tile_url``), drawn by the browser
+under the pins: only the tiles for the area in view, each sending just the
+device's origin as its referrer (the tile policy needs one; the rest of the
+dashboard sends none), with the OpenStreetMap attribution on the map. So the
+tile server sees the areas you view, as it would on openstreetmap.org. Leave
+``tile_url`` empty for no background: the page then draws a light grid of
+latitude/longitude lines instead. There is no JavaScript.
 
-Display only: it reads the location files already in the capture store through
-the core reader (``kestrel_pi.geo``) and sends nothing anywhere, so it needs no
-authorized-use acknowledgment. Locations are treated like the rest of the
-dashboard treats them: shown only with the web login on, and hidden while
+Nearby points are grouped into a counted cluster; following a cluster's link
+zooms the page to it. Networks captured from one spot share its fix, so no zoom
+separates them: such a cluster lists its networks under the map instead. A
+single point links to its row on the Captured networks page.
+
+The device itself reads the location files already in the capture store
+through the core reader (``kestrel_pi.geo``) and sends nothing anywhere, so it
+needs no authorized-use acknowledgment. Locations are treated like the rest of
+the dashboard treats them: shown only with the web login on, and hidden while
 ``[web] show_locations`` is off (read live from the config).
 
-The projection is equirectangular around the data's mean latitude, accurate at
-the city-to-region scale this is for; a set of points spanning the
-antimeridian is not supported.
+The projection is Web Mercator, matching the tiles; a set of points spanning
+the antimeridian is not supported.
 """
 
 from __future__ import annotations
@@ -42,7 +47,10 @@ WIDE = (1000, 640)
 NARROW = (420, 560)
 W, H = WIDE                 # the default viewBox
 CELL = 34                   # cluster grid, in viewBox units
-METRES_PER_DEG = 111320.0
+EARTH_CIRCUMFERENCE_M = 40075016.686
+MAX_LAT = 85.05112878       # Web Mercator's limit
+MAX_TILE_ZOOM = 19
+DEFAULT_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 FILTERS = (("all", "All"), ("recorded", "Recorded"), ("estimated", "Estimated"),
            ("week", "Last 7 days"))
 
@@ -89,27 +97,49 @@ def _parse_bbox(text):
     return s, w, n, e
 
 
+def _mx(lon):
+    """Web Mercator x in world units (0 at 180 W, 1 at 180 E)."""
+    return (lon + 180.0) / 360.0
+
+
+def _my(lat):
+    """Web Mercator y in world units (0 at the north edge, 1 at the south)."""
+    sin = math.sin(math.radians(max(-MAX_LAT, min(MAX_LAT, lat))))
+    return 0.5 - math.log((1 + sin) / (1 - sin)) / (4 * math.pi)
+
+
+def _lat(my):
+    return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * my))))
+
+
 class Projection:
-    """Equirectangular around ``lat0``, fitted to ``bounds`` with a margin."""
+    """Web Mercator (as map tiles are), fitted to ``bounds`` with a margin.
+    ``scale`` is viewBox units per world unit (the full 360 degrees)."""
 
     def __init__(self, bounds, margin=0.1, min_span_deg=0.002, size=WIDE):
         self.w, self.h = size
         s, w, n, e = bounds
-        self.lat0 = (s + n) / 2.0
-        self.k = math.cos(math.radians(self.lat0)) or 1e-6
-        cy, cx = (s + n) / 2.0, (w + e) / 2.0
-        span_y = max(n - s, min_span_deg) * (1 + 2 * margin)
-        span_x = max((e - w) * self.k, min_span_deg * self.k) * (1 + 2 * margin)
-        self.scale = min(self.w / span_x, self.h / span_y)   # viewBox units per degree-lat
-        self.cx, self.cy = cx, cy
+        x0, x1, y0, y1 = _mx(w), _mx(e), _my(n), _my(s)
+        self.cx, self.cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        self.lat0 = _lat(self.cy)
+        # The projection is conformal, so one minimum span in world units
+        # serves both axes.
+        least = min_span_deg / 360.0
+        span_x = max(x1 - x0, least) * (1 + 2 * margin)
+        span_y = max(y1 - y0, least) * (1 + 2 * margin)
+        self.scale = min(self.w / span_x, self.h / span_y)
 
     def xy(self, lat, lon):
-        return (self.w / 2.0 + (lon - self.cx) * self.k * self.scale,
-                self.h / 2.0 - (lat - self.cy) * self.scale)
+        return (self.w / 2.0 + (_mx(lon) - self.cx) * self.scale,
+                self.h / 2.0 + (_my(lat) - self.cy) * self.scale)
 
     def latlon(self, x, y):
-        return (self.cy - (y - self.h / 2.0) / self.scale,
-                self.cx + (x - self.w / 2.0) / (self.k * self.scale))
+        return (_lat(self.cy + (y - self.h / 2.0) / self.scale),
+                (self.cx + (x - self.w / 2.0) / self.scale) * 360.0 - 180.0)
+
+    def metres_per_unit(self):
+        """Ground metres per viewBox unit at the centre of the view."""
+        return EARTH_CIRCUMFERENCE_M * math.cos(math.radians(self.lat0)) / self.scale
 
     def view_bounds(self):
         """``(south, west, north, east)`` of the whole viewBox."""
@@ -153,7 +183,13 @@ class CaptureMap(Plugin):
     # leaves the device, so no network capability and no acknowledgment.
     __capabilities__ = ("capture-read", "location", "web")
     __actions__ = ({"label": "Map", "path": "index", "method": "get"},)
-    __options__ = {}
+    __options__ = {
+        "tile_url": {"type": "str", "default": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                     "help": "The background map's tiles (https, with {z}, {x} and {y}). "
+                             "Your browser loads the tiles for the area in view, so the "
+                             "tile server sees which areas you look at. Use your own "
+                             "tile server, or leave empty for no background."},
+    }
 
     def on_loaded(self):
         self.log = self.context.logger
@@ -210,8 +246,12 @@ class CaptureMap(Plugin):
         token = args.get("token") or ""
         which = args.get("f") if args.get("f") in dict(FILTERS) else "all"
         bbox = _parse_bbox(args.get("bbox"))
+        spot = _parse_bbox(args.get("spot"))
         esc = self.context.esc
-        head = "<h1>Map</h1>"
+        back = "/plugins" + ("?" + urlencode([("token", token)]) if token else "")
+        head = ('<p><a href="' + esc(back) + '">&larr; Plugins</a> &middot; <a href="'
+                + esc("/" + ("?" + urlencode([("token", token)]) if token else ""))
+                + '">Dashboard</a></p><h1>Map</h1>')
         if not getattr(self.context, "web_authed", False):
             return self.context.page("Map", head + '<p class="msg err">The map needs '
                                      "the dashboard login on. Turn it on with <code>sudo "
@@ -221,6 +261,7 @@ class CaptureMap(Plugin):
                                      "(<code>[web] show_locations = false</code>). Turn "
                                      "them back on in Advanced settings to see the map.</p>")
         points = self._points(which)
+        tiles = self._tile_url()
         body = head + self._filter_bar(which, bbox, token)
         if not points:
             body += ("<p>No captured network matching this filter has a known "
@@ -242,26 +283,61 @@ class CaptureMap(Plugin):
             groups = cluster(points, proj)
             if size == WIDE:
                 shown = sum(len(g["members"]) for g in groups)
-            body += self._svg(proj, groups, names, which, token, css)
+            body += self._map(proj, groups, names, which, bbox, token, css, tiles)
         body += ('<p class="hint">' + esc("%d of %d located networks in view" %
-                                          (shown, len(points)))
-                 + (" &middot; <a href=\"" + esc(self._url(which, None, token))
-                    + '">Show all</a>' if bbox else "") + "</p>")
+                                          (shown, len(points))) + "</p>")
+        if spot:
+            body += self._spot_list(points, spot, names, token)
         body += ('<p class="hint"><b>&#9679; Pin</b>: recorded by the onboard GPS. '
                  "<b>&#9675; ~</b>: estimated from an outside source. <b>Square with a "
-                 "number</b>: several networks close together (tap to zoom in). A single "
-                 "network links to its row on Captured networks.</p>")
+                 "number</b>: several networks close together (tap to zoom in, or to list "
+                 "them when they were captured from the same spot). A single network "
+                 "links to its row on Captured networks.</p>")
+        if self.options.get("tile_url") and not tiles:
+            body += ('<p class="msg err">The background map is off: <code>tile_url</code> '
+                     "must be an https address with {z}, {x} and {y} in it.</p>")
         return self.context.page("Map", body)
 
-    def _url(self, which, bbox, token, base=""):
+    def _tile_url(self):
+        """The tile URL template if usable (https, with {z}/{x}/{y}), else ''."""
+        url = self.options.get("tile_url")
+        url = DEFAULT_TILE_URL if url is None else str(url).strip()
+        if (url.lower().startswith("https://") and len(url) > len("https://")
+                and all(part in url for part in ("{z}", "{x}", "{y}"))):
+            return url
+        return ""
+
+    def _spot_list(self, points, spot, names, token):
+        """The networks inside ``spot``: a cluster no zoom can separate."""
+        esc = self.context.esc
+        s, w, n, e = spot
+        here = [(b, loc) for b, loc in points if s <= loc.lat <= n and w <= loc.lon <= e]
+        if not here:
+            return ""
+        rows = []
+        for bssid, loc in here:
+            href = "/networks?" + urlencode(
+                [("view", "ap"), ("q", bssid)] + ([("token", token)] if token else []))
+            rows.append('<li><a href="' + esc(href) + '">'
+                        + esc(", ".join(names.get(bssid) or ["(hidden network)"]))
+                        + "</a> <small>" + esc(bssid) + " &middot; "
+                        + esc("recorded" if loc.recorded else "estimated") + "</small></li>")
+        return ('<h2 id="spot">%d networks at this spot</h2>' % len(here)
+                + '<p class="hint">Captured from the same place, so they share one '
+                "location and no zoom separates them.</p><ul>" + "".join(rows) + "</ul>")
+
+    def _url(self, which, bbox, token, base="", spot=None):
         params = []
         if which != "all":
             params.append(("f", which))
         if bbox:
             params.append(("bbox", ",".join("%.6f" % v for v in bbox)))
+        if spot:
+            params.append(("spot", ",".join("%.6f" % v for v in spot)))
         if token:
             params.append(("token", token))
-        return (base or "./") + ("?" + urlencode(params) if params else "")
+        return (base or "./") + ("?" + urlencode(params) if params else "") + (
+            "#spot" if spot else "")
 
     def _filter_bar(self, which, bbox, token):
         esc = self.context.esc
@@ -272,16 +348,69 @@ class CaptureMap(Plugin):
             else:
                 parts.append('<a href="' + esc(self._url(key, bbox, token)) + '">'
                              + esc(label) + "</a>")
-        return '<p class="smeta">Show: ' + " &middot; ".join(parts) + "</p>"
+        reset = ""
+        if bbox:
+            reset = (' &middot; <a href="' + esc(self._url(which, None, token))
+                     + '"><b>Reset view</b></a>')
+        return '<p class="smeta">Show: ' + " &middot; ".join(parts) + reset + "</p>"
 
-    def _svg(self, proj, groups, names, which, token, css=""):
+    def _map(self, proj, groups, names, which, bbox, token, css, tiles):
+        """One rendering: the tile layer (if any) under a see-through SVG."""
+        ratio = "%d/%d" % (proj.w, proj.h)
+        out = ['<div class="%s"><div style="position:relative;overflow:hidden;'
+               "aspect-ratio:%s;background:var(--card);border:1px solid var(--border);"
+               'border-radius:8px">' % (css, ratio)]
+        if tiles:
+            out.append(self._tiles(proj, tiles))
+        out.append(self._svg(proj, groups, names, which, bbox, token, bool(tiles)))
+        if tiles:
+            # The tile policy asks for the attribution on the map itself.
+            out.append('<div style="position:absolute;right:0;bottom:0;font-size:11px;'
+                       'line-height:1.4;padding:1px 5px;background:rgba(255,255,255,.8);'
+                       'color:#222;border-top-left-radius:4px">&copy; <a style="color:#222" '
+                       'href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> '
+                       "contributors</div>")
+        out.append("</div></div>")
+        return "".join(out)
+
+    def _tiles(self, proj, url):
+        """``<img>`` tiles covering exactly the view, at the zoom whose tiles are
+        nearest 256 viewBox units across (so never stretched more than ~1.4x).
+        Lazy, so the rendering the stylesheet hides (wide or narrow) loads none;
+        each sends only the origin as referrer."""
         esc = self.context.esc
-        out = ['<div class="%s"><svg viewBox="0 0 %d %d" width="100%%" role="img" '
+        z = int(round(math.log2(max(proj.scale / 256.0, 1.0))))
+        z = max(0, min(MAX_TILE_ZOOM, z))
+        n = 2 ** z
+        size = proj.scale / n                       # one tile, in viewBox units
+        x0 = proj.cx - proj.w / 2.0 / proj.scale    # the view, in world units
+        y0 = proj.cy - proj.h / 2.0 / proj.scale
+        x1 = proj.cx + proj.w / 2.0 / proj.scale
+        y1 = proj.cy + proj.h / 2.0 / proj.scale
+        out = []
+        for ty in range(max(0, int(math.floor(y0 * n))), min(n - 1, int(math.floor(y1 * n))) + 1):
+            for tx in range(max(0, int(math.floor(x0 * n))), min(n - 1, int(math.floor(x1 * n))) + 1):
+                left = (tx / float(n) - x0) * proj.scale / proj.w * 100.0
+                top = (ty / float(n) - y0) * proj.scale / proj.h * 100.0
+                src = url.replace("{z}", str(z)).replace("{x}", str(tx)).replace("{y}", str(ty))
+                out.append('<img src="%s" alt="" loading="lazy" decoding="async" '
+                           'referrerpolicy="origin" style="position:absolute;left:%.4f%%;'
+                           "top:%.4f%%;width:calc(%.4f%% + 1px);height:calc(%.4f%% + 1px);"
+                           'max-width:none">' % (esc(src), left, top, size / proj.w * 100.0,
+                                                 size / proj.h * 100.0))
+        return "".join(out)
+
+    def _svg(self, proj, groups, names, which, bbox, token, tiles=False):
+        esc = self.context.esc
+        # Over tiles (light in both themes) the marks are dark with a light
+        # halo; without tiles they follow the page's colours.
+        colour = "#1b1b1f" if tiles else "var(--fg)"
+        out = ['<svg viewBox="0 0 %d %d" role="img" '
                'aria-label="Map of located captured networks" '
-               'style="display:block;max-width:100%%;height:auto;color:var(--fg);'
-               'background:var(--card);border:1px solid var(--border);border-radius:8px">'
-               % (css, proj.w, proj.h)]
-        out.append(self._graticule(proj))
+               'style="position:absolute;inset:0;width:100%%;height:100%%;color:%s">'
+               % (proj.w, proj.h, colour)]
+        if not tiles:
+            out.append(self._graticule(proj))
         for g in groups:
             members = g["members"]
             x, y = g["x"], g["y"]
@@ -294,14 +423,16 @@ class CaptureMap(Plugin):
                     [("view", "ap"), ("q", bssid)] + ([("token", token)] if token else []))
                 if loc.recorded:
                     shape = ('<path d="M%.1f %.1f c-7 -9 -11 -14 -11 -20 a11 11 0 1 1 22 0 '
-                             'c0 6 -4 11 -11 20 z" style="fill:var(--accent)"/>'
-                             '<circle cx="%.1f" cy="%.1f" r="4" style="fill:var(--card)"/>'
+                             'c0 6 -4 11 -11 20 z" stroke="#fff" stroke-width="1.5" '
+                             'style="fill:var(--accent)"/>'
+                             '<circle cx="%.1f" cy="%.1f" r="4" fill="#fff"/>'
                              % (x, y, x, y - 20))
                 else:
-                    shape = ('<circle cx="%.1f" cy="%.1f" r="9" fill="none" '
+                    shape = ('<circle cx="%.1f" cy="%.1f" r="9" fill="#fff" fill-opacity="%s" '
                              'stroke="currentColor" stroke-width="2.5"/>'
                              '<text x="%.1f" y="%.1f" font-size="14" text-anchor="middle" '
-                             'fill="currentColor">~</text>' % (x, y, x, y + 4))
+                             'fill="currentColor">~</text>'
+                             % (x, y, "0.75" if tiles else "0", x, y + 4))
                 out.append('<a href="' + esc(href) + '"><title>' + esc(title) + "</title>"
                            + shape + "</a>")
             else:
@@ -310,21 +441,35 @@ class CaptureMap(Plugin):
                 pad = 0.25 * max(max(lats) - min(lats), max(lons) - min(lons), 0.0005)
                 zoom = (max(-90, min(lats) - pad), max(-180, min(lons) - pad),
                         min(90, max(lats) + pad), min(180, max(lons) + pad))
-                title = "%d networks (%d recorded, %d estimated) - tap to zoom in" % (
+                counts = "%d networks (%d recorded, %d estimated)" % (
                     len(members), g["recorded"], len(members) - g["recorded"])
-                out.append('<a href="' + esc(self._url(which, zoom, token)) + '"><title>'
+                # Zooming in as far as the map goes would still leave them in
+                # one square (one capture spot shares one fix): list them.
+                deepest = Projection(zoom, margin=0.0, size=(proj.w, proj.h))
+                if len(cluster([(m[0], m[1]) for m in members], deepest)) <= 1:
+                    spot = (min(lats) - 1e-6, min(lons) - 1e-6,
+                            max(lats) + 1e-6, max(lons) + 1e-6)
+                    href = self._url(which, bbox, token, spot=spot)
+                    title = counts + " at one spot - tap to list them"
+                else:
+                    href = self._url(which, zoom, token)
+                    title = counts + " - tap to zoom in"
+                out.append('<a href="' + esc(href) + '"><title>'
                            + esc(title) + "</title>"
                            '<rect x="%.1f" y="%.1f" width="30" height="30" rx="6" '
-                           'style="fill:var(--accent)" fill-opacity="0.85"/>'
+                           'stroke="#fff" stroke-width="1.5" '
+                           'style="fill:var(--accent)" fill-opacity="0.9"/>'
                            '<text x="%.1f" y="%.1f" font-size="14" font-weight="700" '
-                           'text-anchor="middle" style="fill:var(--card)">%s</text></a>'
+                           'text-anchor="middle" fill="#fff">%s</text></a>'
                            % (x - 15, y - 15, x, y + 5, esc(str(len(members)))))
-        out.append(self._scale_bar(proj))
-        out.append('<g aria-hidden="true"><path d="M%d 22 l9 22 l-9 -6 l-9 6 z" '
+        out.append(self._scale_bar(proj, tiles))
+        halo = ('<rect x="%d" y="14" width="32" height="54" rx="6" fill="#fff" '
+                'fill-opacity="0.75"/>' % (proj.w - 46)) if tiles else ""
+        out.append('<g aria-hidden="true">%s<path d="M%d 22 l9 22 l-9 -6 l-9 6 z" '
                    'fill="currentColor"/><text x="%d" y="62" font-size="15" '
                    'text-anchor="middle" fill="currentColor">N</text></g>'
-                   % (proj.w - 30, proj.w - 30))
-        out.append("</svg></div>")
+                   % (halo, proj.w - 30, proj.w - 30))
+        out.append("</svg>")
         return "".join(out)
 
     def _graticule(self, proj):
@@ -352,13 +497,16 @@ class CaptureMap(Plugin):
         parts.append("</g>")
         return "".join(parts)
 
-    def _scale_bar(self, proj):
-        metres_per_unit = METRES_PER_DEG / proj.scale
+    def _scale_bar(self, proj, tiles=False):
+        metres_per_unit = proj.metres_per_unit()
         length_m = _nice(metres_per_unit * min(160, proj.w / 4.0))
         px = length_m / metres_per_unit
         label = ("%g km" % (length_m / 1000.0)) if length_m >= 1000 else ("%g m" % length_m)
         x0, y0 = 20, proj.h - 40
-        return ('<g aria-hidden="true" fill="currentColor" stroke="currentColor">'
+        halo = ('<rect x="%d" y="%d" width="%.1f" height="34" rx="5" fill="#fff" '
+                'fill-opacity="0.75" stroke="none"/>'
+                % (x0 - 8, y0 - 24, max(px, 9 * len(label)) + 16)) if tiles else ""
+        return ('<g aria-hidden="true" fill="currentColor" stroke="currentColor">%s'
                 '<rect x="%d" y="%d" width="%.1f" height="5" stroke="none"/>'
                 '<text x="%d" y="%d" font-size="13" stroke="none">%s</text></g>'
-                % (x0, y0, px, x0, y0 - 6, label))
+                % (halo, x0, y0, px, x0, y0 - 6, label))

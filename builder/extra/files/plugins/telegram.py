@@ -101,4 +101,6 @@ class Telegram(Plugin):
                 "<li>Chat: %s</li>" % ("set" if self.options.get("chat_id")
                                        else "<b>not set</b>")]
         return self.context.page("Telegram alerts",
-                                 self.alerts.status_page("Telegram alerts", rows))
+                                 self.alerts.status_page(
+            "Telegram alerts", rows,
+            token=(getattr(request, "args", {}) or {}).get("token") or ""))

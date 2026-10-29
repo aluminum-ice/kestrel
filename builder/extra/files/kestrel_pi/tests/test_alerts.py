@@ -335,6 +335,14 @@ def test_send_test_button_reports_the_result(tmp_path, monkeypatch, posts, servi
 
 
 @both
+def test_status_page_links_back_with_the_token(tmp_path, monkeypatch, service):
+    p = _plugin(tmp_path, monkeypatch, service)
+    body = p.on_webhook("index", types.SimpleNamespace(method="GET", args={"token": "abc"})).body
+    assert '<a href="/plugins?token=abc">&larr; Plugins</a>' in body
+    assert '<a href="/?token=abc">Dashboard</a>' in body
+
+
+@both
 def test_dashboard_card(tmp_path, monkeypatch, service):
     p = _plugin(tmp_path, monkeypatch, service)
     ui = StubUI().for_plugin(service)
