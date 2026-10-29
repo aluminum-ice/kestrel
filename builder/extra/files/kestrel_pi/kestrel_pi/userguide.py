@@ -485,6 +485,12 @@ The agent learns from episode logs (one JSONL row per decision window under `/va
 
 A synchronous training run and installing a trained model are terminal-only (the web has no form for either). To train synchronously, or to move a trained model onto a device: `sudo kestrel agent train [--algorithm A] [--timesteps N]`, and `sudo kestrel agent import ./model.zip --algorithm RecurrentPPO` — or drop `kestrel-model.zip` (plus its `.meta.json` sidecar) on the boot partition, or let the backup plugin carry it. A model is portable across boards; one trained under a mismatched spec version is ignored in favour of the sweep rather than loaded wrong.
 
+### downloads (take your capture files home)
+
+Lets you download your handshake files straight from the dashboard. Off by default; it's local only (your own files to your own signed-in browser), so turning it on needs no acknowledgment. Press **Download** on its row on the Plugins page for: **all handshake files** as a zip (with a short manifest), only the files **new since your last download**, or **everything as one `.hc22000`** with every hashline once (what hashcat takes). With `include_locations` on it also offers the files with their GPS sidecars. Recovered passwords and the archive are never offered; copy those over SSH.
+
+A download needs the web login on and an encrypted connection: open the dashboard over `https://` (plain HTTP works only on the device itself). `max_mb` (default 200) caps the size of one download.
+
 ### remote-train (offload training to a desktop)
 
 The `remote-train` plugin automates the whole desktop-training loop: it pushes the episode logs to a desktop Linux host, runs the same trainer there in an isolated venv it owns, and pulls the finished model back, adopting it only when it is genuinely fresher. It ships disabled and, as a network plugin, takes the authorized-use acknowledgment. The training host is independent of the backup host.
