@@ -770,23 +770,42 @@ class _FakeRecovered:
         return self._ingest_result
 
 
+class _FakeGeo:
+    """A stand-in for GeoStore: a {bssid: Location} map, returning the real
+    Location objects so osm_url()/recorded work exactly as in production."""
+
+    def __init__(self, locations=None):
+        self._by_bssid = dict(locations or {})
+
+    def lookup_bssid(self, bssid):
+        return self._by_bssid.get(bssid)
+
+
 class _FakeServices:
-    def __init__(self, recovered=None):
+    def __init__(self, recovered=None, geo=None):
         self._recovered = recovered
+        self._geo = geo
 
     def get(self, name, default=None):
         if name == "recovered" and self._recovered is not None:
             return self._recovered
+        if name == "geo" and self._geo is not None:
+            return self._geo
         return default
 
     def names(self):
-        return ["recovered"] if self._recovered is not None else []
+        out = []
+        if self._recovered is not None:
+            out.append("recovered")
+        if self._geo is not None:
+            out.append("geo")
+        return out
 
 
 class _FakeDaemon:
     def __init__(self, web_cfg, plugin_table, networks=None,
                  access_points=None, output_mode=None, recovered=None,
-                 recovered_cfg=None):
+                 recovered_cfg=None, geo=None):
         import logging
         from kestrel_pi.loader import PluginRecord
 
@@ -802,8 +821,9 @@ class _FakeDaemon:
         if recovered_cfg is not None:
             self.config["recovered"] = recovered_cfg
         self.capture = _FakeCapture(networks or [], access_points)
-        self.services = _FakeServices(recovered)
+        self.services = _FakeServices(recovered, geo)
         self.recovered = recovered      # the import route writes through this
+        self.geo = geo
 
     def _fresh_config(self):
         return self.config
@@ -824,7 +844,8 @@ def _basic(user="pi", password="hunter2"):
 
 
 def _client(monkeypatch, tmp_path, web_cfg, table=None, replies=None, networks=None,
-            access_points=None, output_mode=None, recovered=None, recovered_cfg=None):
+            access_points=None, output_mode=None, recovered=None, recovered_cfg=None,
+            geo=None):
     pytest.importorskip("flask")
     sent = []
 
@@ -840,7 +861,7 @@ def _client(monkeypatch, tmp_path, web_cfg, table=None, replies=None, networks=N
     daemon = _FakeDaemon(web_cfg, table if table is not None else {"enabled": False},
                          networks=networks, access_points=access_points,
                          output_mode=output_mode, recovered=recovered,
-                         recovered_cfg=recovered_cfg)
+                         recovered_cfg=recovered_cfg, geo=geo)
     return web.create_app(daemon).test_client(), sent
 
 
@@ -1767,6 +1788,124 @@ def test_dashboard_navcard_shows_recovered_count_when_present(monkeypatch, tmp_p
 def test_dashboard_navcard_omits_recovered_count_when_absent(monkeypatch, tmp_path):
     html = web._render_status(_status([]))      # no recovered_aps key
     assert "recovered" not in html
+
+
+# -- location annotation on /networks --------------------------------------
+# Invented data only: RFC 7042 MACs and generic coordinates (12.34567, -45.67890).
+_GEO_BSSID = "00:00:5E:00:53:AA"
+_GEO_LAT = 12.34567
+_GEO_LON = -45.6789
+_GEO_COORDS = "12.34567, -45.67890"      # 5-decimal display form
+
+
+def _loc(cls="recorded", source="gpsd", label="onboard GPS",
+         lat=_GEO_LAT, lon=_GEO_LON):
+    from kestrel_pi.geo import Location
+    return Location(lat=lat, lon=lon, cls=cls, source=source, label=label,
+                    when="2026-01-01T00:00:00Z")
+
+
+def _geo_one(loc=None, bssid=_GEO_BSSID):
+    return _FakeGeo({bssid: loc or _loc()})
+
+
+def test_networks_location_recorded_with_auth_on(monkeypatch, tmp_path):
+    # AP view, web auth on, show_locations default true: the located radio gets
+    # the recorded marker and an OpenStreetMap link with the 5-decimal coords.
+    client, _ = _client(
+        monkeypatch, tmp_path, BASIC, output_mode="per-ap",
+        access_points=_aps(("My Network", _GEO_BSSID)),
+        geo=_geo_one())
+    body = client.get("/networks?view=ap", headers=_basic()).get_data(as_text=True)
+    assert 'class="geo"' in body
+    assert "recorded, onboard GPS" in body
+    assert _GEO_COORDS in body
+    assert "openstreetmap.org" in body and "mlat=12.34567" in body
+    assert 'class="geo-legend"' in body
+
+
+def test_networks_location_estimated_shows_source(monkeypatch, tmp_path):
+    client, _ = _client(
+        monkeypatch, tmp_path, BASIC, output_mode="per-ap",
+        access_points=_aps(("My Network", _GEO_BSSID)),
+        geo=_geo_one(_loc(cls="estimated", source="wigle-search", label="WiGLE")))
+    body = client.get("/networks?view=ap", headers=_basic()).get_data(as_text=True)
+    assert "estimated, WiGLE" in body
+    assert _GEO_COORDS in body
+
+
+def test_networks_location_withheld_when_auth_off(monkeypatch, tmp_path):
+    # auth = none: nothing location-related renders (no marker, no coords, no link).
+    client, _ = _client(
+        monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ap",
+        access_points=_aps(("My Network", _GEO_BSSID)),
+        geo=_geo_one())
+    body = client.get("/networks?view=ap").get_data(as_text=True)
+    assert 'class="geo"' not in body
+    assert _GEO_COORDS not in body and "openstreetmap" not in body
+
+
+def test_networks_location_hidden_by_show_locations_false(monkeypatch, tmp_path):
+    # auth on but show_locations = false: a muted 'location hidden' marker, never
+    # the coordinates or the map link.
+    client, _ = _client(
+        monkeypatch, tmp_path, dict(BASIC, show_locations=False),
+        output_mode="per-ap", access_points=_aps(("My Network", _GEO_BSSID)),
+        geo=_geo_one())
+    body = client.get("/networks?view=ap", headers=_basic()).get_data(as_text=True)
+    assert "location hidden" in body
+    assert _GEO_COORDS not in body and "openstreetmap" not in body
+    # The class marker still identifies which kind, by text not colour.
+    assert "recorded, onboard GPS" in body
+
+
+def test_networks_unlocated_radio_has_no_geo_block(monkeypatch, tmp_path):
+    client, _ = _client(
+        monkeypatch, tmp_path, BASIC, output_mode="per-ap",
+        access_points=_aps(("My Network", _GEO_BSSID),
+                           ("Other Net", "00:00:5E:00:53:BB")),
+        geo=_geo_one())           # only the first radio is located
+    body = client.get("/networks?view=ap", headers=_basic()).get_data(as_text=True)
+    assert body.count('class="geo"') == 1      # exactly the located radio
+
+
+def test_networks_location_by_network_representative_and_plusN(monkeypatch, tmp_path):
+    # Two located radios under one name: the representative is the most-recently
+    # captured, and a "+1" hint flags the other located radio.
+    aps = [
+        {"bssid": _GEO_BSSID, "essids": ["My Network"], "handshakes": 1,
+         "last_seen": 100},
+        {"bssid": "00:00:5E:00:53:BB", "essids": ["My Network"], "handshakes": 1,
+         "last_seen": 200},
+    ]
+    geo = _FakeGeo({
+        _GEO_BSSID: _loc(lat=1.0, lon=2.0),
+        "00:00:5E:00:53:BB": _loc(lat=_GEO_LAT, lon=_GEO_LON),   # newest radio
+    })
+    client, _ = _client(
+        monkeypatch, tmp_path, BASIC, output_mode="per-ssid",
+        networks=_nets("My Network"), access_points=aps, geo=geo)
+    body = client.get("/networks", headers=_basic()).get_data(as_text=True)
+    assert _GEO_COORDS in body          # the newest radio's coords represent it
+    assert "1.00000, 2.00000" not in body
+    assert "geo-more" in body and ">+1<" in body
+
+
+def test_networks_no_geo_service_is_benign(monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path, BASIC, output_mode="per-ap",
+                        access_points=_aps(("My Network", _GEO_BSSID)))  # geo=None
+    body = client.get("/networks?view=ap", headers=_basic()).get_data(as_text=True)
+    assert 'class="geo"' not in body and 'class="geo-legend"' not in body
+
+
+def test_networks_location_source_label_is_escaped(monkeypatch, tmp_path):
+    # An unknown source becomes the label verbatim; it must be HTML-escaped.
+    client, _ = _client(
+        monkeypatch, tmp_path, BASIC, output_mode="per-ap",
+        access_points=_aps(("My Network", _GEO_BSSID)),
+        geo=_geo_one(_loc(cls="estimated", source="x<b>&y", label="x<b>&y")))
+    body = client.get("/networks?view=ap", headers=_basic()).get_data(as_text=True)
+    assert "x&lt;b&gt;&amp;y" in body and "estimated, x<b>&y" not in body
 
 
 # -- recovered import upload (/recovered/import) -----------------------------
