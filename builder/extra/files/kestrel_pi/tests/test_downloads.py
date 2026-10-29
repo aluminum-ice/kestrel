@@ -145,8 +145,11 @@ def test_index_lists_downloads_and_keeps_the_token(store):
     assert isinstance(page, PluginPage)
     assert 'href="handshakes.zip?token=abc"' in page.body
     assert "2 files" in page.body
+    assert '<a href="/plugins?token=abc">&larr; Plugins</a>' in page.body
     refused = _plugin(store, authed=False).on_webhook("", _req())
-    assert "href=" not in refused.body and "login" in refused.body
+    for target in ("handshakes.zip", "new.zip", "handshakes.hc22000"):
+        assert 'href="%s' % target not in refused.body
+    assert "login" in refused.body and "&larr; Plugins" in refused.body
 
 
 def test_unknown_path_and_empty_store(tmp_path, monkeypatch):

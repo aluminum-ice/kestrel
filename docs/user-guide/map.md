@@ -26,16 +26,24 @@ Press **Map** on the plugin's row on the Plugins page.
 - **A pin** is a network whose location was recorded by your GPS.
 - **A ring with `~`** is an estimated location.
 - **A square with a number** is several networks close together. Tap it to zoom
-  in; **Show all** zooms back out.
+  in; **Reset view** (next to the filters) zooms back out. Networks captured from
+  the same spot share its location, so no zoom separates them: tapping their
+  square lists them under the map instead.
 - **A single network** links to its row on Captured networks, which has its
   OpenStreetMap link.
 - **Filters** above the map: all, recorded only, estimated only, or the last 7
   days.
 
-There are no map tiles, just a light grid of latitude and longitude lines, a
-scale bar and a north arrow. That's deliberate: fetching map tiles would tell a
-tile server which areas you've been capturing in. The map works offline and
-sends nothing anywhere. On a phone the page shows a taller map sized for the
+**← Plugins** and **Dashboard** at the top take you back.
+
+The background is an **OpenStreetMap** map. Your browser (not the device) loads
+the map images for the area in view from OpenStreetMap's tile server, so that
+server sees which areas you look at, as it would on openstreetmap.org. To keep
+that off third-party servers, point the `tile_url` option at a tile server you
+run (an `https://` address with `{z}`, `{x}` and `{y}` in it), or leave it empty
+for no background: the map then shows a light grid of latitude and longitude
+lines instead, and works with the browser offline. Either way there's a scale
+bar and a north arrow, and on a phone the page shows a taller map sized for the
 screen.
 
 ## Privacy
@@ -47,5 +55,5 @@ Locations are treated as sensitive, as on the Captured networks page:
 
 Only networks you own or have permission to test belong in your capture store.
 
-The map uses a simple flat projection, accurate at city or region scale. A set of
+The map uses the Web Mercator projection, like the map images. A set of
 locations spanning the 180° meridian isn't supported.
