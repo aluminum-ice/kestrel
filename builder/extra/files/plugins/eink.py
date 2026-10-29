@@ -790,7 +790,13 @@ class EinkFace(Plugin):
         small = _font(13)
         big = _font(30)
 
-        paths = (state.paths if state is not None else None) or {}
+        # One fresh address lookup drives both the link glyphs in the top strip
+        # and the address row, so they always agree. The daemon's
+        # UIState.paths means the same thing (an IPv4 on the link) but is only
+        # refreshed on its connectivity poll, so at boot it can still say "no
+        # link" while the addresses are already up.
+        addresses = self._addresses()
+        linked = {iface for iface, _ip in addresses}
         battery = (state.battery if state is not None else None) or {}
         pct = _as_float(battery.get("percent"))
         position = state.position if state is not None else None
@@ -798,8 +804,8 @@ class EinkFace(Plugin):
                            and self.context.services.has("position"))
 
         # top icon strip: link + GPS symbols on the left, battery on the right.
-        _draw_bt(draw, 6, 4, 10, 15, bool(paths.get("bnep0")))
-        _draw_wifi(draw, 28, 6, 18, 13, bool(paths.get("wlan0")))
+        _draw_bt(draw, 6, 4, 10, 15, "bnep0" in linked)
+        _draw_wifi(draw, 28, 6, 18, 13, "wlan0" in linked)
         if gps_present:
             # position is the fix dict (None until locked); a solid satellite
             # means locked, an outlined one means searching. Signal bars read
@@ -886,7 +892,7 @@ class EinkFace(Plugin):
         if opts.get("show_ip", True):
             ay = 125
             x = 12
-            for iface, ip in self._addresses():
+            for iface, ip in addresses:
                 gap = 12 if iface == "bnep0" else 18     # glyph width + spacing
                 need = gap + _text_w(draw, ip, tiny)
                 if x + need > PANEL_W - 10:
