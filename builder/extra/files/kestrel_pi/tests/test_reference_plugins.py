@@ -2504,3 +2504,24 @@ def test_wigle_does_not_follow_a_redirect_with_credentials(tmp_path, monkeypatch
     plugin._upload()
     assert calls[0]["allow_redirects"] is False
     assert len(plugin._observations) == 1 and "redirect" in plugin._last_status
+
+
+def test_every_shipped_row_button_survives_normalization():
+    """A declared __actions__ button that normalize_actions would drop (an empty
+    path, a missing label) silently never shows on the Plugins page. Every
+    shipped plugin's buttons must come through intact."""
+    import ast
+
+    from kestrel_pi.plugins import normalize_actions
+
+    for fname in sorted(os.listdir(PLUGIN_DIR)):
+        if not fname.endswith(".py"):
+            continue
+        tree = ast.parse(open(os.path.join(PLUGIN_DIR, fname), encoding="utf-8").read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "__actions__" for t in node.targets):
+                declared = ast.literal_eval(node.value)
+                kept = normalize_actions(declared)
+                assert len(kept) == len(declared), "%s: a row button is dropped" % fname
+                assert all(a["path"] for a in kept), fname

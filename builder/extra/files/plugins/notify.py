@@ -125,7 +125,7 @@ class Notify(Plugin):
     __capabilities__ = ("network", "capture-read", "ui", "web")
     __optional_requires__ = ("battery",)
     __actions__ = (
-        {"label": "Status", "path": "", "method": "get", "order": 1},
+        {"label": "Status", "path": "index", "method": "get", "order": 1},
         {"label": "Send test", "path": "test", "method": "post", "order": 2},
     )
     __options__ = {

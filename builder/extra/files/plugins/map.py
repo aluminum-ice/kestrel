@@ -152,7 +152,7 @@ class CaptureMap(Plugin):
     # Reads the capture store's location files and draws its own page; nothing
     # leaves the device, so no network capability and no acknowledgment.
     __capabilities__ = ("capture-read", "location", "web")
-    __actions__ = ({"label": "Map", "path": "", "method": "get"},)
+    __actions__ = ({"label": "Map", "path": "index", "method": "get"},)
     __options__ = {}
 
     def on_loaded(self):
