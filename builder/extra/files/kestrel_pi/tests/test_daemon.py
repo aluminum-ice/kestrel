@@ -454,3 +454,52 @@ def test_status_omits_recovered_aps_when_the_store_read_fails(tmp_path, monkeypa
     cap = d.status()["capture"]
     assert "recovered_aps" not in cap
     assert cap["access_points"] == 1     # the rest of the capture card is intact
+
+
+def test_status_reports_located_aps_joined_to_captured(tmp_path, monkeypatch):
+    # Two captured radios; a GPS sidecar that located one of them.
+    import json
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[web]\nenabled = false\n"
+                   "[capture]\nenabled = false\nwhitelist = []\n")
+    (tmp_path / "store.hc22000").write_text("\n".join([_R1_HOME, _R2_CAFE]) + "\n")
+    (tmp_path / "store.hc22000.gps.json").write_text(json.dumps({
+        "AA:BB:CC:DD:EE:FF": {"lat": 12.34567, "lon": -45.67890,
+                              "fix_time": "2026-01-01T00:00:00Z",
+                              "source": "gpsd"},   # locates radio 1 only
+    }))
+    d = daemon_mod.Daemon(config_path=str(cfg), capture_store=str(tmp_path))
+    monkeypatch.setattr(d, "_capture_state", lambda: "stopped")
+    monkeypatch.setattr(d, "_bt_paired", lambda: False)
+
+    cap = d.status()["capture"]
+    assert cap["access_points"] == 2     # M: both captured radios
+    assert cap["located_aps"] == 1       # N: one of them has a known location
+
+
+def test_status_omits_located_aps_when_the_store_read_fails(tmp_path, monkeypatch):
+    # A geo-store read failure must not break status(); the key is omitted.
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[web]\nenabled = false\n"
+                   "[capture]\nenabled = false\nwhitelist = []\n")
+    (tmp_path / "store.hc22000").write_text(_R1_HOME + "\n")
+    d = daemon_mod.Daemon(config_path=str(cfg), capture_store=str(tmp_path))
+    monkeypatch.setattr(d, "_capture_state", lambda: "stopped")
+    monkeypatch.setattr(d, "_bt_paired", lambda: False)
+
+    def _boom(_bssid):
+        raise RuntimeError("geo store unreadable")
+
+    monkeypatch.setattr(d.geo, "lookup_bssid", _boom)
+    cap = d.status()["capture"]
+    assert "located_aps" not in cap
+    assert cap["access_points"] == 1     # the rest of the capture card is intact
+
+
+def test_geo_service_is_registered(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[web]\nenabled = false\n"
+                   "[capture]\nenabled = false\nwhitelist = []\n")
+    d = daemon_mod.Daemon(config_path=str(cfg), capture_store=str(tmp_path))
+    assert "geo" in d.services.names()
+    assert d.services.get("geo") is d.geo

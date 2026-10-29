@@ -209,6 +209,13 @@ webhook_timeout_seconds = 30
 # it false for screen-sharing or shoulder-surfing -- the badge and count stay,
 # the passphrase is replaced by a muted "hidden" note. Read live (no restart).
 show_passphrases = true
+# Show a captured network's location (lat/long) on the Captured networks page,
+# as an OpenStreetMap link. A location is recorded by the onboard GPS at capture
+# time, or estimated from an external source like WiGLE (the glyph says which).
+# It shows only with the web login on (auth != none) AND this true. Set it false
+# for screen-sharing -- a muted "location hidden" marker stays, the coordinates
+# are hidden. Read live (no restart).
+show_locations = true
 
 # Known passphrases for captured networks, parsed from any *.potfile dropped in
 # <store>/cracked/ -- the wpa-sec plugin, a web upload, a CLI import, or a file

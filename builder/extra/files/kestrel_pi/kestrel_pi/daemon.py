@@ -35,6 +35,7 @@ from .config import (
 from .connectivity import ConnectivityMonitor, http_probe, nmcli_connectivity_online
 from .context import ServiceRegistry
 from .recovered import RecoveredStore
+from .geo import GeoStore
 from .dispatch import Dispatcher
 from .loader import Loader
 from .ui import StubUI, UIState
@@ -158,6 +159,11 @@ class Daemon:
         # operator or plugin drops in <store>/cracked/. Owned here, read by the
         # web layer to annotate /networks; its own mtime cache keeps it cheap.
         self.recovered = RecoveredStore(capture_store)
+        # Known locations for captured radios, read from the GPS sidecars and the
+        # external geo caches any producer drops in the store. Owned here, read
+        # by the web layer to annotate /networks; its own mtime cache keeps it
+        # cheap and it imports no plugin, exactly like ``recovered`` above.
+        self.geo = GeoStore(capture_store)
         # Short-TTL cache of `systemctl is-active` results (see _service_state),
         # keyed by service name. Guarded because status() runs on web request
         # threads (the server is threaded).
@@ -179,6 +185,10 @@ class Daemon:
         # passphrases without importing the daemon; the registry getter swallows
         # a read failure to None, so a broken potfile never breaks a consumer.
         self.services.provide("recovered", lambda: self.recovered, owner="daemon")
+        # The network-location store as a service, same posture as ``recovered``:
+        # a plugin can read known locations without importing the daemon, and the
+        # registry getter swallows a read failure to None.
+        self.services.provide("geo", lambda: self.geo, owner="daemon")
         self.ui = StubUI(self.log.getChild("ui"))
 
         self.dispatcher = Dispatcher(
@@ -636,12 +646,20 @@ class Daemon:
         # key (the navcard then shows no recovered figure) rather than breaking
         # status(); the key is never a secret, so it is always safe to include.
         recovered_aps = None
+        located_aps = None
         try:
+            aps = self.capture.captured_access_points()
             recovered_aps = sum(
-                1 for ap in self.capture.captured_access_points()
+                1 for ap in aps
                 if ap.get("bssid") and self.recovered.lookup_bssid(ap["bssid"]))
-        except Exception:  # noqa: BLE001 - a recovered-store read must never break status()
-            recovered_aps = None
+            # Captured APs with a known location (recorded or estimated), the
+            # "located N of M" figure, joined the same cached way. A location is
+            # not a secret, so this is always safe to include.
+            located_aps = sum(
+                1 for ap in aps
+                if ap.get("bssid") and self.geo.lookup_bssid(ap["bssid"]))
+        except Exception:  # noqa: BLE001 - a store read must never break status()
+            pass
         return {
             "version": __version__,
             "hook_api": HOOK_API_VERSION,
@@ -662,6 +680,9 @@ class Daemon:
                 # recovered APs of the captured APs above; omitted on a store-read
                 # failure so the navcard simply shows no recovered figure.
                 **({"recovered_aps": recovered_aps} if recovered_aps is not None else {}),
+                # located APs of the captured APs above; omitted on a store-read
+                # failure, same as recovered_aps.
+                **({"located_aps": located_aps} if located_aps is not None else {}),
                 "state": capture_state,
                 # config intent (``[capture] enabled``), separate from the live
                 # service state above; the web toggle reads this to know which

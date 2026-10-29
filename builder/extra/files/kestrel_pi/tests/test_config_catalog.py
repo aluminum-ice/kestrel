@@ -42,6 +42,15 @@ def test_recovered_networks_settings_are_settable():
     assert cc.find("web", "show_passphrases")["restart"] is cc.RESTART_NONE
 
 
+def test_show_locations_is_a_live_web_toggle():
+    # The location-visibility toggle mirrors show_passphrases: a plain bool,
+    # settable, read live (no restart) and on the root helper's live-key set.
+    assert cc.EDITABLE["web.show_locations"] == {"type": "bool"}
+    assert cc.find("web", "show_locations")["restart"] is cc.RESTART_NONE
+    assert cc.find("web", "show_locations")["default"] is True
+    assert "show_locations" in ctl._WEB_LIVE_KEYS
+
+
 def test_sections_and_entries_are_well_formed():
     seen = set()
     for section in cc.SECTIONS:
