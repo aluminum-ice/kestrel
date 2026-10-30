@@ -798,3 +798,72 @@ def test_a_driver_reaches_epdconfig_through_its_relative_import(monkeypatch):
         assert drv.epdconfig is fake and hasattr(drv, "EPD")
     finally:
         sys.modules.pop(name, None)
+
+
+# --- motion from the gps plugin's real fix ----------------------------------
+# The gps plugin's position has no "ts", only fix_time (UTC, whole seconds), and
+# the daemon refreshes UIState.position once per epoch (60 s) while the face
+# redraws every 10 s, so the face reads the same snapshot several times in a row.
+_METRES_PER_DEG_LAT = 111_320.0
+_T0 = 1_700_000_000
+
+
+def _gps_fix(metres, t):
+    """A fix shaped like gps.provide_position(): no ts, a fix_time string."""
+    return {"lat": metres / _METRES_PER_DEG_LAT, "lon": 0.0, "alt": None,
+            "source": "serial", "fix": 3, "sats": 9, "cn0": 40, "strong": 6,
+            "fix_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))}
+
+
+def test_driving_is_detected_from_epoch_snapshots_of_the_gps_fix(tmp_path):
+    p = _plugin(tmp_path)
+    for epoch in range(4):                      # 22 m/s, about 50 mph
+        fix = _gps_fix(22.0 * 60 * epoch, _T0 + 60 * epoch)
+        for _tick in range(6):                  # six 10 s redraws per 60 s epoch
+            mobility = p._mobility_state(dict(fix))
+    assert mobility == "driving"
+
+
+def test_walking_is_detected_from_epoch_snapshots_of_the_gps_fix(tmp_path):
+    p = _plugin(tmp_path)
+    for epoch in range(4):                      # 1.4 m/s
+        fix = _gps_fix(1.4 * 60 * epoch, _T0 + 60 * epoch)
+        for _tick in range(6):
+            mobility = p._mobility_state(dict(fix))
+    assert mobility == "walking"
+
+
+def test_a_parked_device_still_reads_parked(tmp_path):
+    p = _plugin(tmp_path)
+    for epoch in range(4):                      # a metre of GPS jitter
+        fix = _gps_fix(epoch % 2, _T0 + 60 * epoch)
+        for _tick in range(6):
+            mobility = p._mobility_state(dict(fix))
+    assert mobility == "parked"
+
+
+def test_a_fix_with_no_timestamp_is_not_a_stop_when_read_again(tmp_path, monkeypatch):
+    # Neither ts nor fix_time: re-reading the same position 10 s later is the
+    # same fix read again, not a stop.
+    p = _plugin(tmp_path)
+    clock = [1000.0]
+    monkeypatch.setattr(EINK.time, "time", lambda: clock[0])
+    for step in range(6):                       # a new position every 30 s
+        fix = {"lat": 22.0 * 30 * step / _METRES_PER_DEG_LAT, "lon": 0.0}
+        for _read in range(3):                  # read every 10 s
+            mobility = p._mobility_state(dict(fix))
+            clock[0] += 10.0
+    assert mobility == "driving"
+
+
+def test_motion_reads_the_live_fix_before_the_epoch_snapshot(tmp_path):
+    p = _plugin(tmp_path)
+    live, snapshot = _gps_fix(500.0, _T0 + 10), _gps_fix(0.0, _T0)
+    seen = []
+    p._mobility_state = lambda fix: seen.append(fix) or "unknown"
+    p._current_mood(UIState(position=snapshot))
+    p.context.services.provide("position", lambda: live)
+    p._current_mood(UIState(position=snapshot))
+    p.context.services.provide("position", lambda: None)     # receiver, no fix yet
+    p._current_mood(UIState(position=snapshot))
+    assert seen == [snapshot, live, snapshot]
