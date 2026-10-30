@@ -34,7 +34,7 @@ from .applyclient import apply_change
 from .context import PluginContext
 from .declarations import DeclarationError, check_classes, read_declarations
 from .options import OptionsError, validate_options
-from .plugins import CAPABILITIES, Plugin, normalize_actions
+from .plugins import CAPABILITIES, RESERVED_PLUGIN_NAMES, Plugin, normalize_actions
 
 
 class PluginRecord:
@@ -157,7 +157,12 @@ class Loader:
             for fname in sorted(os.listdir(directory)):
                 if not fname.endswith(".py") or fname.startswith("_"):
                     continue
-                found[os.path.splitext(fname)[0]] = os.path.join(directory, fname)
+                name = os.path.splitext(fname)[0]
+                if name in RESERVED_PLUGIN_NAMES:
+                    self.log.warning("plugin name %r is reserved for plugin libraries; "
+                                     "%s ignored", name, os.path.join(directory, fname))
+                    continue
+                found[name] = os.path.join(directory, fname)
         return found
 
     # -- load ------------------------------------------------------------

@@ -228,7 +228,7 @@ sudo kestrel plugins disable wpa-sec
 
 Running `enable` in a terminal walks you through the plugin's declared options — secrets masked, scalars pre-filled with the current/default (press Enter to keep), and yes/no for toggles like wpa-sec's `download_results` — so everything can be set at enable time. `--set key=value` sets any option non-interactively (handy for scripting). For a secret use `--set-stdin KEY` and pass the value on stdin instead: anything on the command line lands in your shell history and in the system journal (sudo logs every command line), and the CLI warns if a secret is given with `--set`.
 
-Operator-added plugins drop a `.py` into `/etc/kestrel/plugins/` (which overrides a shipped plugin of the same name) and get a `[plugins.<name>]` table in `config.toml`. The web status page (and each web plugin's routes under `/plugins/<name>/…`) is served on the management interfaces and loopback only — `[web] bind = "management"`, default port 8080 — never on the capture dongle.
+Operator-added plugins drop a `.py` into `/etc/kestrel/plugins/` (which overrides a shipped plugin of the same name) and get a `[plugins.<name>]` table in `config.toml`. Writing a plugin? Start with [`docs/developer/plugin-development.md`](docs/developer/plugin-development.md); code that several plugins share ships beside them as versioned **plugin libraries** (`_lib_<name>.py`, loaded with `kestrel_pi.load_library`), listed with how to use each in [`docs/developer/plugin-libraries.md`](docs/developer/plugin-libraries.md). The web status page (and each web plugin's routes under `/plugins/<name>/…`) is served on the management interfaces and loopback only — `[web] bind = "management"`, default port 8080 — never on the capture dongle.
 
 ## Using a release
 
@@ -313,7 +313,7 @@ The same checks run in the **Lint** Forgejo Actions workflow on every push and p
 │   ├── config.yml            # Ansible playbook (all customization)
 │   └── extra/
 │       ├── files/            # scripts, config tool, systemd units, plugins
-│       │   ├── plugins/      # shipped plugins (all disabled)
+│       │   ├── plugins/      # shipped plugins (all disabled), their _<plugin>_*.py helpers and _lib_*.py libraries
 │       │   ├── kestrel_pi/   # plugin-host daemon + learning-agent package + tests
 │       │   ├── systemd/      # kestrel systemd units
 │       │   └── scripts/      # operator helper scripts (installed read-only)

@@ -14,8 +14,11 @@ declarations the loader reads are ``__target_api__``, ``__capabilities__``,
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import importlib.util
 import os
+import re
 import sys
 import threading
 import types
@@ -226,7 +229,7 @@ def normalize_actions(actions):
 # install every ``plugins/*.py``. Helpers belong to one plugin - a plugin can't
 # load another plugin's helpers - so every plugin stays standalone.
 HELPERS_PACKAGE = "kestrel_plugin_helpers"
-_helpers_lock = threading.Lock()
+_helpers_lock = threading.RLock()    # re-entrant: a library may load another while loading
 
 
 def load_helper(plugin_file, filename):
@@ -245,6 +248,8 @@ def load_helper(plugin_file, filename):
     if importing it touches hardware."""
     directory, plugin = os.path.split(os.path.abspath(plugin_file))
     stem = os.path.splitext(plugin)[0]
+    if stem.startswith("_"):
+        raise ValueError("helpers belong to a plugin, not to %s" % plugin)
     prefix = "_%s_" % stem
     if (os.path.basename(filename) != filename or not filename.startswith(prefix)
             or not filename.endswith(".py") or len(filename) <= len(prefix) + 3):
@@ -271,5 +276,93 @@ def load_helper(plugin_file, filename):
             spec.loader.exec_module(module)
         except BaseException:
             sys.modules.pop(name, None)
+            raise
+        return module
+
+
+# -- shared plugin libraries ------------------------------------------------
+# Code that several plugins really share (the e-ink face, the alert queue)
+# lives once, as a library file with the plugins: ``_lib_<name>.py``. It is
+# still plugin code, not core: core never loads a library itself, and a library
+# runs inside the plugin that asked for it, with that plugin's capabilities.
+# ``lib`` is reserved as a plugin name, so no plugin's helpers can clash.
+LIBRARIES_PACKAGE = "kestrel_plugin_libs"
+SHIPPED_PLUGINS_DIR = "/usr/local/lib/kestrel/plugins"
+RESERVED_PLUGIN_NAMES = ("lib",)
+_LIB_NAME = re.compile(r"[a-z0-9_]+\Z")
+
+
+def _lib_api(path):
+    """The ``LIB_API = (major, minor)`` literal of a library, read without
+    running it; raises ImportError if it is missing or malformed."""
+    with open(path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), path)
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "LIB_API"):
+            try:
+                value = ast.literal_eval(node.value)
+            except ValueError:
+                break
+            if (isinstance(value, tuple) and len(value) == 2
+                    and all(type(v) is int and v >= 0 for v in value)):
+                return value
+            break
+    raise ImportError("%s has no LIB_API = (major, minor)" % os.path.basename(path))
+
+
+def load_library(caller_file, name, api):
+    """Import the shared plugin library ``_lib_<name>.py`` and return it.
+
+    Call it as ``load_library(__file__, "<name>", api=N)`` from a plugin (or from
+    another library). The library is looked for beside the caller first, then
+    in the shipped plugins directory: a shipped plugin always gets the shipped
+    library, and an operator plugin in /etc/kestrel/plugins uses its own copy
+    if it brings one, the shipped one otherwise.
+
+    ``api`` is the library's major API version the caller was written for. The
+    library's ``LIB_API = (major, minor)`` is read before any of its code runs,
+    and a different major raises ImportError, so an incompatible library never
+    runs. Minor versions only add, so any minor is accepted.
+
+    A library is loaded once per file; later calls return the same module. It
+    is registered in ``sys.modules`` (so a ``@dataclass`` in it works) under a
+    name derived from its path, so a shipped and an operator copy can both be
+    loaded. A library that fails to import is not cached."""
+    if not isinstance(name, str) or not _LIB_NAME.match(name):
+        raise ValueError("a library name is lower-case letters, digits and _, not %r" % (name,))
+    if type(api) is not int or api < 0:
+        raise ValueError("api is the library's major version, a whole number")
+    filename = "_lib_%s.py" % name
+    caller_dir = os.path.dirname(os.path.abspath(caller_file))
+    candidates = [os.path.join(caller_dir, filename),
+                  os.path.join(SHIPPED_PLUGINS_DIR, filename)]
+    path = next((p for p in candidates if os.path.isfile(p)), None)
+    if path is None:
+        raise ImportError("plugin library %s not found beside %s or in %s"
+                          % (filename, os.path.basename(caller_file), SHIPPED_PLUGINS_DIR))
+    path = os.path.realpath(path)
+    found = _lib_api(path)
+    if found[0] != api:
+        raise ImportError("%s needs the %s library API %d, found %d.%d"
+                          % (os.path.basename(caller_file), name, api, found[0], found[1]))
+    tag = hashlib.sha256(path.encode("utf-8")).hexdigest()[:8]
+    module_name = "%s.%s_%s" % (LIBRARIES_PACKAGE, name, tag)
+    with _helpers_lock:
+        module = sys.modules.get(module_name)
+        if module is not None:
+            return module
+        if LIBRARIES_PACKAGE not in sys.modules:
+            parent = types.ModuleType(LIBRARIES_PACKAGE)
+            parent.__path__ = []    # nothing is found by path: libraries are loaded explicitly
+            sys.modules[LIBRARIES_PACKAGE] = parent
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(module_name, None)
             raise
         return module

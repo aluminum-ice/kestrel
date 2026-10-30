@@ -88,8 +88,14 @@ daemon small, means a plugin can be read, copied and changed on its own, and
 lets you drop one file (and its helpers) into `/etc/kestrel/plugins/` without
 touching the image.
 
-That holds **even when it means duplication.** When two plugins need the same
-feature code, each carries its own copy. The shipped plugins do this:
+That holds **even when two plugins need the same code.** The code never moves
+into `kestrel_pi`. Instead, either each plugin carries its own copy, or, once
+at least two plugins really share it, it becomes a **shared plugin library**:
+a `_lib_<name>.py` file that lives with the plugins and that a plugin loads by
+name (see [Shared plugin libraries](#shared-plugin-libraries) and the
+[library reference](plugin-libraries.md)). A library is still plugin code:
+core never loads one. Where no library exists yet, the shipped plugins carry
+copies:
 
 - `ntfy` and `telegram` send the same alerts, and each holds its own copy of
   the alert code (the digest, the offline queue, rate limits, quiet hours). A
@@ -104,12 +110,14 @@ What core offers every plugin, and you may use freely:
 | --- | --- |
 | `Plugin`, `self.context` | the plugin API (this guide) |
 | `kestrel_pi.load_helper` | load your own helper files (below) |
+| `kestrel_pi.load_library` | load a shared plugin library (below) |
 | `kestrel_pi.httpsafe` | how a plugin sends a credential: `https://` only, no redirects, capped reads |
 | `kestrel_pi.webtls.fingerprint()`, `kestrel_pi.connectivity.MANAGEMENT_INTERFACES` | read-only facts about the device |
 
 A test (`tests/test_core_lean.py`) fails if a module in `kestrel_pi` is used
-only by plugins; when it fires, move that code into the plugin that needs it.
-A new general service (one any plugin could use, such as a policy every
+only by plugins; when it fires, move that code into the plugin that needs it,
+or into a shared plugin library if several do. It also fails if core loads a
+library. A new general service (one any plugin could use, such as a policy every
 credential-sending plugin must follow) is the exception, added to that test's
 list on purpose.
 
@@ -157,6 +165,52 @@ beside the plugin:
 - **A helper belongs to one plugin.** `load_helper` loads only files beside the
   plugin that carry its own prefix, so plugins never share helpers. An operator
   copy of a plugin in `/etc/kestrel/plugins/` brings copies of its helpers.
+  Code several plugins share goes in a library instead (next section).
+
+### Shared plugin libraries
+
+When at least two plugins need the same code, put it once in a **plugin
+library** instead of a copy in each. A library is a file
+`_lib_<name>.py` (`<name>` in lower-case letters, digits and `_`) in the
+plugins directory, beside the plugins that use it. Like a helper, the loader
+and `kestrel plugins` skip it, and the build and app-layer updates install
+it. Unlike a helper, any plugin may load it:
+
+```python
+from kestrel_pi import Plugin, load_library
+
+face = load_library(__file__, "eink_face", api=1)   # at module top level is fine
+
+class MyDisplay(Plugin):
+    ...
+        mood = face.decide_mood(inputs)
+```
+
+- **Where it is found:** beside the calling plugin first, then in the shipped
+  plugins directory (`/usr/local/lib/kestrel/plugins/`). A shipped plugin
+  always gets the shipped library; your plugin in `/etc/kestrel/plugins/` uses
+  the shipped library unless you put your own copy beside it.
+- **Versions:** every library declares `LIB_API = (major, minor)` as a plain
+  literal. `api=` is the major version you wrote against; a library with a
+  different major is refused before any of its code runs, so your plugin fails
+  to load with a clear message instead of breaking later. A minor bump only
+  adds, so any minor is accepted. A library at major `0` is provisional and may
+  still change in a minor release.
+- **What a library is not:** it isn't core and grants nothing. It runs inside
+  the plugin that loaded it, as that plugin, with its capabilities. Your
+  plugin's declarations (`__options__`, `__capabilities__` and the rest) stay
+  plain literals in your own class; a library can't supply them. Compose a
+  library's classes and functions; don't subclass a library class as your
+  plugin.
+- **Writing one:** make a library only for code at least two plugins really
+  share, keep its hardware imports lazy (inside functions) like a plugin's,
+  and give it a module docstring that explains its use. A library may load
+  another library with `load_library(__file__, ...)`, but not helpers. No
+  plugin may be named `lib`: that name is reserved so `_lib_*.py` files can't
+  clash with a plugin's helpers.
+
+The shipped libraries, their API versions and how to use each are listed in
+the [plugin library reference](plugin-libraries.md).
 
 ---
 
@@ -691,6 +745,11 @@ live in `builder/extra/files/kestrel_pi/tests/` and run with:
 make test        # the venv's pytest (needs flask/requests)
 ```
 
+A plugin that uses a library needs no special setup in a test: loaded from a
+checkout, `load_library` finds the library beside the plugin file. Patch a
+library's globals on the library module (the one `load_library` returns), not
+on the plugin module. See [Testing](testing.md).
+
 `make lint` byte-compiles the package and plugins; keep the target Python at
 **3.11** (no 3.12+ syntax).
 
@@ -700,9 +759,12 @@ make test        # the venv's pytest (needs flask/requests)
 
 - One `Plugin` subclass per file, subclassing `Plugin` directly; the
   **filename** is the plugin name.
-- Keep the plugin standalone: its feature lives in its own file and its own
-  `_<plugin>_*.py` helpers, loaded with `load_helper`. Copy code from another
-  plugin rather than moving it into `kestrel_pi`.
+- Keep the plugin standalone: its feature lives in its own file, its own
+  `_<plugin>_*.py` helpers (loaded with `load_helper`) and any shared plugin
+  libraries it loads with `load_library`. Never move plugin code into
+  `kestrel_pi`; use a library (or a copy) instead.
+- Using a library? Pin its major version with `api=` and check the
+  [library reference](plugin-libraries.md) for what it guarantees.
 - Write every declaration as a plain literal in the class body.
 - Set `__target_api__` to the version you tested against.
 - Declare `__capabilities__` honestly; call `require_capability` before a gated

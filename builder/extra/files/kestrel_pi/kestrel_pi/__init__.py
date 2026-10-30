@@ -22,6 +22,7 @@ __version__ = "0.3.0"
 # declares ``__target_api__ = 2``; one still pinned to 1 loads with a warning.
 HOOK_API_VERSION = 2
 
-from .plugins import CAPABILITIES, Plugin, load_helper  # noqa: E402  (re-export after constants)
+from .plugins import CAPABILITIES, Plugin, load_helper, load_library  # noqa: E402  (re-export after constants)
 
-__all__ = ["Plugin", "CAPABILITIES", "HOOK_API_VERSION", "load_helper", "__version__"]
+__all__ = ["Plugin", "CAPABILITIES", "HOOK_API_VERSION", "load_helper", "load_library",
+           "__version__"]

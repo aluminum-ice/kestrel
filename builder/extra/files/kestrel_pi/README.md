@@ -15,12 +15,14 @@ capture-and-learning device. It bundles three cooperating pieces:
 
 It also carries the shared UI state model and a few general services any
 plugin may use (the `Plugin` base class, `load_helper` for a plugin's own helper
-files, `httpsafe` for sending credentials). It holds nothing that serves one
-particular plugin: features live in their plugins, which stay standalone (see
-`docs/developer/plugin-development.md`).
+files, `load_library` for the shared plugin libraries that ship with the
+plugins, `httpsafe` for sending credentials). It holds nothing that serves one
+particular plugin: features live in their plugins, which stay standalone, and
+code several plugins share lives with them as `_lib_<name>.py` libraries (see
+`docs/developer/plugin-development.md` and `docs/developer/plugin-libraries.md`).
 
 The package is installed into the `pi` user's virtualenv (`/home/pi/.venv`) by
-the Kestrel image build. The reference plugins ship separately under
+the Kestrel image build. The reference plugins and the shared plugin libraries ship separately under
 `/usr/local/lib/kestrel/plugins/`, and operator plugins live in
 `/etc/kestrel/plugins/`.
 

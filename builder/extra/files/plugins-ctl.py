@@ -49,6 +49,10 @@ except ModuleNotFoundError:  # pragma: no cover - needs Python 3.11+
     tomllib = None
 
 CONFIG = os.environ.get("PWN_CONFIG", "/etc/kestrel/config.toml")
+# The same as kestrel_pi.plugins.RESERVED_PLUGIN_NAMES (a drift test keeps them
+# equal): ``_lib_<name>.py`` files are shared plugin libraries, so no plugin may
+# be called ``lib`` and own helpers with that prefix.
+RESERVED_PLUGIN_NAMES = ("lib",)
 PLUGIN_PATHS = os.environ.get(
     "PWN_PLUGIN_PATHS",
     "/usr/local/lib/kestrel/plugins:/etc/kestrel/plugins",
@@ -518,6 +522,10 @@ def static_plugins():
             if not fname.endswith(".py") or fname.startswith("_"):
                 continue
             source = os.path.join(directory, fname)
+            if os.path.splitext(fname)[0] in RESERVED_PLUGIN_NAMES:
+                sys.stderr.write("plugins-ctl: plugin name %r is reserved for plugin "
+                                 "libraries; %s ignored\n" % (os.path.splitext(fname)[0], source))
+                continue
             try:
                 for name, decl in read_declarations(source).items():
                     found[name] = (decl, source)
