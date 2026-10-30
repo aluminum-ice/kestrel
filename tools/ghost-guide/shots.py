@@ -92,6 +92,14 @@ def _scroll_to_text(page, text):
                   box["y"] - 24 + page.evaluate("window.scrollY"))
 
 
+def _wait_for_images(page):
+    """Wait until every image on view has loaded (the map's background tiles
+    come from the tile server), so a shot never catches a half-drawn map."""
+    page.wait_for_function(
+        "() => [...document.images].filter(i => i.offsetParent !== null)"
+        ".every(i => i.complete && i.naturalWidth > 0)", timeout=30000)
+
+
 def _sign_in(page, base_url):
     """Sign in through the dashboard's own form, as a phone does since 1.0.9
     (the demo accepts any password), so each page is what a signed-in operator
@@ -146,6 +154,7 @@ def capture(demo, base_url, figures, out_dir, browser="webkit"):
                 if resp is None or resp.status != 200:
                     raise RuntimeError("the demo answered %s for %s (figure %s)" % (
                         resp.status if resp else "nothing", fig["path"], fig["key"]))
+                _wait_for_images(page)
                 if fig.get("focus"):
                     _scroll_to_text(page, fig["focus"])
                 raw = os.path.join(out_dir, fig["key"] + ".page.png")

@@ -68,6 +68,21 @@ alt = "The Plugins page — enable, disable and open each plugin."
 caption = "The Plugins page — enable, disable and open each plugin."
 
 [[figure]]
+key = "phone-map"
+after = "map-every-located-network-on-one-map"
+path = "/plugins/map/"
+alt = "The map plugin: pins and numbered squares over a street map, green with a lock for recovered networks and gray for the rest"
+caption = "The map — green with a lock where the passphrase has been recovered, gray where it hasn't. Sample data."
+
+[[figure]]
+key = "phone-map-spot"
+after = "map-every-located-network-on-one-map"
+path = "/plugins/map/?spot=38.713949,-9.139401,38.713951,-9.139399"
+focus = "networks at this spot"
+alt = "Networks captured from one spot, listed under the map with a lock for recovered ones"
+caption = "Networks captured from one spot share its location, so their square lists them under the map."
+
+[[figure]]
 key = "phone-update"
 after = "upgrading-in-place"
 path = "/"

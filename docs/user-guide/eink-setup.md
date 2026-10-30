@@ -74,8 +74,7 @@ be enabled (it is, in the stock image). The plugin **probes** the panel on
 start: if no panel responds it logs that and keeps running, rendering only to
 the web mirror.
 
-The HAT's four on-board buttons are **reserved** for now — no action is wired to
-them.
+The HAT's four keys work too; see [The HAT's keys](#the-hats-keys) below.
 
 ## Enabling
 
