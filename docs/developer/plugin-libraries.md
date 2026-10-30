@@ -115,6 +115,8 @@ its `LIB_API`; a test (`tests/test_load_library.py`) keeps the two in step.
 | `alerts` | `_lib_alerts.py` | 1.0 | stable | `ntfy`, `telegram` |
 | `eink_face` | `_lib_eink_face.py` | 1.0 | stable | `eink-ws27`, `eink-ws213`, `eink` (deprecated) |
 | `hat_keys` | `_lib_hat_keys.py` | 0.1 | provisional | `eink-ws27`, `eink` (deprecated) |
+| `ina219` | `_lib_ina219.py` | 1.0 | stable | `ups-hat` |
+| `ups` | `_lib_ups.py` | 0.1 | provisional | `ups-hat` |
 
 Each library has its own section below: what it is for, a minimal plugin using
 it, its public functions and classes, the rules it enforces and what stays in
@@ -524,4 +526,145 @@ Its declarations (including the key options above), which key does what, any
 screen of its own (`eink-ws27`'s info screen on KEY1 is a plugin function), and
 where the prompt is shown. A plugin that only reads keys needs no `network`
 capability; the actions go through the same checks as the dashboard.
+
+## `ina219`: the INA219 current/voltage monitor
+
+`load_library(__file__, "ina219", api=1)`. The TI INA219 that measures the
+battery on Waveshare's UPS HAT, UPS HAT (B), (C) and (D): the reads and writes a
+battery plugin needs, over I2C, with the chip's calibration as a parameter
+because each board's shunt and range differ.
+
+- **`open_chip(bus, address, calibration)`** returns an `INA219` on I2C bus
+  number `bus`, or None when there is no I2C support (`python3-smbus` is
+  imported only here). It raises `OSError` when the bus can't be opened.
+- **`INA219.present()`** is the presence check: it writes the calibration
+  register and reads it back (an exact round trip, not a bare I2C ACK), then
+  requires a bus voltage between `MIN_PLAUSIBLE_V` and `MAX_PLAUSIBLE_V`
+  (3-20 V). Probe with it before trusting any reading.
+- **`bus_voltage()`** (volts on the load side), **`current_ma()`** (negative while
+  the battery discharges on Waveshare's wiring), **`power_w()`**, **`close()`**.
+- **Calibrations**, named after the functions in Waveshare's `INA219.py` demos:
+  `CAL_16V_5A` (cal 26868, 0.1524 mA and 3.048 mW per bit, 16 V range, 80 mV
+  shunt range; the (C) and (D) demos) and `CAL_32V_2A` (cal 4096, 0.1 mA and
+  2 mW, 32 V, 320 mV; the UPS HAT and (B) demos). A board with another shunt
+  passes its own `Calibration(name, cal_value, current_lsb_ma, power_lsb_w,
+  config)`.
+
+It only talks to the chip; what the readings mean for a battery is the `ups`
+library's job.
+
+## `ups`: a UPS HAT's battery
+
+`load_library(__file__, "ups", api=0)`. **Provisional (API 0):** one board
+family uses it so far, so it may still change in a minor release; pin `api=0`.
+
+Everything about a battery HAT that doesn't depend on its chip: the reading a
+UPS plugin publishes as the `battery` service, charge percent from the pack
+voltage, charging or discharging from the current, the time-to-shutdown
+estimate, the dashboard card, the poll loop that waits for the board to appear,
+and the low-battery auto-shutdown. Your plugin supplies its options, a `probe`
+that finds the board and a `read` that measures it.
+
+### A minimal plugin
+
+A plugin for a 2-cell board with an INA219 at 0x42, on both libraries:
+
+```python
+from kestrel_pi import Plugin, load_library
+
+ups = load_library(__file__, "ups", api=0)
+ina219 = load_library(__file__, "ina219", api=1)
+
+
+class MyUps(Plugin):
+    __version__ = "0.1.0"
+    __target_api__ = 2
+    __capabilities__ = ("ui",)
+    __provides__ = ("battery",)
+    __options__ = {
+        "shutdown_percent": {"type": "int", "default": 5},
+        "poll_seconds": {"type": "int", "default": 20},
+    }
+
+    def on_loaded(self):
+        self.monitor = ups.Monitor(self, "my-ups", self._probe, self._read,
+                                   ups.Pack(cells=2), board="My UPS HAT")
+        self.monitor.start()
+
+    def on_unload(self):
+        self.monitor.stop()
+
+    def provide_battery(self):
+        return self.monitor.reading()
+
+    def on_ui_setup(self, ui):
+        self.monitor.ui_setup(ui)
+
+    def on_ui_update(self, ui, state):
+        self.monitor.ui_update(ui, state)
+
+    def _probe(self):
+        try:
+            chip = ina219.open_chip(1, 0x42, ina219.CAL_32V_2A)
+        except OSError as exc:
+            return None, ("no My UPS HAT detected", "cannot open I2C bus 1 (%s)" % exc)
+        if chip is None:
+            return None, ("no My UPS HAT: I2C support missing", "python3-smbus is missing")
+        if not chip.present():
+            chip.close()
+            return None, ("no My UPS HAT detected", "nothing answered at 0x42 on bus 1")
+        return chip, None
+
+    @staticmethod
+    def _read(chip):
+        return chip.bus_voltage(), chip.current_ma(), chip.power_w()
+```
+
+### The contract
+
+- **The `battery` reading**, which the e-ink face and the alert plugins read by
+  service name: `{"percent", "voltage", "current_ma", "power_w", "status"}`,
+  `status` one of `charging`, `discharging`, `full`, `idle`. Declare
+  `__provides__ = ("battery",)` and return `monitor.reading()` (a copy, or None
+  when no board is present) from `provide_battery`. Only one plugin should
+  provide `battery`: enable one UPS plugin at a time.
+- **`Monitor(plugin, name, probe, read, pack, board="UPS HAT")`:**
+  - `probe()` returns `(device, None)` once the board is confirmed, else
+    `(None, (card text, health note))`, which the card and the Plugins page
+    show while the monitor keeps re-probing;
+  - `read(device)` returns `(volts, current_ma, power_w)`, with None for a
+    value the board can't measure (the card shows a dash and the status falls
+    back to `idle`/`full`), and raises `OSError` when the board stops
+    answering (the monitor drops it and re-probes);
+  - it reads your live `shutdown_percent` and `poll_seconds` options (declare
+    both); `start()`/`stop()` run the poll thread.
+- **`Pack(cells, empty_v=3.0, full_v=4.2)`:** charge percent, linear per cell
+  and clamped, as Waveshare's demos compute it (`(V - 6) / 2.4` for two cells,
+  `(V - 3) / 1.2` for one).
+- **Helpers:** `status_from_current(current_ma, percent)`, `fmt_eta(seconds)`,
+  `STATUS_LABEL`, `safe_int`.
+- **The card:** `ui_setup`/`ui_update` draw the charge gauge (with the shutdown
+  threshold marked on it and given as text), status, voltage, current, power
+  and, when a threshold is set, the time to shutdown.
+
+### Rules it keeps for you
+
+- **The auto-shutdown** fires only while your plugin is enabled, only while the
+  pack is discharging, only at or below `shutdown_percent` (0 turns it off),
+  only after three low polls in a row, and only once. It then powers off at
+  once, with no confirmation - a dying battery can't wait for a prompt - by
+  sending `{"target": "power", "action": "shutdown"}` through your plugin's
+  `context.apply`, the same root helper the dashboard's power buttons use. A
+  refused request is logged and retried on the next low poll.
+- **Nothing before the board is confirmed:** no reading, no `battery` value and
+  no shutdown until `probe` succeeds, so a plugin enabled with no board (or the
+  wrong one) stays idle.
+
+### What stays in your plugin
+
+Its declarations (including `shutdown_percent` and `poll_seconds`), how it
+finds and reads its board (`probe`, `read`, the chip's address and calibration),
+its pack, and the board's name in messages. A battery plugin reads only local
+hardware, so it needs only the `ui` capability and no authorized-use
+acknowledgment.
 

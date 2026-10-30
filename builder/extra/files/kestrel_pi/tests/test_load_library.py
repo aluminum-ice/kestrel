@@ -28,8 +28,12 @@ def dirs(tmp_path, monkeypatch):
     (shipped / "demo.py").write_text("# a shipped plugin\n")
     (operator / "mine.py").write_text("# an operator plugin\n")
     monkeypatch.setattr(plugin_api, "SHIPPED_PLUGINS_DIR", str(shipped))
+    before = set(sys.modules)
     yield shipped, operator
-    for name in [n for n in sys.modules if n.startswith(LIBRARIES_PACKAGE + ".")]:
+    # Forget only the libraries these tests loaded: the shipped ones other test
+    # files loaded (and patch) must stay the same module objects.
+    for name in [n for n in sys.modules
+                 if n.startswith(LIBRARIES_PACKAGE + ".") and n not in before]:
         del sys.modules[name]
 
 

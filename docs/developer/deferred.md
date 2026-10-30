@@ -252,3 +252,34 @@ How to use this file:
   API where that HAT needs it (updating `eink` in the same change), then set
   `LIB_API = (1, 0)` and mark it stable in `plugin-libraries.md`.
 - **Pick up when:** a plugin for a second HAT with keys is written.
+
+## UPS HATs (`ups-hat`, the `ups` and `ina219` libraries)
+
+### Confirm the UPS HAT's INA219 calibration on hardware
+
+- **What:** `ups-hat` sets its INA219 up with `CAL_16V_5A` (a 0.01 ohm shunt,
+  16 V / 5 A, 80 mV shunt range), while Waveshare's own demo for the UPS HAT and
+  UPS HAT (B) uses `CAL_32V_2A` (a 0.1 ohm shunt, 32 V / 2 A, 320 mV). If the
+  board's shunt is 0.1 ohm, the card's current and power read about ten times
+  too high and the shunt range clips above about 0.8 A. The bus voltage - so the
+  charge percent, the charging/discharging sign and the auto-shutdown - is the
+  same either way. Measure the current on a board (a USB power meter, or
+  Waveshare's demo's output, against the card) and switch to `CAL_32V_2A` if it
+  agrees.
+- **Why deferred:** no board on hand to measure, and the plugin's current
+  values have been shipped as they are; changing them blind could make them
+  wrong instead.
+- **What to do:** measure, then change `CALIBRATION` in the plugin (one line;
+  both calibrations are in the `ina219` library) and note it in the release.
+- **Pick up when:** someone with a UPS HAT or UPS HAT (B) can measure it.
+
+### Settle the `ups` library at API 1
+
+- **What:** review the `ups` plugin library (API 0, provisional) once plugins
+  for more boards use it, and fix its API at `LIB_API = (1, 0)`.
+- **Why deferred:** one board family uses it so far.
+- **What to do:** change the API where the other boards need it (updating every
+  user in the same change), then set `LIB_API = (1, 0)` and mark it stable in
+  `plugin-libraries.md`.
+- **Pick up when:** a second UPS plugin has been tested on hardware.
+

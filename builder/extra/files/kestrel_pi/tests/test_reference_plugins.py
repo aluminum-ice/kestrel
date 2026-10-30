@@ -1479,6 +1479,8 @@ def test_backup_health_note_clears_once_ready(tmp_path):
 
 
 # -- ups-hat plugin (Waveshare UPS HAT battery) ------------------------------
+# The battery logic is the ups library and the chip the ina219 library, both
+# tested in test_ups_lib.py; these test the plugin's wiring.
 class _FakeBus:
     """A stand-in smbus bus backed by a register dict, for exercising the INA219
     reads without hardware. ``roundtrip=False`` makes the calibration register
@@ -1503,7 +1505,10 @@ class _FakeBus:
         self.closed = True
 
 
-def _make_ups(tmp_path, **opts):
+_REAL_OPEN_CHIP = _load_module("ups-hat.py", "ups_hat_for_open_chip").ina219.open_chip
+
+
+def _make_ups(tmp_path, applied=None, **opts):
     mod = _load_module("ups-hat.py", "ups_hat_under_test")
     plugin = mod.UpsHat()
     options = {"i2c_bus": 1, "address": 0x42, "shutdown_percent": 5,
@@ -1511,179 +1516,111 @@ def _make_ups(tmp_path, **opts):
     options.update(opts)
     plugin.options = options
     plugin.context = _ctx(tmp_path, ("ui",), options=options, name="ups-hat")
+    if applied is not None:
+        plugin.context._apply = lambda change: applied.append(change) or {"ok": True}
     plugin._setup()                    # init state without starting the poll thread
     return plugin, mod
 
 
-def _reading(percent=50.0, status="discharging", voltage=7.2, current=-250.0,
-             power=1.8):
-    return {"percent": percent, "status": status, "voltage": voltage,
-            "current_ma": current, "power_w": power}
+def _fake_smbus(regs=None, roundtrip=True, fail=None):
+    """A stand-in ``smbus`` module whose SMBus() hands out a _FakeBus (and
+    records it), or raises OSError(``fail``)."""
+    buses = []
+
+    def SMBus(number):
+        if fail:
+            raise OSError(fail)
+        bus = _FakeBus(regs=regs, roundtrip=roundtrip)
+        buses.append(bus)
+        return bus
+
+    return types.SimpleNamespace(SMBus=SMBus), buses
 
 
-def test_ups_hat_declares_only_ui_and_is_opt_in(tmp_path):
-    plugin, _ = _make_ups(tmp_path)
+def _probe_with(monkeypatch, plugin, mod, **fake):
+    """Probe through the real ina219.open_chip over a fake smbus module. The
+    library module is shared, so use the function as first loaded, not one an
+    earlier patch left in its place."""
+    smbus_mod, buses = _fake_smbus(**fake)
+    real = _REAL_OPEN_CHIP
+    monkeypatch.setattr(mod.ina219, "open_chip",
+                        lambda bus, address, cal: real(bus, address, cal, smbus_module=smbus_mod))
+    return plugin.monitor.ensure_device(), buses
+
+
+def test_ups_hat_declares_only_ui_and_provides_battery(tmp_path):
+    plugin, mod = _make_ups(tmp_path)
     assert plugin.__capabilities__ == ("ui",)      # local read, no ack needed
+    assert plugin.__provides__ == ("battery",)
+    assert mod.PACK.cells == 2 and mod.CALIBRATION is mod.ina219.CAL_16V_5A
+    assert mod.NAME == "ups-hat"
 
 
-def test_percent_from_voltage_clamps_to_the_pack_span(tmp_path):
-    _plugin, mod = _make_ups(tmp_path)
-    assert mod._percent_from_voltage(6.0) == 0.0
-    assert mod._percent_from_voltage(8.4) == 100.0
-    assert mod._percent_from_voltage(5.0) == 0.0       # clamped low
-    assert mod._percent_from_voltage(9.0) == 100.0     # clamped high
-    assert round(mod._percent_from_voltage(7.2)) == 50
+def test_ups_hat_finds_the_hat_by_a_register_roundtrip(tmp_path, monkeypatch):
+    plugin, mod = _make_ups(tmp_path)
+    # ~7.0V: raw bus-voltage register = (7.0/0.004) << 3.
+    ok, buses = _probe_with(monkeypatch, plugin, mod, regs={0x02: (1750 << 3)})
+    assert ok is True and plugin.context.health_note == ""
+    other, _ = _make_ups(tmp_path)
+    ok, buses = _probe_with(monkeypatch, other, mod, roundtrip=False)
+    assert ok is False and buses[0].closed       # an impostor: closed again
+    assert "not detected on I2C bus 1 at 0x42" in other.context.health_note
 
 
-def test_ups_hat_detection_requires_a_register_roundtrip(tmp_path):
-    _plugin, mod = _make_ups(tmp_path)
-    # ~7.4V: raw bus-voltage register = (7.4/0.004) << 3.
-    good = mod._INA219(_FakeBus(regs={0x02: (1850 << 3)}), 0x42)
-    assert good.present() is True
-    # A device that ACKs but doesn't return the calibration value we wrote.
-    impostor = mod._INA219(_FakeBus(roundtrip=False), 0x42)
-    assert impostor.present() is False
-    # Round-trips but reads an implausible 0V bus voltage -> not the HAT.
-    flat = mod._INA219(_FakeBus(regs={0x02: 0}), 0x42)
-    assert flat.present() is False
-
-
-def test_ups_hat_card_absent_without_hardware(tmp_path):
+def test_ups_hat_card_absent_without_hardware(tmp_path, monkeypatch):
     # On the build/test host there is no smbus, so the HAT can't be confirmed:
     # the card reads "no UPS HAT" and the /plugins health note explains it.
     plugin, mod = _make_ups(tmp_path)
-    monkey_smbus = mod.smbus
-    try:
-        mod.smbus = None
-        assert plugin._ensure_device() is False
-    finally:
-        mod.smbus = monkey_smbus
+    monkeypatch.setattr(mod.ina219, "open_chip", lambda bus, address, cal: None)
+    assert plugin.monitor.ensure_device() is False
     card = _card(plugin, "ups-hat")
     assert card["percent"]["value"] == "-"
     assert "UPS HAT" in card["status"]["value"]
     assert "smbus" in plugin.context.health_note   # the /plugins page says why
+    bad, _ = _make_ups(tmp_path)
+    ok, _ = _probe_with(monkeypatch, bad, mod, fail="no such bus")
+    assert ok is False and "cannot open I2C bus 1" in bad.context.health_note
 
 
-def test_ups_hat_card_shows_battery_readout(tmp_path):
+def test_ups_hat_card_shows_battery_readout(tmp_path, monkeypatch):
     plugin, mod = _make_ups(tmp_path)
     # ~7.0V, discharging ~ -200mA, ~1.4W.
     regs = {0x02: (1750 << 3), 0x04: (65536 - 1312), 0x03: 459}
-    plugin._ina = mod._INA219(_FakeBus(regs=regs), 0x42)
-    reading = plugin._read_battery()
+    assert _probe_with(monkeypatch, plugin, mod, regs=regs)[0]
+    reading = plugin.monitor.read_battery()
     assert reading["status"] == "discharging"
     assert round(reading["percent"]) == 42
-    plugin._evaluate(reading)
+    plugin.monitor.evaluate(reading)
+    assert plugin.provide_battery() == reading
     card = _card(plugin, "ups-hat")
     assert card["percent"]["kind"] == "gauge"       # draws a gauge bar
     assert card["percent"]["value"] == "42%"
     assert card["status"]["value"] == "Discharging"
     assert card["voltage"]["value"] == "7.00 V"
     assert card["current"]["value"].endswith("mA") and card["current"]["value"].startswith("-")
+    assert card["shutdown"]["value"] == "5%" and card["percent"]["mark"] == 5
 
 
-def test_ups_hat_auto_shutdown_trips_after_debounce_on_battery(tmp_path, monkeypatch):
-    from kestrel_pi import web
-
-    plugin, mod = _make_ups(tmp_path, shutdown_percent=5)
-    calls = []
-    monkeypatch.setattr(web, "apply_change",
-                        lambda change: calls.append(change) or {"ok": True, "power": "shutdown"})
-    low = _reading(percent=4.0, status="discharging")
-    assert plugin._evaluate(low) is False and calls == []   # 1st low poll
-    assert plugin._evaluate(low) is False and calls == []   # 2nd
-    assert plugin._evaluate(low) is True                    # 3rd -> shutdown
-    assert calls == [{"target": "power", "action": "shutdown"}]
-    # It does not keep firing once triggered.
-    plugin._evaluate(low)
-    assert len(calls) == 1
+def test_ups_hat_auto_shutdown_goes_through_the_plugins_context(tmp_path):
+    applied = []
+    plugin, _ = _make_ups(tmp_path, applied=applied, shutdown_percent=5)
+    low = {"percent": 4.0, "status": "discharging", "voltage": 6.1,
+           "current_ma": -250.0, "power_w": 1.5}
+    for _ in range(3):
+        plugin.monitor.evaluate(low)
+    assert applied == [{"target": "power", "action": "shutdown"}]
     assert "Shutting down" in _card(plugin, "ups-hat")["status"]["value"]
+    src = open(os.path.join(PLUGIN_DIR, "ups-hat.py"), encoding="utf-8").read()
+    assert "kestrel_pi import web" not in src and "from kestrel_pi.web" not in src
 
 
-def test_ups_hat_does_not_shut_down_while_charging(tmp_path, monkeypatch):
-    from kestrel_pi import web
-
-    plugin, _ = _make_ups(tmp_path, shutdown_percent=5)
-    calls = []
-    monkeypatch.setattr(web, "apply_change", lambda change: calls.append(change) or {"ok": True})
-    charging_low = _reading(percent=3.0, status="charging", current=300.0)
-    for _ in range(5):
-        assert plugin._evaluate(charging_low) is False
-    assert calls == []                                      # low but recovering
-
-
-def test_ups_hat_shutdown_disabled_when_percent_is_zero(tmp_path, monkeypatch):
-    from kestrel_pi import web
-
-    plugin, _ = _make_ups(tmp_path, shutdown_percent=0)
-    calls = []
-    monkeypatch.setattr(web, "apply_change", lambda change: calls.append(change) or {"ok": True})
-    for _ in range(5):
-        assert plugin._evaluate(_reading(percent=1.0, status="discharging")) is False
-    assert calls == []                                      # auto-shutdown off
-
-
-# -- ups-hat: shutdown % on the card, gauge threshold marker, time-to-shutdown -
-def test_ups_hat_card_shows_shutdown_percent_and_marks_the_gauge(tmp_path):
-    plugin, mod = _make_ups(tmp_path, shutdown_percent=5)
-    regs = {0x02: (1750 << 3), 0x04: (65536 - 1312), 0x03: 459}  # discharging 42%
-    plugin._ina = mod._INA219(_FakeBus(regs=regs), 0x42)
-    plugin._evaluate(plugin._read_battery())
-    card = _card(plugin, "ups-hat")
-    assert card["shutdown"]["value"] == "5%"           # threshold shown as text
-    assert card["percent"]["kind"] == "gauge" and card["percent"]["mark"] == 5
-    assert "eta" in card                               # time-to-shutdown row
-
-
-def test_ups_hat_card_shutdown_off_and_no_mark_when_zero(tmp_path):
-    plugin, _ = _make_ups(tmp_path, shutdown_percent=0)
-    card = _card(plugin, "ups-hat")
-    assert card["shutdown"]["value"] == "off"
-    assert "mark" not in card["percent"]
-    assert "eta" not in card                           # no estimate without a threshold
-
-
-def test_ups_hat_eta_estimates_time_to_shutdown(tmp_path):
-    plugin, _ = _make_ups(tmp_path, shutdown_percent=5)
-    # 10% fall over 600s -> 1%/60s; from 50% to the 5% limit is 45% -> 2700s.
-    plugin._history.extend([(0.0, 60.0), (600.0, 50.0)])
-    eta = plugin._estimate_eta(_reading(percent=50.0, status="discharging"))
-    assert eta is not None and abs(eta - 2700.0) < 1.0
-
-
-def test_ups_hat_eta_none_when_flat_or_not_on_battery(tmp_path):
-    plugin, _ = _make_ups(tmp_path, shutdown_percent=5)
-    # Too little trend (span < the minimum) -> no estimate.
-    plugin._history.extend([(0.0, 50.0), (30.0, 49.9)])
-    assert plugin._estimate_eta(_reading(percent=49.9, status="discharging")) is None
-    # A good trend, but charging -> not meaningful.
-    plugin._history.clear()
-    plugin._history.extend([(0.0, 60.0), (600.0, 50.0)])
-    assert plugin._estimate_eta(_reading(percent=50.0, status="charging")) is None
-
-
-def test_ups_hat_eta_none_without_a_threshold(tmp_path):
-    plugin, _ = _make_ups(tmp_path, shutdown_percent=0)
-    plugin._history.extend([(0.0, 60.0), (600.0, 50.0)])
-    assert plugin._estimate_eta(_reading(percent=50.0, status="discharging")) is None
-
-
-def test_ups_hat_card_eta_estimating_then_dash(tmp_path):
-    plugin, mod = _make_ups(tmp_path, shutdown_percent=5)
-    regs = {0x02: (1750 << 3), 0x04: (65536 - 1312), 0x03: 459}
-    plugin._ina = mod._INA219(_FakeBus(regs=regs), 0x42)
-    plugin._evaluate(plugin._read_battery())           # one sample: still estimating
-    assert _card(plugin, "ups-hat")["eta"]["value"] == "estimating…"
-    # Not on battery -> a dash, since the estimate is meaningless.
-    plugin._evaluate(_reading(percent=80.0, status="charging", current=300.0))
-    assert _card(plugin, "ups-hat")["eta"]["value"] == "—"
-
-
-def test_ups_hat_fmt_eta(tmp_path):
-    _plugin, mod = _make_ups(tmp_path)
-    assert mod._fmt_eta(30) == "~<1m"
-    assert mod._fmt_eta(45 * 60) == "~45m"
-    assert mod._fmt_eta(80 * 60) == "~1h 20m"
-    assert mod._fmt_eta(3 * 86400) == "~3d"
+def test_ups_hat_uses_the_shared_libraries_and_keeps_no_copy():
+    src = open(os.path.join(PLUGIN_DIR, "ups-hat.py"), encoding="utf-8").read()
+    assert 'load_library(__file__, "ups", api=0)' in src
+    assert 'load_library(__file__, "ina219", api=1)' in src
+    for name in ("class _INA219", "def _evaluate", "def _estimate_eta", "_SHUTDOWN_DEBOUNCE"):
+        assert name not in src, name
+    assert "UPS HAT (B)/(C)" not in src        # the (C) is a different board
 
 
 # -- backup: the dashboard card adopts a manual (CLI) backup -----------------

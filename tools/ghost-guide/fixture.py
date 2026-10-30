@@ -290,7 +290,11 @@ class Demo:
                                     "aps": str(len(SESSION_BSSIDS)),
                                     "epochs": str(EPOCH), "uptime": uptime(UPTIME_S)})
         ups = self._instance("ups-hat")
-        labels = type(ups).on_ui_update.__globals__["_STATUS_LABEL"]
+        # The status labels: in the ups plugin library from the release that
+        # added it, in the plugin module before (this renders the latest stable).
+        plugin_globals = type(ups).on_ui_update.__globals__
+        labels = (plugin_globals["ups"].STATUS_LABEL if "ups" in plugin_globals
+                  else plugin_globals["_STATUS_LABEL"])
         values = {"percent": "%d%%" % BATTERY["percent"],
                   "status": labels[BATTERY["status"]],
                   "voltage": "%.2f V" % BATTERY["voltage"],
