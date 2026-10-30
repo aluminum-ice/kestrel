@@ -91,7 +91,7 @@ echo "uptime:     $(uptime -p 2>/dev/null)"
 echo "python3:    $(/usr/bin/python3 -V 2>&1)"
 echo "web auth:   $web_auth"
 
-# ================================================================ 1.0.9 checks (#50-#55, #58-#68)
+# ================================================================ 1.0.9 checks (#50-#55, #58-#73)
 # Beta 1: HTTPS dashboard and sign-in (#51), the e-ink address row (#50), and
 # four new plugins: downloads (#52), map (#53), notify (#54), hat-buttons (#55).
 # Beta 2: the certificate within Apple's limit (#58), the plugin row buttons
@@ -99,8 +99,11 @@ echo "web auth:   $web_auth"
 # into ntfy and telegram (#62), the map's OpenStreetMap background (#64) and the
 # Captured networks controls (#65), as sections 12-14; notify's 6.x checks are
 # replaced by section 12. Beta 4: map markers coloured by recovered status (#68),
-# as section 15. Earlier betas' checks stay, so one report serves every
-# 1.0.9 checklist issue. The CHECK ids match them.
+# as section 15. Beta 5: the login helper's exit status (#70), the e-ink link
+# icons (#71), the HAT keys moving into eink (#72) and map drag and zoom (#73),
+# as sections 16-19; hat-buttons' 7.x checks are replaced by section 18.
+# Earlier betas' checks stay, so one report serves every 1.0.9 checklist
+# issue. The CHECK ids match them.
 upd=/var/lib/kestrel/update-run/status.json
 
 # ---------------------------------------------------------------- 1. update to this beta
@@ -219,8 +222,8 @@ done
 
 # ---------------------------------------------------------------- 3-7. the plugins (#50, #52-#55)
 sec "3-7. plugins (#50, #52-#55)"
-# 3.1, 4.1, 5.1, 6.1, 7.1 and 8.1 read the plugin declarations statically in the
-# config tests below.
+# 3.1, 4.1, 5.1, 8.1, 12.1, 13.1 and 18.1 read the plugin declarations
+# statically in the config tests below.
 n=$(as_dev sh -c 'ls "$1" 2>/dev/null | grep -c "^export-.*\.zip$"' _ "$DEV_HOME/.local/state/kestrel-downloads" || true)
 if as_dev test -d "$DEV_HOME/.local/state/kestrel-downloads"; then
   [ "${n:-0}" -eq 0 ] && check 4.2 PASS "no leftover export zips" "" \
@@ -232,9 +235,9 @@ loc=$(as_dev "$VENV_PY" -I -c 'from kestrel_pi.geo import GeoStore
 print(callable(getattr(GeoStore, "locations", None)))' 2>&1)
 [ "$loc" = True ] && check 5.2 PASS "installed package provides GeoStore.locations()" "" \
   || check 5.2 FAIL "installed package provides GeoStore.locations()" "$(printf '%s' "$loc" | tr '\n' ' ' | cut -c1-120)"
-# 6.x (notify) is replaced by section 12 (ntfy and telegram) in beta 3.
-for id in 3.2 3.3 3.4 4.3 4.4 4.5 4.6 4.7 4.8 5.3 5.4 5.5 5.6 5.7 5.8 5.9 \
-          7.2 7.3 7.4 7.5 7.6 7.7 7.8 7.9; do
+# 6.x (notify) is replaced by section 12 (ntfy and telegram) in beta 3, and
+# 7.x (hat-buttons) by section 18 (the keys in eink) in beta 5.
+for id in 3.2 3.3 3.4 4.3 4.4 4.5 4.6 4.7 4.8 5.3 5.4 5.5 5.6 5.7 5.8 5.9; do
   check "$id" MANUAL "see the checklist" "by hand"
 done
 
@@ -352,6 +355,40 @@ for id in 15.3 15.4 15.5 15.6; do
   check "$id" MANUAL "see the checklist" "by hand"
 done
 
+sec "16. login helper exit status (#70)"
+# The helper run directly with a malformed request: it answers without reading
+# any password (a bad request never reaches the check) and writes nothing. It
+# must now exit 0 once it has answered, so a refused request leaves no failed
+# kestrel-web-auth@ unit.
+auth_out=$(printf '{}' | timeout 10 /usr/bin/python3 -I "$CTL" checkauth 2>/dev/null); auth_rc=$?
+if [ "$auth_rc" -eq 0 ] && printf '%s' "$auth_out" | grep -q '"ok": false'; then
+  check 16.1 PASS "the login helper exits 0 after answering a refused request" "rc=0, refused"
+else
+  check 16.1 FAIL "the login helper exits 0 after answering a refused request" \
+    "rc=$auth_rc reply=$(printf '%s' "$auth_out" | tr -cd '[:alnum:] :{}",_' | cut -c1-80)"
+fi
+check 16.2 MANUAL "see the checklist" "by hand"
+
+sec "17. e-ink link icons (#71)"
+check 17.1 MANUAL "see the checklist" "by hand"
+
+sec "18. HAT keys in eink (#72)"
+# 18.1 (eink's key options) is in the config tests below.
+if [ -e "$LIBDIR/plugins/hat-buttons.py" ]; then
+  check 18.2 FAIL "the old hat-buttons plugin is gone" "hat-buttons.py is still installed"
+else
+  check 18.2 PASS "the old hat-buttons plugin is gone" "the update removed hat-buttons.py"
+fi
+for id in 18.3 18.4 18.5 18.6 18.7 18.8 18.9; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
+
+sec "19. map drag and zoom (#73)"
+# 19.1 (the map page) is in the dashboard section.
+for id in 19.2 19.3 19.4; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
+
 # ---------------------------------------------------------------- config tests (throwaway copy)
 sec "config tests (throwaway copy of config.toml; commands blocked)"
 cfg_sum_before=$(sha256sum "$CONFIG" | awk '{print $1}')
@@ -399,14 +436,23 @@ check("4.1", caps("downloads") == {"capture-read", "web"},
       "downloads: capture-read + web, no network", state("downloads"))
 check("5.1", caps("map") == {"capture-read", "location", "web"},
       "map: capture-read + location + web, no network", state("map"))
-check("7.1", caps("hat-buttons") == {"ui"} and "buttons" in (decl("hat-buttons").get("provides") or ()),
-      "hat-buttons: local only (ui), provides buttons", state("hat-buttons"))
 expected = {"memtemp", "session-stats", "gps", "wpa-sec", "wigle", "backup", "ups-hat", "eink",
-            "updates", "remote-train", "downloads", "map", "ntfy", "telegram", "hat-buttons"}
+            "updates", "remote-train", "downloads", "map", "ntfy", "telegram"}
 invalid = sorted(n for n, v in plugs.items() if v[0] is None)
 missing = sorted(expected - set(plugs))
-check("8.1", not invalid and not missing, "all fifteen shipped plugins present and readable",
+check("8.1", not invalid and not missing, "all fourteen shipped plugins present and readable",
       "missing=%s invalid=%s" % (missing, invalid))
+# 18.1: the HAT keys are eink's now: its key options, no hat-buttons plugin.
+eopts = decl("eink").get("options") or {}
+check("18.1", (eopts.get("buttons") or {}).get("default") is True
+      and (eopts.get("pins") or {}).get("default") == "5,6,13,19"
+      and (eopts.get("allow_capture") or {}).get("default") is True
+      and "network" not in caps("eink") and "hat-buttons" not in plugs,
+      "eink declares the HAT key options; no hat-buttons plugin",
+      "eink %s, buttons %s" % (state("eink"),
+                               "off" if read("plugins.eink.buttons") is False else "on"))
+if read("plugins.hat-buttons") is not None:
+    print("note: config.toml still has an unused [plugins.hat-buttons] table")
 # 12.1: one plugin per service, each with only its own secret options.
 def secrets(name):
     return {k for k, v in (decl(name).get("options") or {}).items() if (v or {}).get("secret")}
@@ -471,6 +517,7 @@ elif mode in ("basic", "system"):
         chk("13.2", "SKIP", "the map page draws the attributed background", "no password given")
         chk("14.1", "SKIP", "Captured networks has its controls at the top", "no password given")
         chk("15.1", "SKIP", "the map explains its recovered colours", "no password given")
+        chk("19.1", "SKIP", "the map page carries the drag and zoom script", "no password given")
         sys.exit(0)
     req.add_header("Authorization", "Basic " + base64.b64encode(
         ("%s:%s" % (user, pw)).encode()).decode())
@@ -484,6 +531,7 @@ except Exception as exc:
     chk("13.2", "SKIP", "the map page draws the attributed background", "no /status.json")
     chk("14.1", "SKIP", "Captured networks has its controls at the top", "no /status.json")
     chk("15.1", "SKIP", "the map explains its recovered colours", "no /status.json")
+    chk("19.1", "SKIP", "the map page carries the drag and zoom script", "no /status.json")
     sys.exit(0)
 if mode in ("basic", "system"):
     chk("2.4", "PASS", "loopback /status.json with Basic credentials", "plain HTTP on 127.0.0.1")
@@ -527,6 +575,7 @@ def page(path):
 if "map" not in offered:
     chk("13.2", "SKIP", "the map page draws the attributed background", "map not loaded")
     chk("15.1", "SKIP", "the map explains its recovered colours", "map not loaded")
+    chk("19.1", "SKIP", "the map page carries the drag and zoom script", "map not loaded")
 else:
     code, hdrs, body = page("/plugins/map/")
     policy = (hdrs or {}).get("Referrer-Policy") if hdrs else None
@@ -559,6 +608,17 @@ else:
         chk("15.1", "SKIP", "the map explains its recovered colours", "no located networks")
     else:
         chk("15.1", "FAIL", "the map explains its recovered colours", "legend missing")
+    # 19.1: each map rendering carries its projection for the gesture script.
+    if code == 200 and "No captured network matching" in body:
+        chk("19.1", "SKIP", "the map page carries the drag and zoom script", "no located networks")
+    elif code == 200:
+        ok = (body.count('class="kmap"') == 2 and body.count('class="kmap-layer"') == 2
+              and body.count("data-scale=") == 2 and "bboxFor" in body
+              and "touch-action:none" in body)
+        chk("19.1", "PASS" if ok else "FAIL", "the map page carries the drag and zoom script",
+            "both renderings" if ok else "markers missing")
+    else:
+        chk("19.1", "FAIL", "the map page carries the drag and zoom script", "HTTP %s" % code)
 code, hdrs, body = page("/networks")
 if code != 200:
     chk("14.1", "FAIL", "Captured networks has its controls at the top", "HTTP %s" % code)
@@ -572,7 +632,7 @@ else:
         if ok else "markers missing")
 w = s.get("widgets", {}) or {}
 for name in ("wpa-sec", "wigle", "backup", "remote-train", "updates", "ntfy", "telegram",
-             "hat-buttons"):
+             "eink"):
     if name in w:
         els = w[name]
         if isinstance(els, dict):
@@ -622,6 +682,15 @@ cat >>"$raw" <<'EOF'
      green with a lock badge if any network in it is recovered; the one-spot
      list leads with a lock for recovered networks and 📍 or ≈○, no words;
      the passphrase never shows on the map
+16.x after a wrong dashboard password, no failed kestrel-web-auth@ unit
+17.x at first boot the e-ink link icons match the addresses below them
+18.x the HAT keys work with only eink on: KEY1 info screen; a long KEY2 stops
+     capture, and when it is off asks "Press KEY2 again to start capture",
+     which starts it; without the acknowledgment it points to the dashboard;
+     "Starting/Stopping capture..." clears once it has; KEY3/KEY4 power;
+     the "Last key press" card on the eink row; buttons = false turns them off
+19.x on a phone, drag moves the map and pinch zooms, then it redraws for the
+     new area; a tap on a pin still opens it; mouse drag and wheel on a desktop
 EOF
 
 # ---------------------------------------------------------------- redact and save
