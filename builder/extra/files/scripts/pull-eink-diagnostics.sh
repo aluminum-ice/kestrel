@@ -106,13 +106,30 @@ for name in ("spidev", "gpiozero", "PIL"):
         print(f"{name}: OK ({getattr(m, '__version__', 'no __version__')})")
     except Exception as e:
         print(f"{name}: FAIL ({e!r})")
-for mod in ("kestrel_pi.vendor.waveshare_epd.epd2in7_V2",
-            "kestrel_pi.vendor.waveshare_epd.epd2in7"):
-    try:
-        __import__(mod)
-        print(f"{mod}: import OK")
-    except Exception as e:
-        print(f"{mod}: import FAIL ({e!r})")
+import os
+# The driver ships beside the eink plugin as helper files; before that release
+# it was a package inside kestrel_pi.
+plugin = next((p for p in ("/etc/kestrel/plugins/eink.py",
+                           "/usr/local/lib/kestrel/plugins/eink.py")
+               if os.path.exists(p)), None)
+helpers = plugin and os.path.exists(os.path.join(os.path.dirname(plugin),
+                                                 "_eink_epdconfig.py"))
+if helpers:
+    from kestrel_pi import load_helper
+    for name in ("_eink_epdconfig.py", "_eink_epd2in7_V2.py", "_eink_epd2in7.py"):
+        try:
+            load_helper(plugin, name)
+            print(f"{name} (beside {plugin}): import OK")
+        except Exception as e:
+            print(f"{name} (beside {plugin}): import FAIL ({e!r})")
+else:
+    for mod in ("kestrel_pi.vendor.waveshare_epd.epd2in7_V2",
+                "kestrel_pi.vendor.waveshare_epd.epd2in7"):
+        try:
+            __import__(mod)
+            print(f"{mod}: import OK")
+        except Exception as e:
+            print(f"{mod}: import FAIL ({e!r})")
 PY
 else
   echo "(no pi venv at $VENV)"

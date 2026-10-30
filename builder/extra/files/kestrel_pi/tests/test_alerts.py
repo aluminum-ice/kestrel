@@ -1,8 +1,9 @@
-"""The ntfy and telegram plugins and the alert machinery they share
-(kestrel_pi.alerts): digests, battery/capture/update alerts, the offline queue
-and each service's request, with no real network (requests.post is faked) and
-the state directory in tmp_path. Tokens and topics here are made up at test
-time; names are placeholders."""
+"""The ntfy and telegram plugins: digests, battery/capture/update alerts, the
+offline queue and each service's request, with no real network (requests.post
+is faked) and the state directory in tmp_path. Each plugin carries its own copy
+of the alert code (plugins are standalone), so the shared behaviour is tested
+against both. Tokens and topics here are made up at test time; names are
+placeholders."""
 
 import importlib.util
 import json
@@ -14,7 +15,6 @@ import pytest
 
 requests = pytest.importorskip("requests")
 
-from kestrel_pi import alerts as A  # noqa: E402
 from kestrel_pi.capture import CaptureInterface  # noqa: E402
 from kestrel_pi.context import PluginContext, ServiceRegistry  # noqa: E402
 from kestrel_pi.plugins import PluginPage, PluginRedirect  # noqa: E402
@@ -33,7 +33,7 @@ def _mod(name):
 
 NTFY = _mod("ntfy")
 TELEGRAM = _mod("telegram")
-SHARED = {"events": A.DEFAULT_EVENTS, "digest_minutes": 30, "include_names": False,
+SHARED = {"events": "handshakes,battery,update,capture", "digest_minutes": 30, "include_names": False,
           "battery_percent": 20, "max_per_hour": 6, "quiet_hours": "", "timeout": 5}
 SERVICES = {
     "ntfy": (NTFY, NTFY.Ntfy, {"server": "https://ntfy.example.com"}),
@@ -71,7 +71,7 @@ def _plugin(tmp_path, monkeypatch, service="ntfy", options=None, online=True, au
     monkeypatch.setattr(mod, "state_dir", lambda name: str(tmp_path / "state"))
     if not worker:
         # No background worker: these tests drive every step by hand.
-        monkeypatch.setattr(A.Alerts, "start", lambda self: None)
+        monkeypatch.setattr(mod.Alerts, "start", lambda self: None)
     p = cls()
     p.options = {**SHARED, **defaults, **(options or {})}
     p.context = PluginContext(
@@ -90,25 +90,29 @@ def _hs(essid, bssid="00:00:5E:00:53:01"):
 
 
 both = pytest.mark.parametrize("service", sorted(SERVICES))
+each_module = pytest.mark.parametrize("A", [NTFY, TELEGRAM], ids=["ntfy", "telegram"])
 
 
 # -- messages ---------------------------------------------------------------------
 
-def test_digest_is_counts_only_by_default():
+@each_module
+def test_digest_is_counts_only_by_default(A):
     msg = A.handshake_digest(12, {"My Network", "Cafe Guest", "Library WiFi"}, 30, False)
     assert msg["title"] == "Kestrel: 12 new handshakes"
     assert "12 new handshakes from 3 networks in the last 30 minutes." == msg["body"]
     assert "My Network" not in msg["body"]
 
 
-def test_digest_names_only_when_asked_and_cleaned():
+@each_module
+def test_digest_names_only_when_asked_and_cleaned(A):
     names = {"My Network", "Cafe\x07 Guest", ""} | {"Net %d" % i for i in range(6)}
     body = A.handshake_digest(9, names, 30, True)["body"]
     assert "Networks: " in body and "(+4 more)" in body
     assert "\x07" not in body
 
 
-def test_quiet_hours():
+@each_module
+def test_quiet_hours(A):
     assert A.in_quiet_hours("22-07", 23) and A.in_quiet_hours("22-07", 3)
     assert not A.in_quiet_hours("22-07", 12)
     assert A.in_quiet_hours("09-17", 10) and not A.in_quiet_hours("09-17", 18)
@@ -134,8 +138,9 @@ def test_handshakes_become_one_digest_without_addresses(tmp_path, monkeypatch, p
     assert kw["allow_redirects"] is False and p.alerts.queue == []
 
 
-def test_battery_low_once_and_power_loss(tmp_path, monkeypatch):
-    a = _plugin(tmp_path, monkeypatch).alerts
+@both
+def test_battery_low_once_and_power_loss(tmp_path, monkeypatch, service):
+    a = _plugin(tmp_path, monkeypatch, service).alerts
     a.check_battery({"percent": 80, "status": "charging"})
     a.check_battery({"percent": 79, "status": "discharging"})
     assert [m["title"] for m in a.queue] == ["Kestrel is on battery"]
@@ -148,8 +153,9 @@ def test_battery_low_once_and_power_loss(tmp_path, monkeypatch):
     assert len([m for m in a.queue if m["title"] == "Kestrel battery low"]) == 2
 
 
-def test_capture_stop_alerts_only_while_switched_on(tmp_path, monkeypatch):
-    a = _plugin(tmp_path, monkeypatch).alerts
+@both
+def test_capture_stop_alerts_only_while_switched_on(tmp_path, monkeypatch, service):
+    a = _plugin(tmp_path, monkeypatch, service).alerts
     (tmp_path / "config.toml").write_text("[capture]\nenabled = true\n")
     a.check_capture(True)
     a.check_capture(False)                   # one blip: a relaunch, no alert
@@ -160,15 +166,16 @@ def test_capture_stop_alerts_only_while_switched_on(tmp_path, monkeypatch):
     a.check_capture(False)                   # still down: no repeat
     assert len(a.queue) == 1
     (tmp_path / "q").mkdir()
-    q = _plugin(tmp_path / "q", monkeypatch).alerts
+    q = _plugin(tmp_path / "q", monkeypatch, service).alerts
     (tmp_path / "q" / "config.toml").write_text("[capture]\nenabled = false\n")
     for active in (True, False, False):
         q.check_capture(active)
     assert q.queue == []                     # switched off on purpose
 
 
-def test_update_alert_once_per_release(tmp_path, monkeypatch):
-    a = _plugin(tmp_path, monkeypatch).alerts
+@both
+def test_update_alert_once_per_release(tmp_path, monkeypatch, service):
+    a = _plugin(tmp_path, monkeypatch, service).alerts
     (tmp_path / "update-state.json").write_text(json.dumps(
         {"update_available": True, "latest": "1.2.3"}))
     a.check_update()
@@ -176,16 +183,17 @@ def test_update_alert_once_per_release(tmp_path, monkeypatch):
     a.check_update()
     assert [m["body"] for m in a.queue] == [
         "Release 1.2.3 is available. Open the dashboard to update."]
-    again = _plugin(tmp_path, monkeypatch).alerts      # remembered across a restart
+    again = _plugin(tmp_path, monkeypatch, service).alerts      # remembered across a restart
     again.check_update()
     assert again.queue[-1:] == a.queue[-1:] and len(again.queue) == 1
 
 
-def test_online_alert_is_opt_in(tmp_path, monkeypatch):
-    p = _plugin(tmp_path, monkeypatch)
+@both
+def test_online_alert_is_opt_in(tmp_path, monkeypatch, service):
+    p = _plugin(tmp_path, monkeypatch, service)
     p.on_internet_available()
     assert p.alerts.queue == []
-    q = _plugin(tmp_path / "q", monkeypatch, options={"events": "online"})
+    q = _plugin(tmp_path / "q", monkeypatch, service, options={"events": "online"})
     q.on_internet_available()
     q.on_internet_available()
     assert [m["title"] for m in q.alerts.queue] == ["Kestrel is online"]
@@ -195,6 +203,7 @@ def test_online_alert_is_opt_in(tmp_path, monkeypatch):
 
 @both
 def test_offline_alerts_wait_and_survive_a_restart(tmp_path, monkeypatch, posts, service):
+    A = SERVICES[service][0]
     p = _plugin(tmp_path, monkeypatch, service, online=False)
     p.alerts.enqueue(A.message("test", "T", "B"))
     p.alerts.drain()
@@ -207,6 +216,7 @@ def test_offline_alerts_wait_and_survive_a_restart(tmp_path, monkeypatch, posts,
 
 @both
 def test_failures_keep_the_alert_and_back_off(tmp_path, monkeypatch, service):
+    A = SERVICES[service][0]
     monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(500))
     a = _plugin(tmp_path, monkeypatch, service).alerts
     a.enqueue(A.message("test", "T", "B"))
@@ -216,6 +226,7 @@ def test_failures_keep_the_alert_and_back_off(tmp_path, monkeypatch, service):
 
 
 def test_rate_limit_and_quiet_hours_but_urgent_gets_through(tmp_path, monkeypatch, posts):
+    A = NTFY
     a = _plugin(tmp_path, monkeypatch, options={"max_per_hour": 2,
                                                 "quiet_hours": "0-23"}).alerts
     monkeypatch.setattr(A, "in_quiet_hours", lambda spec, hour: False)
@@ -234,6 +245,7 @@ def test_rate_limit_and_quiet_hours_but_urgent_gets_through(tmp_path, monkeypatc
 
 @both
 def test_the_worker_sends_in_the_background_and_stops(tmp_path, monkeypatch, posts, service):
+    A = SERVICES[service][0]
     import time
 
     p = _plugin(tmp_path, monkeypatch, service, worker=True)
@@ -249,6 +261,7 @@ def test_the_worker_sends_in_the_background_and_stops(tmp_path, monkeypatch, pos
 # -- ntfy -------------------------------------------------------------------------
 
 def test_ntfy_needs_https_and_sends_the_token(tmp_path, monkeypatch, posts):
+    A = NTFY
     p = _plugin(tmp_path, monkeypatch, options={"server": "http://ntfy.example.com"})
     with pytest.raises(Exception):
         p.alerts.send(A.message("test", "T", "B"))
@@ -284,6 +297,7 @@ def test_ntfy_status_page_shows_only_a_generated_topic_and_only_signed_in(tmp_pa
 # -- telegram ---------------------------------------------------------------------
 
 def test_telegram_request_shape(tmp_path, monkeypatch, posts):
+    A = TELEGRAM
     p = _plugin(tmp_path, monkeypatch, "telegram")
     p.alerts.send(A.message("test", "Kestrel test", "It works."))
     url, kw = posts[0]
@@ -293,6 +307,7 @@ def test_telegram_request_shape(tmp_path, monkeypatch, posts):
 
 
 def test_telegram_needs_both_settings(tmp_path, monkeypatch, posts):
+    A = TELEGRAM
     p = _plugin(tmp_path, monkeypatch, "telegram", options={"chat_id": ""})
     with pytest.raises(Exception) as err:
         p.alerts.send(A.message("test", "T", "B"))
@@ -300,6 +315,7 @@ def test_telegram_needs_both_settings(tmp_path, monkeypatch, posts):
 
 
 def test_telegram_errors_never_carry_the_token(tmp_path, monkeypatch):
+    A = TELEGRAM
     token = "123456:made-up-" + "x" * 20
 
     def boom(url, **kw):
@@ -344,6 +360,7 @@ def test_status_page_links_back_with_the_token(tmp_path, monkeypatch, service):
 
 @both
 def test_dashboard_card(tmp_path, monkeypatch, service):
+    A = SERVICES[service][0]
     p = _plugin(tmp_path, monkeypatch, service)
     ui = StubUI().for_plugin(service)
     p.on_ui_setup(ui)
@@ -364,3 +381,12 @@ def test_declarations_need_the_acknowledgment_and_carry_only_their_service(servi
     assert {k for k, v in decl["options"].items() if v.get("secret")} == secrets
     other = "telegram" if service == "ntfy" else "ntfy"
     assert not any(other in k for k in decl["options"])
+
+
+@pytest.mark.parametrize("service", sorted(SERVICES))
+def test_each_plugin_carries_its_own_alerts(service):
+    # Standalone: neither plugin imports alert code from the package or the other.
+    src = open(os.path.join(PLUGIN_DIR, service + ".py"), encoding="utf-8").read()
+    assert "kestrel_pi.alerts" not in src
+    assert not os.path.exists(os.path.join(PLUGIN_DIR, "..", "kestrel_pi", "kestrel_pi",
+                                           "alerts.py"))

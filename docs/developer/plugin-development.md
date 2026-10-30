@@ -78,6 +78,88 @@ one `Plugin` subclass per file.
 
 ---
 
+## Keep plugins standalone
+
+**A plugin carries its own feature, all of it.** The core (`kestrel_pi`) stays
+lean: it holds what the daemon, the learning agent and the shipped scripts run,
+plus a few general services any plugin may use. It never holds code that exists
+for particular plugins, and it never imports a plugin. This keeps the always-on
+daemon small, means a plugin can be read, copied and changed on its own, and
+lets you drop one file (and its helpers) into `/etc/kestrel/plugins/` without
+touching the image.
+
+That holds **even when it means duplication.** When two plugins need the same
+feature code, each carries its own copy. The shipped plugins do this:
+
+- `ntfy` and `telegram` send the same alerts, and each holds its own copy of
+  the alert code (the digest, the offline queue, rate limits, quiet hours). A
+  change to the alerts is made to both copies, and both are tested.
+- `eink` holds everything about its panel and its HAT, including the HAT's
+  four keys. A plugin for another e-ink HAT starts from a copy of it, not from
+  shared code.
+
+What core offers every plugin, and you may use freely:
+
+| Service | What it is |
+| --- | --- |
+| `Plugin`, `self.context` | the plugin API (this guide) |
+| `kestrel_pi.load_helper` | load your own helper files (below) |
+| `kestrel_pi.httpsafe` | how a plugin sends a credential: `https://` only, no redirects, capped reads |
+| `kestrel_pi.webtls.fingerprint()`, `kestrel_pi.connectivity.MANAGEMENT_INTERFACES` | read-only facts about the device |
+
+A test (`tests/test_core_lean.py`) fails if a module in `kestrel_pi` is used
+only by plugins; when it fires, move that code into the plugin that needs it.
+A new general service (one any plugin could use, such as a policy every
+credential-sending plugin must follow) is the exception, added to that test's
+list on purpose.
+
+**Copied rules still apply in every copy.** When you copy code that enforces a
+rule, the copy enforces it too, and review checks it. In particular, a plugin
+that lets a button, a key or any other input start capture sends
+`{"target": "capture", "enabled": true}` with **no** `ack`: the root helper
+starts capture only if the operator has already given the authorized-use
+acknowledgment, and no plugin ever gives it on the operator's behalf. The
+`eink` plugin's `HatKeys` and its test (`test_hatkeys.py`) show how.
+
+### Helper files
+
+A plugin is one file, and the loader loads it without registering it as an
+importable module, so it can't `import` a neighbour. When a plugin needs more
+than one file - most often third-party code that should stay exactly as
+upstream ships it, such as a display driver - put the rest in **helper files**
+beside the plugin:
+
+- Name each one `_<plugin>_<name>.py`, in the same directory as the plugin. The
+  `eink` plugin ships `_eink_epdconfig.py`, `_eink_epd2in7.py` and
+  `_eink_epd2in7_V2.py` (Waveshare's driver, see
+  [Vendored code](vendored-code.md)).
+- The loader and `kestrel plugins` skip files whose name starts with `_`, so a
+  helper is never taken for a plugin. The image build and app-layer updates
+  install every `plugins/*.py`, helpers included.
+- Load a helper with `kestrel_pi.load_helper` (available from the release that
+  added it; older releases have no `load_helper`):
+
+  ```python
+  from kestrel_pi import Plugin, load_helper
+
+  class MyDisplay(Plugin):
+      def _driver(self):
+          # Inside the method that needs it, so importing the plugin touches
+          # no hardware. Load a helper's dependencies first.
+          load_helper(__file__, "_my-display_epdconfig.py")
+          return load_helper(__file__, "_my-display_epd2in13.py")
+  ```
+
+  Each helper is registered as `kestrel_plugin_helpers.<plugin>.<name>`, so the
+  helpers of one plugin can import each other with relative imports
+  (`from . import epdconfig`) and vendored code needs no edits. A helper is
+  loaded once; later calls return the same module.
+- **A helper belongs to one plugin.** `load_helper` loads only files beside the
+  plugin that carry its own prefix, so plugins never share helpers. An operator
+  copy of a plugin in `/etc/kestrel/plugins/` brings copies of its helpers.
+
+---
+
 ## The hook-API contract
 
 The daemon publishes a single integer, `HOOK_API_VERSION` (currently **2**, in
@@ -574,7 +656,9 @@ sudo kestrel plugins info my-plugin     # capabilities, options, deps, health
 ```
 
 A plugin that declares `network` prompts for the authorized-use acknowledgment on
-first enable. Files whose name starts with `_` are skipped.
+first enable. Files whose name starts with `_` are skipped: they are plugins'
+[helper files](#helper-files), so copy a plugin's `_<plugin>_*.py` helpers along
+with it.
 
 ---
 
@@ -599,6 +683,9 @@ make test        # the venv's pytest (needs flask/requests)
 
 - One `Plugin` subclass per file, subclassing `Plugin` directly; the
   **filename** is the plugin name.
+- Keep the plugin standalone: its feature lives in its own file and its own
+  `_<plugin>_*.py` helpers, loaded with `load_helper`. Copy code from another
+  plugin rather than moving it into `kestrel_pi`.
 - Write every declaration as a plain literal in the class body.
 - Set `__target_api__` to the version you tested against.
 - Declare `__capabilities__` honestly; call `require_capability` before a gated

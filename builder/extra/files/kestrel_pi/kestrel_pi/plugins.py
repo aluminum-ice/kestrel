@@ -14,6 +14,12 @@ declarations the loader reads are ``__target_api__``, ``__capabilities__``,
 
 from __future__ import annotations
 
+import importlib.util
+import os
+import sys
+import threading
+import types
+
 # The fixed capability set (improvement 3). A plugin declares a subset in
 # ``__capabilities__``; anything that leaves the device ("network") is gated
 # behind the authorized-use acknowledgment at enable time.
@@ -209,3 +215,61 @@ def normalize_actions(actions):
     cleaned.sort(key=lambda a: (a["order"] is None, a["order"] or 0, a["_seq"]))
     return [{k: a[k] for k in ("label", "path", "method", "order", "confirm")}
             for a in cleaned[:2]]
+
+
+# -- helper files a plugin ships beside itself ------------------------------
+# A plugin is one file, and the loader loads it without registering it as an
+# importable module, so it can't ``import`` a neighbour. A plugin that needs
+# more than one file (vendored third-party code kept verbatim, say) ships the
+# rest as helper files in its own directory, named ``_<plugin>_<name>.py``: the
+# loader and plugins-ctl skip ``_`` files, and the build and app-layer updates
+# install every ``plugins/*.py``. Helpers belong to one plugin - a plugin can't
+# load another plugin's helpers - so every plugin stays standalone.
+HELPERS_PACKAGE = "kestrel_plugin_helpers"
+_helpers_lock = threading.Lock()
+
+
+def load_helper(plugin_file, filename):
+    """Import a helper file that ships beside a plugin and return its module.
+
+    Call it as ``load_helper(__file__, "_<plugin>_<name>.py")`` from the plugin,
+    where ``<plugin>`` is the plugin's file name without ``.py``. The helper
+    must sit in the same directory as the plugin file (an operator plugin in
+    /etc/kestrel/plugins brings its own helpers) and carry the plugin's prefix.
+
+    Each helper is registered as ``kestrel_plugin_helpers.<plugin>.<name>``, so
+    helpers of one plugin can import each other with relative imports
+    (``from . import epdconfig``) once the imported one has been loaded: load
+    a helper's dependencies first. A helper is loaded once; later calls return
+    the same module. Import a helper lazily (inside the method that needs it)
+    if importing it touches hardware."""
+    directory, plugin = os.path.split(os.path.abspath(plugin_file))
+    stem = os.path.splitext(plugin)[0]
+    prefix = "_%s_" % stem
+    if (os.path.basename(filename) != filename or not filename.startswith(prefix)
+            or not filename.endswith(".py") or len(filename) <= len(prefix) + 3):
+        raise ValueError("a helper of plugin %r is a file %s<name>.py beside it, not %r"
+                         % (stem, prefix, filename))
+    path = os.path.join(directory, filename)
+    if not os.path.isfile(path):
+        raise ImportError("helper %s not found beside %s" % (filename, plugin))
+    package = "%s.%s" % (HELPERS_PACKAGE, stem.replace("-", "_"))
+    name = "%s.%s" % (package, filename[len(prefix):-3])
+    with _helpers_lock:
+        module = sys.modules.get(name)
+        if module is not None and getattr(module, "__file__", None) == path:
+            return module
+        for pkg in (HELPERS_PACKAGE, package):
+            if pkg not in sys.modules:
+                parent = types.ModuleType(pkg)
+                parent.__path__ = []    # nothing is found by path: helpers are loaded explicitly
+                sys.modules[pkg] = parent
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(name, None)
+            raise
+        return module
