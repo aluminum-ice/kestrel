@@ -265,6 +265,14 @@ class Demo:
             ui.set(key, value)
 
     def _fill_widgets(self):
+        # gps's on_loaded (skipped here: it starts the receiver) creates the
+        # lock its position service takes. With no fix the service returns
+        # None and readers fall back to the UIState snapshot, as they did when
+        # the missing lock made the call fail and log a traceback.
+        gps = self._instance("gps")
+        if not hasattr(gps, "_fix_lock"):
+            gps._fix_lock = threading.Lock()
+            gps._fix = None
         memtemp = self._instance("memtemp")
         memtemp._has_fan = False
         memtemp._fan_pct = False

@@ -47,6 +47,9 @@ def test_slugify_matches_ghost():
         "check-now-dont-wait-for-the-timer"
     assert render.slugify('Bluetooth link is up but the dashboard says "offline"') == \
         "bluetooth-link-is-up-but-the-dashboard-says-offline"
+    # Ghost drops a dot rather than splitting on it (1.0.10's guide).
+    assert render.slugify('eink-ws213 (the face on the 2.13" HAT)') == \
+        "eink-ws213-the-face-on-the-213-hat"
 
 
 def test_body_drops_h1_and_numbers_repeated_headings():
