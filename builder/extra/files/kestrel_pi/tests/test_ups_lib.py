@@ -283,7 +283,7 @@ def test_answers_tells_whether_another_device_acks():
 
 
 def test_the_library_is_provisional():
-    assert UPS.LIB_API[0] == 0 and INA.LIB_API == (1, 1)
+    assert UPS.LIB_API == (0, 3) and INA.LIB_API == (1, 1)
 
 
 # -- ups: one board reader at a time -----------------------------------------------------
@@ -365,3 +365,60 @@ def test_a_stood_down_monitor_never_reads_or_shuts_down(started, monkeypatch):
     assert first.active() is first
     assert reads == [] and applied == [] and second.device is None
     assert _card(second, "ups-wsc")["status"]["value"].startswith("ups-ws reads the battery")
+
+
+# -- ups 0.3: a board's own reading, its own low, the hook before shutdown ---------------
+
+def _dict_monitor(read, plugin=None, hook=None):
+    return UPS.Monitor(plugin or _plugin(), "test-ups", lambda: ("dev", None), read,
+                       UPS.Pack(cells=4), board="Test HAT", before_shutdown=hook)
+
+
+def test_a_board_can_report_its_own_percent_and_status():
+    m = _dict_monitor(lambda d: {"voltage": 15.2, "current_ma": 120.0, "power_w": 1.8,
+                                 "percent": 81, "status": "charging"})
+    m.ensure_device()
+    r = m.read_battery()
+    assert r["percent"] == 81.0 and r["status"] == "charging" and "low" not in r
+    m2 = _dict_monitor(lambda d: {"voltage": 14.4, "current_ma": -300.0, "power_w": 4.3})
+    m2.ensure_device()
+    r2 = m2.read_battery()                     # no percent/status: the pack's estimate
+    assert r2["status"] == "discharging" and r2["percent"] == pytest.approx(UPS.Pack(4).percent(14.4))
+
+
+def test_a_board_low_counts_like_the_threshold_only_on_battery_and_when_on():
+    low = {"voltage": 14.0, "current_ma": -300.0, "power_w": 4.2, "percent": 60,
+           "status": "discharging", "low": "cell 3 at 3.10 V"}
+    applied = []
+    m = _dict_monitor(lambda d: dict(low), _plugin(applied))
+    m.ensure_device()
+    for _ in range(2):
+        assert m.evaluate(m.read_battery()) is False
+    assert m.evaluate(m.read_battery()) is True
+    assert applied == [{"target": "power", "action": "shutdown"}]
+    charging = []
+    c = _dict_monitor(lambda d: dict(low, status="charging"), _plugin(charging))
+    off = []
+    o = _dict_monitor(lambda d: dict(low), _plugin(off, shutdown_percent=0))
+    for mon in (c, o):
+        mon.ensure_device()
+        for _ in range(4):
+            mon.evaluate(mon.read_battery())
+    assert charging == [] and off == []
+
+
+def test_before_shutdown_runs_first_and_cannot_stop_it():
+    order = []
+    plugin = _plugin()
+    plugin.context.apply = lambda change: order.append("apply") or {"ok": True}
+
+    def hook():
+        order.append("hook")
+        raise OSError("bus gone")
+
+    m = _dict_monitor(lambda d: {"voltage": 12.1, "current_ma": -300.0, "power_w": 3.6,
+                                 "percent": 2, "status": "discharging"}, plugin, hook)
+    m.ensure_device()
+    for _ in range(3):
+        m.evaluate(m.read_battery())
+    assert order == ["hook", "apply"]

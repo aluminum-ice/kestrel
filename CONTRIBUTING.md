@@ -67,8 +67,8 @@ could).
 ## Reporting hardware test results
 
 Some plugins drive hardware that hasn't been tested on a real device yet, such
-as `eink-ws213` for the Waveshare 2.13" e-Paper HAT and `ups-wsc`/`ups-wsd` for
-the Waveshare UPS HAT (C) and (D); their guides say so. If you
+as `eink-ws213` for the Waveshare 2.13" e-Paper HAT and `ups-wsc`/`ups-wsd`/`ups-wse`
+for the Waveshare UPS HAT (C), (D) and (E); their guides say so. If you
 try one, a report helps even without a patch. Email **patches@3ntropy.io** with:
 
 - the plugin and the Kestrel version (`cat /etc/kestrel/version`);

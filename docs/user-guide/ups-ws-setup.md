@@ -32,7 +32,8 @@ Supported: the Waveshare **UPS HAT** and **UPS HAT (B)** - the same design, two
 18650 cells in series with the INA219 at `0x42` (Waveshare's own demo code is the
 same file for both). The **UPS HAT (C)** and **(D)** are different boards (one cell, the INA219 at
 `0x43`) with their own plugins: [`ups-wsc`](ups-wsc-setup.md) and
-[`ups-wsd`](ups-wsd-setup.md).
+[`ups-wsd`](ups-wsd-setup.md). The **UPS HAT (E)** (four cells in series, its own
+controller) has [`ups-wse`](ups-wse-setup.md).
 
 The image already enables I2C (`dtparam=i2c_arm=on`, the `i2c-dev` module) and
 installs `python3-smbus`, and the `pi` user is in the `i2c` group, so a seated
