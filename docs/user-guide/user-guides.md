@@ -39,13 +39,12 @@ for the person using the device.
 - [WiGLE](wigle-setup.md) — wardriving uploads of observed networks with GPS.
 - [Remote backup](backup-setup.md) — mirror the capture store off-device over SSH.
 - [UPS HAT](ups-hat-setup.md) — Waveshare UPS HAT battery readout and low-battery auto-shutdown.
-- [e-ink face](eink-setup.md) — animated tamagotchi face on the Waveshare 2.7" e-Paper HAT, with a live web mirror.
+- [e-ink face](eink-setup.md) — animated tamagotchi face on the Waveshare 2.7" e-Paper HAT, with a live web mirror and the HAT's four keys.
 - [memtemp and session-stats](memtemp-session-stats.md) — built-in local readout cards.
 - [Remote training](remote-training.md) — train the learning agent on a desktop host over SSH.
 - [Downloads](downloads.md) — download your handshake files from the dashboard.
 - [Capture map](map.md) — every located captured network on one map, drawn on the device.
 - [Notifications](notifications.md) — the `ntfy` and `telegram` plugins: alerts for new handshakes, battery, updates.
-- [HAT buttons](hat-buttons.md) — the e-Paper HAT's four keys: info screen, stop capture, reboot, shut down.
 
 ## The device web dashboard
 
