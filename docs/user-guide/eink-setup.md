@@ -104,8 +104,9 @@ jobs you want with no phone at hand:
 
 - **Starting capture, rebooting and shutting down ask first.** After the long
   press, the panel says, for example, "Press KEY2 again to start capture"; press
-  it again within 5 seconds to confirm. Do nothing and it's cancelled, so a
-  press in a pocket does nothing. Stopping capture doesn't ask.
+  it again within 5 seconds to confirm. Do nothing, or press any other key, and
+  it's cancelled, so a press in a pocket does nothing. Stopping capture doesn't
+  ask.
 - **Starting capture needs your acknowledgment from before.** KEY2 starts
   capture only if you've already accepted the authorized-use acknowledgment, on
   the dashboard or with `sudo kestrel capture enable`. If you haven't, the panel
