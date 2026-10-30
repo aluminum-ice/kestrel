@@ -180,6 +180,24 @@ def test_compose_renders_the_rich_top_bar(tmp_path):
     assert p._compose_image(UIState(), "awake").size == (EINK.PANEL_W, EINK.PANEL_H)
 
 
+def test_link_glyphs_follow_the_same_addresses_as_the_address_row(tmp_path):
+    # At boot the daemon's paths can still say "no link" after the links have
+    # their addresses; the top strip must follow the addresses the panel shows.
+    p = _plugin(tmp_path)
+    strip = (0, 0, 50, 22)                            # the BT and Wi-Fi glyphs
+    p._addresses = lambda: [("bnep0", "192.0.2.10"), ("wlan0", "198.51.100.7")]
+    stale = p._compose_image(UIState(paths={"bnep0": False, "wlan0": False}), "awake")
+    fresh = p._compose_image(UIState(paths={"bnep0": True, "wlan0": True}), "awake")
+    assert stale.crop(strip).tobytes() == fresh.crop(strip).tobytes()
+    p._addresses = lambda: []
+    down = p._compose_image(UIState(paths={"bnep0": True, "wlan0": True}), "awake")
+    assert down.crop(strip).tobytes() != fresh.crop(strip).tobytes()
+    p._addresses = lambda: [("wlan0", "198.51.100.7")]
+    wifi_only = p._compose_image(UIState(), "awake")
+    assert wifi_only.crop(strip).tobytes() not in (fresh.crop(strip).tobytes(),
+                                                   down.crop(strip).tobytes())
+
+
 def test_compose_shows_gps_only_when_a_receiver_is_present(tmp_path):
     # The GPS satellite + signal glyph is gated on the `position` service being
     # registered, not just on a fix: present-and-searching, present-and-locked,
