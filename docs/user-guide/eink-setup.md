@@ -1,222 +1,35 @@
-# e-ink face plugin (`eink`)
+# e-ink face plugin (`eink`) - deprecated
 
-Operator guide for the `eink` reference plugin, which draws the classic
-animated "tamagotchi" face on a
-[Waveshare 2.7" e-Paper HAT](https://www.waveshare.com/wiki/2.7inch_e-Paper_HAT_Manual)
-so the device shows what it is doing at a glance, with no phone. Like every
-reference plugin it ships **disabled**.
+> **Deprecated:** `eink` is replaced by [`eink-ws27`](eink-ws27-setup.md) and
+> will be removed in a future release that requires reflashing the SD card.
 
-## What it does
+`eink` is deprecated. `eink-ws27` is the same face for the same HAT (the
+[Waveshare 2.7" e-Paper HAT](https://www.waveshare.com/wiki/2.7inch_e-Paper_HAT_Manual))
+with the same options, under a name that says which display it drives. Switch
+now: enable `eink-ws27` (with the same settings) and disable `eink`. `eink`
+keeps working until it is removed in a future release that requires reflashing
+the SD card; that release's notes will say so.
 
-- Renders an **animated face** whose expression follows real device and
-  learning-agent state — never a canned loop. A priority ladder decides the
-  mood: a fault shows a broken face, a low battery a tired one, a just-promoted
-  model a celebration, a fresh handshake an excited face, and while capturing it
-  reflects the agent's scan **posture**. The face only shows the "smart"
-  expression when a *learned* policy is actually driving; the scripted baseline
-  gets plainer posture faces. The principle is that **the face never lies**.
-- **Sleeps when capture is off.** With capture disabled the device has nothing
-  to hunt, so the face rests with a sleeping expression (`(⇀‿‿↼)`, deepening the
-  longer it idles) and a matching "zzz…" voice, rather than an awake/idle face.
-  The tiers above still win, so a fault, low battery, a promotion or a fresh
-  handshake is never hidden behind a sleeping face.
-- Shows a **top icon strip**: BT PAN and Wi-Fi link symbols (each slashed when
-  that link is down); a **GPS satellite** with signal bars when a receiver is
-  present (outlined while searching, solid once locked); a **motion glyph** once
-  you're moving — a walking person or a moving car (parked shows nothing here,
-  since the Kestrel's hover pose denotes stopped); and
-  a battery symbol with its percent (with `ups-hat`).
-- Gives the mascot a **voice**: a short, cute phrase beside the face that
-  matches its mood (and changes when the mood does), just like classic
-  pwnagotchi. Override any mood's phrases in `config.toml` under
-  `[plugins.eink.voices]`. For the first ten minutes after start-up the voice
-  line shows the start of the dashboard's HTTPS certificate fingerprint instead,
-  to compare with your browser on first sign-in (`show_fingerprint_minutes`).
-- Shows a **compact status on one line** just under the face: a chip glyph with
-  the **agent** mode (`off` / `baseline` / `learned`) and an antenna glyph with
-  the **capture** state. The mood is the face itself.
-- Shows an **info row**: `UP` the device uptime, and `CH` the channel plan
-  capture is sweeping this window (a channel list, a band like `2.4G`, `sweep`
-  or `hunt`) while capturing. `CH` is the configured plan, not a live tuned
-  channel (the radio hops within the plan).
-- Shows an **address row**: the device's address on each connected management
-  link, behind the same Bluetooth and Wi-Fi symbols as the top strip, so you
-  can open the dashboard on a headless device without checking your router's
-  client list. A link with no address is left out. Turn it off with `show_ip`.
-- Shows a **bottom counter row**: `PWND` captured handshakes (a key glyph), the
-  lifetime total with the count from this session in parentheses, e.g.
-  `200 (30)`; then `AP` distinct captured access points and `NET` distinct
-  networks, both lifetime totals.
-- Draws the **Kestrel brand mark** once, in the lower-right corner; its pose
-  reflects motion — stooping (diving) when moving, hovering when parked.
-- **Motion** (parked / walking / driving) is estimated from your GPS speed
-  across successive fixes, with hysteresis so it doesn't flicker at a stop light.
-  Walking tops out near 11 km/h; above that it reads as driving.
-- Serves a **live web mirror** of the exact panel frame (see below).
+While `eink` is enabled, the Plugins page and `sudo kestrel plugins info eink`
+show this notice, and the daemon log says so once at start-up.
 
-It reads and drives only local hardware — nothing leaves the device — so it
-needs no authorized-use acknowledgment. It is also harmless with **no HAT
-attached**: the face still renders to the web mirror.
+## Switching to `eink-ws27`
 
-On shutdown — the dashboard power-off button (and its confirmation) or the
-`ups-hat` low-battery auto-off — the panel is **blanked** before the device
-powers down, so the last face is not left frozen on the e-paper (which keeps
-its image with no power).
-
-## Hardware
-
-The target panel is the Waveshare 2.7" e-Paper HAT (264×176, black/white),
-which ships in two hardware revisions (V1 and V2). The image installs the SPI
-and GPIO Python backends (`python3-spidev`, `python3-gpiozero`) and the fonts
-the faces need (`fonts-dejavu-core`), and Waveshare's driver ships with the
-plugin, so a seated HAT works with no extra install. SPI must
-be enabled (it is, in the stock image). The plugin **probes** the panel on
-start: if no panel responds it logs that and keeps running, rendering only to
-the web mirror.
-
-The HAT's four keys work too; see [The HAT's keys](#the-hats-keys) below.
-
-For the smaller 2.13" HAT, use the [`eink-ws213` plugin](eink-ws213-setup.md)
-instead. Enable one e-ink plugin at a time: they drive the same pins.
-
-## Enabling
-
-From the **web dashboard** (with login on): open **Plugins**, enable **eink**,
-and save. Then use the **View** button on the Plugins page to see the face.
-
-The same from the terminal:
-
-```
-sudo kestrel plugins enable eink
-```
-
-## The HAT's keys
-
-The HAT has four keys along its edge, KEY1 to KEY4. With `eink` on, they do
-jobs you want with no phone at hand:
-
-| Key | Short press | Long press (3 seconds) |
-| --- | --- | --- |
-| **KEY1** | Info screen for 30 seconds: version, the device's addresses, the dashboard's HTTPS fingerprint, uptime and free space. Press again to close. | — |
-| **KEY2** | A reminder of what the long press does | **Stop capture** at once, or, when capture is off, **start capture** after you press KEY2 again |
-| **KEY3** | A reminder | **Reboot**, after you press KEY3 again |
-| **KEY4** | A reminder | **Shut down**, after you press KEY4 again |
-
-- **Starting capture, rebooting and shutting down ask first.** After the long
-  press, the panel says, for example, "Press KEY2 again to start capture"; press
-  it again within 5 seconds to confirm. Do nothing, or press any other key, and
-  it's cancelled, so a press in a pocket does nothing. Stopping capture doesn't
-  ask.
-- **Starting capture needs your acknowledgment from before.** KEY2 starts
-  capture only if you've already accepted the authorized-use acknowledgment, on
-  the dashboard or with `sudo kestrel capture enable`. If you haven't, the panel
-  says to accept it on the dashboard first; a key never accepts it for you.
-- **The panel shows what's happening:** "Starting capture..." or "Stopping
-  capture..." stays until capture has actually started or stopped.
-- **The dashboard card** shows the last key pressed, which is handy for checking
-  the wiring.
-
-If the keys don't respond, the card says why (for example "keys unavailable"
-when the board has no GPIO). The default pins are BCM GPIO 5, 6, 13 and 19,
-which suit the Waveshare 2.7" HAT; a different board or revision may wire them
-elsewhere, so set `pins` to the four GPIO numbers for KEY1 to KEY4, in order.
-
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `buttons` | `true` | Use the keys at all. |
-| `pins` | `5,6,13,19` | BCM GPIO pins of KEY1 to KEY4. |
-| `hold_seconds` | `3` | How long a press counts as a long press. |
-| `allow_capture` | `true` | Let KEY2 stop capture, and start it after a second press. |
-| `allow_power` | `true` | Let KEY3/KEY4 reboot or shut down. |
-
-## The live web mirror
-
-The Plugins page gains a **View** button that opens a page showing a
-live mirror of the panel — the *exact* frame the e-ink shows, as a PNG. This
-lets you see the face from a phone at any time, and it works even with no HAT
-attached (it shows the frame the device would display). The mirror refreshes at
-the same cadence as the panel, reading the **same stored frame**, so the two can
-never drift apart.
-
-## Options
-
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `variant` | `auto` | Panel driver: `auto` (probe the hardware revision), `v2`, or `v1`. |
-| `rotation` | `0` | Rotate the image `0` / `90` / `180` / `270` if the HAT is mounted turned. |
-| `refresh_seconds` | `10` | How often the face re-renders (`10` is the floor). The panel only redraws when the face actually changes, to limit e-ink wear, so a faster cadence mainly makes it react sooner. |
-| `show_mascot` | `true` | Draw the emoticon face (and its voice line). |
-| `show_brand_glyph` | `true` | Draw the small corner Kestrel mark. |
-| `show_fingerprint_minutes` | `10` | For this many minutes after start-up, the voice line shows the start of the dashboard's HTTPS certificate fingerprint, to compare with your browser on first sign-in. `0` never shows it. |
-| `show_ip` | `true` | Draw the address row: the Bluetooth tether and Wi-Fi addresses. Turn it off if the panel is visible to people who shouldn't see them. |
-| `battery_low_percent` | `10` | Show the tired face at or below this charge while on battery (needs `ups-hat`). |
-| `bored_epochs` | `15` | Idle event-loop epochs before the face looks bored. |
-| `sad_epochs` | `25` | Idle event-loop epochs before the face looks sad. |
-
-## Faces and voices
-
-The faces are the classic pwnagotchi emoticons. You can override any mood's face
-in `config.toml` under `[plugins.eink.faces]` (for example to use a different
-glyph for `excited`), which is the path toward custom face sets later. Leave it
-unset to keep the shipped set.
-
-Each mood also has a set of cute **voice** phrases (the line beside the face).
-Override them per mood under `[plugins.eink.voices]` — give a single phrase or a
-list to rotate through, for example:
-
-```toml
-[plugins.eink.voices]
-excited = ["gotcha!", "another one!"]
-bored = "anything out there?"
-```
-
-Leave it unset to keep the shipped phrases.
-
-## What it reads from other plugins
-
-The face is richer when the **learning agent** and the **`ups-hat`** plugin are
-present: it reads the agent's posture, policy and reward trend to choose working
-moods, and the battery to show charge on the status line and the tired face. Both
-are optional — with neither enabled the face still reflects online/capture/idle
-state and looks after itself.
-
-## Troubleshooting
-
-**The panel stays blank and the face only shows on the web mirror.** Check the
-daemon log:
+Follow [Switching from `eink`](eink-ws27-setup.md#switching-from-eink) in the
+`eink-ws27` guide. In short:
 
 ```sh
-journalctl -u kestrel-daemon --no-pager | grep -i eink
+sudo kestrel plugins info eink            # note the settings you changed
+sudo kestrel plugins enable eink-ws27     # set the same ones
+sudo kestrel plugins disable eink
 ```
 
-- `eink: <driver> panel ready` — the driver initialised. If the panel is still
-  blank, it is a panel-revision or mounting issue: try `variant = v1` (or `v2`)
-  and check the ribbon seating.
-- `eink: no panel (Unable to load any default pin factory!)` — the GPIO backend
-  could not start. On a Pi 5 the only working backend is `lgpio`, which needs a
-  writable working directory for its `.lgd-nfy` file; the daemon service sets
-  `WorkingDirectory`/`LG_WD` to its runtime dir so this works out of the box. If
-  you are on an older image without that fix, add a drop-in:
+Copy any `[plugins.eink.faces]` / `[plugins.eink.voices]` overrides in
+`config.toml` to `[plugins.eink-ws27.faces]` / `[plugins.eink-ws27.voices]`.
 
-  ```sh
-  sudo install -d /etc/systemd/system/kestrel-daemon.service.d
-  sudo tee /etc/systemd/system/kestrel-daemon.service.d/10-gpio-workdir.conf >/dev/null <<'CONF'
-  [Service]
-  WorkingDirectory=/run/kestrel
-  Environment=LG_WD=/run/kestrel
-  CONF
-  sudo systemctl daemon-reload
-  sudo systemctl restart kestrel-daemon
-  ```
+## Until you switch
 
-- `eink: no panel (...)` with another error — confirm SPI is enabled
-  (`ls /dev/spidev*` lists a node) and the HAT is seated.
-
-**"Display: detected" vs "not detected" on the dashboard.** The dashboard shows
-whether a panel was found. Because an e-Paper panel has no way to identify
-itself, the plugin confirms one is really wired by checking that the panel
-*drives* its BUSY line during start-up; a bare Pi — or a different HAT such as
-the `ups-hat`, which does not touch that line — reads **not detected**, and the
-face renders only to the web mirror. So "not detected" with another HAT seated
-is expected, not a fault. If your e-ink HAT reads "not detected", re-seat the
-ribbon and, if needed, pin `variant`.
+Everything in the [`eink-ws27` guide](eink-ws27-setup.md) applies to `eink` as
+well: read `eink` for `eink-ws27` in plugin names, log lines and `config.toml`
+table names. The face, the HAT's keys, the web mirror and every option behave
+the same; only `eink-ws27` limits `variant` and `rotation` to a list.

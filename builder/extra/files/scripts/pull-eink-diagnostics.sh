@@ -2,8 +2,9 @@
 #
 # Pull a PII-free e-ink diagnostics bundle off a field unit, so a blank or
 # not-updating panel can be triaged off-device. It works for any e-ink plugin:
-# --plugin names it (default eink, the 2.7" HAT: docs/user-guide/eink-setup.md;
-# eink-ws213 for the 2.13" HAT: docs/user-guide/eink-ws213-setup.md).
+# --plugin names it (default eink, the deprecated name of eink-ws27; eink-ws27
+# for the 2.7" HAT: docs/user-guide/eink-ws27-setup.md; eink-ws213 for the
+# 2.13" HAT: docs/user-guide/eink-ws213-setup.md).
 #
 # Runs on your WORKSTATION (not the device) and reads the device READ-ONLY over
 # SSH. It ships in the image under /usr/local/share/kestrel/scripts/ so you can

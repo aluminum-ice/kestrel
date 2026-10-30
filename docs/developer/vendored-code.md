@@ -5,7 +5,7 @@ code belongs to the plugin that uses it, as that plugin's
 [helper files](plugin-development.md#helper-files), never to the `kestrel_pi`
 core.
 
-## Waveshare e-Paper driver (`eink` plugin)
+## Waveshare e-Paper driver (`eink-ws27` and `eink` plugins)
 
 Waveshare's driver for the 2.7" e-Paper HAT, copied from Waveshare's e-Paper
 demo library with the file contents unchanged:
@@ -20,7 +20,12 @@ demo library with the file contents unchanged:
 | `_eink_epd2in7.py` | `epd2in7.py` | Original **V1** 2.7" mono panel |
 | `_eink_epdconfig.py` | `epdconfig.py` | Shared GPIO/SPI backend (selects `RaspberryPi` via `gpiozero`+`spidev`) |
 
-Only the file names change, to the `_eink_` helper prefix. The drivers'
+`eink-ws27` carries the same three files as `_eink-ws27_epd2in7_V2.py`,
+`_eink-ws27_epd2in7.py` and `_eink-ws27_epdconfig.py`, byte for byte
+(`test_eink_ws27.py` checks it): each plugin ships its own helpers, and the
+copies go when the deprecated `eink` is removed.
+
+Only the file names change, to each plugin's helper prefix. The drivers'
 `from . import epdconfig` still works: `kestrel_pi.load_helper` registers a
 plugin's helpers as one package, and the plugin loads `epdconfig` before a
 driver.
@@ -38,9 +43,9 @@ in `spidev`/`gpiozero`, or `Jetson.GPIO` off a Pi). The plugin loads the
 helpers lazily, inside a `try/except`, only when it looks for a panel, so
 importing the plugin (as the test suite does) never touches the hardware.
 
-**Updating:** copy the new upstream files over the helpers, keeping the
-`_eink_` names, update the version and date above, and run the e-ink tests
-(`test_eink.py`). A driver for another panel goes beside the plugin that drives
+**Updating:** copy the new upstream files over the helpers of both plugins,
+keeping the `_eink_` and `_eink-ws27_` names, update the version and date above,
+and run the e-ink tests (`test_eink.py`, `test_eink_ws27.py`). A driver for another panel goes beside the plugin that drives
 it, with that plugin's prefix.
 
 ## Waveshare e-Paper driver (`eink-ws213` plugin)

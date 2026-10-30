@@ -100,10 +100,11 @@ core never loads one. The shipped plugins show both:
   the offline queue, rate limits, quiet hours) is the `alerts` library. Each
   plugin holds only its settings, the request that delivers a message and its
   status page.
-- `eink` and `eink-ws213` draw the same face on two different panels, so the
+- `eink-ws27` and `eink-ws213` draw the same face on two different panels, so the
   face (moods, voices, motion, the Kestrel mark, glyphs) is the `eink_face`
   library. Each plugin holds its own options, layout, panel driver and redraw,
-  and `eink` its HAT's four keys. A plugin for another e-ink HAT loads
+  and `eink-ws27` its HAT's four keys (on the `hat_keys` library). A plugin for
+  another e-ink HAT loads
   `eink_face` and supplies its own layout and panel.
 
 What core offers every plugin, and you may use freely:
@@ -142,8 +143,8 @@ upstream ships it, such as a display driver - put the rest in **helper files**
 beside the plugin:
 
 - Name each one `_<plugin>_<name>.py`, in the same directory as the plugin. The
-  `eink` plugin ships `_eink_epdconfig.py`, `_eink_epd2in7.py` and
-  `_eink_epd2in7_V2.py` (Waveshare's driver, see
+  `eink-ws27` plugin ships `_eink-ws27_epdconfig.py`, `_eink-ws27_epd2in7.py`
+  and `_eink-ws27_epd2in7_V2.py` (Waveshare's driver, see
   [Vendored code](vendored-code.md)).
 - The loader and `kestrel plugins` skip files whose name starts with `_`, so a
   helper is never taken for a plugin. The image build and app-layer updates

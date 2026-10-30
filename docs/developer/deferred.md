@@ -192,29 +192,30 @@ How to use this file:
   `markdown-it-py` and `Pillow` and runs the tool's tests.
 - **Trigger:** the tool's renderer starts changing often.
 
-## E-ink face (`eink` plugin)
+## E-ink face (`eink-ws27`, `eink-ws213` and the deprecated `eink`)
 
-### Rename `eink` to name the HAT it drives
+### Remove the deprecated `eink` plugin
 
-- **What:** rename the plugin `eink` to `eink-ws27`, matching `eink-ws213` (the
-  2.13" HAT's plugin), so e-ink plugins are named `eink-ws<size>` and fit a
-  phone's Plugins row. That renames `plugins/eink.py`, its helper files
-  (`_eink_*.py` become `_eink-ws27_*.py`), the `[plugins.eink]` table
-  with its `faces`/`voices` sub-tables, and the plugin's mentions in the docs,
-  `GUIDE_MD`, the tests, `tools/beta-check/`, `tools/ghost-guide/` and
-  `scripts/pull-eink-diagnostics.sh` (its `--plugin` default).
-  At the same time, give `variant` (`auto`/`v2`/`v1`) and `rotation`
-  (0/90/180/270) `choices`, like `eink-ws213`'s.
-- **Why deferred:** the plugin name is its config table, so the rename changes
-  the shipped `config.toml`, which makes the release reflash-class: the update
-  engine leaves operator config alone, so an updated device would keep the old
-  table and the face would stop. `choices` waits for the same release: a
-  stored value outside them (such as `variant = "V2"`, accepted today) would
-  disable the plugin on a device updated in place.
-- **What to do:** make the rename in a release that is reflash-class for
-  another reason, say in its notes to enable `eink-ws27` again after
-  reflashing, and keep the Ghost guide fixture working with both names until the
-  rename is in a stable release (it renders the latest stable release's code).
+- **What:** delete `plugins/eink.py`, its helper files (`_eink_epdconfig.py`,
+  `_eink_epd2in7.py`, `_eink_epd2in7_V2.py`), `tests/test_eink_ws27.py`'s
+  same-code and helper checks (move `test_eink.py` and `test_eink_keys.py` onto
+  `eink-ws27`), and `docs/user-guide/eink-setup.md` (or reduce it to a pointer);
+  in the shipped `config.toml`, swap the `[plugins.eink]` table and its comment
+  for `[plugins.eink-ws27]`. Then drop `eink` from the docs, `GUIDE_MD`, the
+  plugin lists and counts, `test_plugins_apply.py`, `tools/beta-check/`, the
+  `vendored-code.md` copies note, and make `eink-ws27` the
+  `scripts/pull-eink-diagnostics.sh` `--plugin` default. Keep the ghost-guide
+  fixture's `EINK_NAMES` fallback until a stable release without `eink` is the
+  latest (it renders the latest stable release's code).
+- **Why deferred:** `eink-ws27` replaced it in an app-layer release, with
+  `eink` deprecated (its description, health note and log say so). Removing it
+  now would stop the face on any device updated in place that still has `eink`
+  enabled, with no message, and the `config.toml` change that goes with it makes
+  a release reflash-class: a release made only for this would make every
+  operator set their device up again.
+- **What to do:** in a release that is reflash-class for another reason, and
+  after at least one release carrying the deprecation, make the change above
+  and say in that release's notes to enable `eink-ws27` after reflashing.
 - **Pick up when:** a release has to be reflash-class anyway.
 
 ### Share more of the e-ink plugins through `eink_face`
