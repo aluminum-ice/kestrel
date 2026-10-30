@@ -943,6 +943,41 @@ def test_post_without_csrf_is_refused(monkeypatch, tmp_path):
     assert resp.status_code == 400 and sent == []
 
 
+def test_saved_message_says_disabled_in_red(monkeypatch, tmp_path):
+    # Switching a plugin off says so, on a red line - not "Saved (enabled)".
+    client, sent = _client(monkeypatch, tmp_path, BASIC, table={"enabled": True},
+                           replies=[{"ok": True, "changed": ["enabled"], "restart": True}])
+    token = _csrf(client.get("/manage/wpa-sec", headers=_basic()).get_data(as_text=True))
+    body = client.post("/manage/wpa-sec", headers=_basic(),
+                       data={"csrf": token, "action": "disable"}).get_data(as_text=True)
+    assert sent == [{"plugin": "wpa-sec", "enabled": False}]
+    assert '<p class="msg off">Saved: wpa-sec is now disabled.</p>' in body
+    assert "Saved (enabled)" not in body
+
+
+def test_saved_message_says_enabled_in_green(monkeypatch, tmp_path):
+    client, _sent = _client(monkeypatch, tmp_path, BASIC,
+                            replies=[{"ok": True, "changed": ["timeout", "enabled"],
+                                      "restart": True}])
+    token = _csrf(client.get("/manage/wpa-sec", headers=_basic()).get_data(as_text=True))
+    body = client.post("/manage/wpa-sec", headers=_basic(), data={
+        "csrf": token, "enabled-field": "1", "enabled": "on", "opt-api_key": "k3y",
+        "opt-timeout": "10", "ack": "yes"}).get_data(as_text=True)
+    assert ('<p class="msg on">Saved: wpa-sec is now enabled; changed: timeout.</p>'
+            in body)
+    assert "k3y" not in body                       # option names only, never values
+
+
+def test_saved_message_for_options_only_names_them(monkeypatch, tmp_path):
+    client, _sent = _client(monkeypatch, tmp_path, BASIC, table={"enabled": True},
+                            replies=[{"ok": True, "changed": ["timeout"], "restart": True}])
+    token = _csrf(client.get("/manage/wpa-sec", headers=_basic()).get_data(as_text=True))
+    body = client.post("/manage/wpa-sec", headers=_basic(), data={
+        "csrf": token, "enabled-field": "1", "enabled": "on",
+        "opt-timeout": "10"}).get_data(as_text=True)
+    assert '<p class="msg">Saved (changed: timeout).</p>' in body
+
+
 def test_form_sends_only_what_changed(monkeypatch, tmp_path):
     client, sent = _client(monkeypatch, tmp_path, BASIC)
     token = _csrf(client.get("/manage/wpa-sec", headers=_basic()).get_data(as_text=True))
