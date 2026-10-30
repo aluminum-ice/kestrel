@@ -68,13 +68,16 @@ its image with no power).
 The target panel is the Waveshare 2.7" e-Paper HAT (264×176, black/white),
 which ships in two hardware revisions (V1 and V2). The image installs the SPI
 and GPIO Python backends (`python3-spidev`, `python3-gpiozero`) and the fonts
-the faces need (`fonts-dejavu-core`), and the driver is **vendored** in the
-`kestrel_pi` package, so a seated HAT works with no extra install. SPI must
+the faces need (`fonts-dejavu-core`), and Waveshare's driver ships with the
+plugin, so a seated HAT works with no extra install. SPI must
 be enabled (it is, in the stock image). The plugin **probes** the panel on
 start: if no panel responds it logs that and keeps running, rendering only to
 the web mirror.
 
 The HAT's four keys work too; see [The HAT's keys](#the-hats-keys) below.
+
+For the smaller 2.13" HAT, use the [`eink-ws213` plugin](eink-ws213-setup.md)
+instead. Enable one e-ink plugin at a time: they drive the same pins.
 
 ## Enabling
 

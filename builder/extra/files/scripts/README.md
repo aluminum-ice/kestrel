@@ -47,10 +47,11 @@ shareable `.tar.gz`; `gps-check.sh` is an interactive live check instead.
   an on-device HTTP probe of the loopback page, and a pi-venv import check of
   flask and the web module. MAC/IP-redacted on the device; never reads the web
   username, password or token, and never dumps `config.toml` wholesale.
-- `pull-eink-diagnostics.sh` — triage a blank / not-updating Waveshare e-Paper
-  panel: the eink plugin's state, the `[plugins.eink]` table only, SPI
-  nodes/module/config, venv imports and the daemon's eink journal lines. Pulls
-  no other config table and no credential.
+- `pull-eink-diagnostics.sh [--plugin NAME]` — triage a blank / not-updating
+  Waveshare e-Paper panel for an e-ink plugin (`eink` by default, or
+  `eink-ws213`): its state, its `[plugins.NAME]` table only, SPI
+  nodes/module/config, venv imports including its driver helper files, and the
+  daemon's e-ink journal lines. Pulls no other config table and no credential.
 - `gps-check.sh` — interactive GPS check (not a bundle): serial node, `pi` in
   `dialout`, the daemon's live fix, and an optional `--sample` that briefly
   reads raw NMEA off the receiver to classify FIX / STREAMING / SILENT with the

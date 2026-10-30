@@ -173,6 +173,7 @@ guide. Secret options (API keys/tokens) are collected at enable time and masked.
 | `backup` | `host`, `user`, `path`, `port`, `tool` (`rsync`/`scp`), `agent_dir`, `interval_seconds`, `timeout` | [Remote backup](backup-setup.md) |
 | `ups-hat` | `i2c_bus`, `address`, `shutdown_percent` (`0` = monitor only), `poll_seconds` | [UPS HAT](ups-hat-setup.md) |
 | `eink` | `variant` (`auto`/`v2`/`v1`), `rotation`, `refresh_seconds`, `show_mascot`, `show_brand_glyph`, `battery_low_percent`, `bored_epochs`, `sad_epochs` | [e-ink face](eink-setup.md) |
+| `eink-ws213` | `variant` (`v4`/`v3`/`v2`), `rotation`, `refresh_seconds`, `partials_per_full`, `show_mascot`, `show_brand_glyph`, `show_fingerprint_minutes`, `show_ip`, `battery_low_percent`, `bored_epochs`, `sad_epochs` | [e-ink face for the 2.13" HAT](eink-ws213-setup.md) |
 | `updates` | `repo`, `check_interval_seconds`, `timeout` | [Keeping the device updated](updates.md) |
 | `remote-train` | `train_host`, `train_user`, `train_path`, `train_port`, `algorithms`, `remote_train_min_new_episodes`, `timesteps`, `interval_seconds`, `timeout` | [Remote training](remote-training.md) |
 
