@@ -8,7 +8,8 @@ The docs are split by audience:
 - **[`developer/`](developer/)** — reference for building and extending
   kestrel itself. Start with the [architecture](developer/architecture.md)
   and the [tech stack](developer/tech-stack.md). To write a plugin, see
-  [Writing a plugin](developer/plugin-development.md). Then the
+  [Writing a plugin](developer/plugin-development.md) and the
+  [plugin libraries](developer/plugin-libraries.md) plugins can share. Then the
   [capture interface contract](developer/capture-interface.md), the
   [web UI conventions](developer/web-ui-conventions.md), the
   [in-place update engine](developer/updates-setup.md) and

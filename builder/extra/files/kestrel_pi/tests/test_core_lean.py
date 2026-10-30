@@ -16,7 +16,7 @@ FILES = os.path.normpath(os.path.join(PKG_ROOT, ".."))
 # needs it (a policy, an API), not one plugin's feature; add to this list only
 # with that bar in mind.
 PLUGIN_SERVICES = {
-    "kestrel_pi.plugins",       # the plugin API: Plugin, load_helper, page markers
+    "kestrel_pi.plugins",       # the plugin API: Plugin, load_helper, load_library, page markers
     "kestrel_pi.httpsafe",      # how a plugin sends a credential: https only, no redirects
 }
 
@@ -88,9 +88,23 @@ def test_every_core_module_is_used_by_core():
     plugin_only = set(modules) - seen - PLUGIN_SERVICES
     assert not plugin_only, (
         "only plugins use %s: move the code into the plugin that needs it "
-        "(a copy in each, if several do)" % ", ".join(sorted(plugin_only)))
+        "(a shared plugin library, _lib_<name>.py, if several do)" % ", ".join(sorted(plugin_only)))
 
 
 def test_the_plugin_services_are_still_there():
     modules = _modules()
     assert PLUGIN_SERVICES <= set(modules)
+
+
+def test_core_never_loads_a_plugin_library():
+    # Libraries are plugin code: only a plugin (or another library) asks for
+    # one. plugins.py defines load_library; no other core module calls it.
+    for name, path in _modules().items():
+        if name == "kestrel_pi.plugins":
+            continue
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                assert called != "load_library", "%s calls load_library" % name

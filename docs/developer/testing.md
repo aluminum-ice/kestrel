@@ -46,7 +46,9 @@ excluded from the built package (`pyproject.toml` `exclude = ["tests*"]`), so
 nothing test-only ships in the image. They cover, roughly:
 
 - **Daemon / plugin framework** — `test_daemon`, `test_loader`, `test_dispatch`,
-  `test_context`, `test_options`, `test_ui`, `test_reference_plugins`.
+  `test_context`, `test_options`, `test_ui`, `test_reference_plugins`,
+  `test_load_helper`, `test_load_library`, and `test_core_lean` (core holds no
+  plugin-only code and never loads a plugin library).
 - **Web + privileged helpers** — `test_web`, `test_plugins_apply`.
 - **Capture + config tooling** — `test_capture`, `test_config_set`,
   `test_connectivity`.
@@ -62,6 +64,17 @@ Drop a `test_*.py` into `tests/`. Keep it pure stdlib plus the libraries above;
 without it) so the suite still runs where that dependency is absent. Keep the
 target at **Python 3.11** (the image's interpreter) — no 3.12+ syntax, the same
 rule as the package itself.
+
+**Plugins that use a shared plugin library.** Load the plugin from the
+checkout (`builder/extra/files/plugins/`) as the existing plugin tests do;
+`kestrel_pi.load_library` finds `_lib_<name>.py` beside it, so no setup is
+needed. Test a library's own behaviour once, against the library module
+(`load_library(<a plugin path>, "<name>", api=N)` returns it), and keep each
+plugin's tests for what the plugin adds. To patch a library global (a clock,
+an address lookup), patch it on the library module with `monkeypatch`, not on
+the plugin module: the plugin calls through the library, and the library
+module is shared by every plugin that loads it. See
+[Shared plugin libraries](plugin-development.md#shared-plugin-libraries).
 
 See also: [Architecture](architecture.md), [Tech stack](tech-stack.md),
 [Plugin development](plugin-development.md).

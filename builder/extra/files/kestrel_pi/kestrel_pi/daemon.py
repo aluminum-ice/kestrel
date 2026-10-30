@@ -38,12 +38,13 @@ from .recovered import RecoveredStore
 from .geo import GeoStore
 from .dispatch import Dispatcher
 from .loader import Loader
+from .plugins import SHIPPED_PLUGINS_DIR
 from .ui import StubUI, UIState
 
 # Plugin search paths: shipped reference plugins first, operator plugins second
 # (an operator plugin overrides a shipped one of the same name).
 DEFAULT_PLUGIN_PATHS = (
-    "/usr/local/lib/kestrel/plugins",
+    SHIPPED_PLUGINS_DIR,
     "/etc/kestrel/plugins",
 )
 

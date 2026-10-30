@@ -20,6 +20,7 @@ from kestrel_pi.capture import CaptureInterface
 from kestrel_pi.connectivity import ConnectivityState
 from kestrel_pi.context import ServiceRegistry
 from kestrel_pi.loader import Loader, discover_plugin_classes
+from kestrel_pi.plugins import RESERVED_PLUGIN_NAMES
 
 FILES = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 PLUGINS_DIR = os.path.join(FILES, "plugins")
@@ -140,8 +141,9 @@ def _read(reader, path):
         return ("error", type(exc).__name__)
 
 
-# A "_" file beside the plugins is a plugin's helper (kestrel_pi.load_helper),
-# never a plugin: the loader and plugins-ctl both skip it.
+# A "_" file beside the plugins is a plugin's helper (kestrel_pi.load_helper) or
+# a shared plugin library (kestrel_pi.load_library), never a plugin: the loader
+# and plugins-ctl both skip it.
 SHIPPED_PLUGINS = sorted(f for f in os.listdir(PLUGINS_DIR)
                          if f.endswith(".py") and not f.startswith("_"))
 
@@ -165,6 +167,7 @@ def test_readers_do_not_drift(tmp_path):
         assert _read(declarations.read_declarations, path) == \
             _read(ctl.read_declarations, path), path
     assert ctl.DECLARED == declarations.DECLARED
+    assert ctl.RESERVED_PLUGIN_NAMES == RESERVED_PLUGIN_NAMES
 
 
 def test_reader_defaults_match_the_plugin_base_class():
@@ -289,3 +292,22 @@ def test_choices_are_checked_by_both_readers(tmp_path, name, ok):
             with pytest.raises(error, match="choices"):
                 reader(str(path))
 
+
+
+def test_the_reserved_plugin_name_lib_is_skipped_by_both(tmp_path, caplog):
+    # ``_lib_<name>.py`` files are shared plugin libraries, so a plugin called
+    # ``lib`` (whose helpers would carry that prefix) is never loaded or listed.
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    (plugins / "lib.py").write_text(FIXTURES["plain"].replace("Plain", "Lib"))
+    (plugins / "plain.py").write_text(FIXTURES["plain"])
+    loader = Loader(config={"plugins": {}}, capture=CaptureInterface(str(tmp_path)),
+                    connectivity=ConnectivityState(), services=ServiceRegistry(),
+                    search_paths=[str(plugins)], logger=LOG)
+    with caplog.at_level(logging.WARNING):
+        assert set(loader._scan()) == {"plain"}
+    assert "reserved for plugin libraries" in caplog.text
+    listed = _run_ctl(tmp_path, "list", plugin_paths=str(plugins))
+    assert listed.returncode == 0, listed.stderr
+    assert [line.split("\t")[0] for line in listed.stdout.splitlines()] == ["plain"]
+    assert "reserved for plugin libraries" in listed.stderr

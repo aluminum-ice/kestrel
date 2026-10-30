@@ -104,8 +104,9 @@ responsibility:
   (`/usr/local/lib/kestrel/plugins/`), with operator overrides from
   `/etc/kestrel/plugins/` taking precedence.
 - **`plugins.py`** + **`__init__.py`** — the plugin registry, the
-  legacy-compatible `Plugin` base class / `on_*` hook surface, and
-  `load_helper`, which loads a plugin's own helper files.
+  legacy-compatible `Plugin` base class / `on_*` hook surface,
+  `load_helper`, which loads a plugin's own helper files, and `load_library`,
+  which loads a shared plugin library for a plugin that asks for one.
 - **`dispatch.py`** — runs hooks **off the main loop** on a small worker pool
   (`hook_workers`), with a per-hook time budget (`max_hook_seconds`) after which a
   slow hook is logged as an overrun. A hook that overruns but then finishes is
@@ -137,10 +138,14 @@ the services the daemon offers (`geo.py`, `recovered.py`, `webtls.py`) and
 **Core stays lean.** `kestrel_pi` holds only what the daemon, the agent and the
 shipped scripts run, plus those general services; it never holds code that
 exists for particular plugins, and it never imports a plugin. A feature lives in
-its plugin, even when two plugins then carry a copy each (`ntfy` and `telegram`
-each hold their own alert code; `eink` holds its HAT's keys, with Waveshare's
-driver as its own helper files). `tests/test_core_lean.py` fails on a module only
-plugins use. See [Keep plugins standalone](plugin-development.md#keep-plugins-standalone).
+its plugin. Code several plugins share lives with the plugins as a **shared
+plugin library** (`plugins/_lib_<name>.py`), which a plugin loads with
+`load_library` and core never loads; until a library exists, each plugin
+carries a copy (`ntfy` and `telegram` each hold their own alert code; `eink`
+holds its HAT's keys, with Waveshare's driver as its own helper files).
+`tests/test_core_lean.py` fails on a module only plugins use and on core loading
+a library. See [Keep plugins standalone](plugin-development.md#keep-plugins-standalone)
+and the [plugin library reference](plugin-libraries.md).
 
 ### Epoch loop
 
@@ -173,9 +178,12 @@ design overview.
 - **Dispatch is non-blocking** (see `dispatch.py` above), so a plugin doing I/O
   does not block the loop.
 - **Standalone**: a plugin is one file plus, if it needs them, its own
-  `_<plugin>_*.py` helper files (loaded with `load_helper`; the loader skips
-  them). Plugins never share code through core, and never through each other's
-  helpers.
+  `_<plugin>_*.py` helper files (loaded with `load_helper`) and the shared
+  `_lib_<name>.py` plugin libraries it names (loaded with `load_library`:
+  beside the plugin first, then the shipped plugins directory; versioned by
+  `LIB_API`). The loader skips both kinds of file, and `lib` is reserved as a
+  plugin name. Plugins never share code through core, and never through each
+  other's helpers.
 
 ### How plugins reach the UI
 
