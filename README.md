@@ -50,23 +50,37 @@ The device serves a mobile-first web dashboard over its management link (Bluetoo
   <img src="docs/images/web-ui.png" alt="Kestrel web UI on a phone: the dashboard, plugins and AI agent pages" width="840">
 </p>
 
-Left to right: the **dashboard** (status, capture control, the Environment readout and plugin readout cards), the **plugins** page (enable/disable and per-plugin actions) and the **AI agent** page (policy, algorithm and live readout). The values are sample data. An interactive preview of these exact pages — live and scrollable — is at [`assets/branding/web-ui-iphone-preview.html`](assets/branding/web-ui-iphone-preview.html); open it in a browser.
+Left to right: the **dashboard** (status, capture control, the Environment readout and plugin readout cards), the **plugins** page (enable/disable, settings and each plugin's own buttons) and the **AI agent** page (policy, algorithm and live readout). All screenshots are an iPhone 14 Pro Max in dark mode with sample data.
+
+### The map
+
+With the optional `map` plugin, every captured network with a known location is drawn on one map: pins for locations the onboard GPS recorded, `~` rings for estimates (from WiGLE, say), and numbered squares for networks close together. **Green with a lock** marks a network whose passphrase you've recovered and **gray** one you haven't; a square is green if any network in it is. Drag to move and pinch (or scroll) to zoom; the map redraws for the new area when you let go.
 
 <p align="center">
-  <img src="docs/images/features.png" alt="More Kestrel pages on a phone: captured networks, advanced settings, the operator guide and the live e-ink display mirror" width="900">
+  <img src="docs/images/map-view.png" alt="The map plugin on a phone: pins and numbered squares over an OpenStreetMap street map, green with a lock for recovered networks and gray for the rest, and a list of the networks captured from one spot" width="600">
 </p>
 
-More of the interface: the **captured networks** page (searchable and paginated), the **advanced settings** editor (one validated key at a time), the on-device **operator guide**, and the **live e-ink mirror** — the exact frame the e-Paper HAT shows, viewable from your phone even with no HAT attached.
+Left: the map, with a scale bar, north arrow and the OpenStreetMap attribution. Right: networks captured from one spot share its location, so no zoom can separate them; their square lists them under the map instead, with 🔒 for recovered and 📍 or ≈○ for a recorded or estimated location. The pins are sample data placed by hand. The device sends nothing, but your browser loads the map images for the area in view from OpenStreetMap; set `tile_url` to your own tile server, or leave it empty for a plain coordinate grid that works offline. The passphrase itself never appears on the map.
+
+### More of the interface
+
+<p align="center">
+  <img src="docs/images/features.png" alt="More Kestrel pages on a phone: the sign-in page, captured networks, downloads, advanced settings, the operator guide and the live e-ink display mirror" width="900">
+</p>
+
+Top row: the **sign-in** page (off the device the dashboard is HTTPS, and you sign in with the device account, the same login as SSH), the **captured networks** page (by network or by access point, searchable and sortable, with **Import results** for recovered passphrases at the top, and each network's recovered and location marks), and the **downloads** page (take your handshake files home as a zip, only the ones new since your last download, or one combined `.hc22000`). Bottom row: the **advanced settings** editor (one validated key at a time), the on-device **operator guide**, and the **live e-ink mirror**: the exact frame the e-Paper HAT shows, viewable from your phone even with no HAT attached.
 
 ### The e-ink face
 
 With the optional `eink` plugin and a Waveshare 2.7" e-Paper HAT, the device wears an animated "tamagotchi" face whose expression follows real device and learning-agent state — it never plays a canned loop.
 
 <p align="center">
-  <img src="docs/images/eink-panel.png" alt="The Kestrel e-ink face: a top icon strip, the mascot face, agent and capture status, uptime and channel, how many radios are in range, handshake and AP counters, and the Kestrel mark" width="460">
+  <img src="docs/images/eink-panel.png" alt="The Kestrel e-ink face: a top icon strip, the mascot face, agent and capture status, uptime, channel plan and how many radios are in range, the device's address, handshake, access point and network counters, and the Kestrel mark" width="460">
 </p>
 
-The panel shows a top icon strip (Bluetooth PAN and Wi-Fi link, a GPS satellite with signal bars, and battery), the mascot face with a mood-matched voice line, the **agent** mode (`off` / `baseline` / `learned`) and **capture** state, uptime, the channel plan and how many radios are in range (`NEAR`), the device's address on each connected link (so you can find the dashboard without your router's client list), lifetime and session counters for captured handshakes (`PWND`) and access points (`AP`), and the Kestrel mark in the corner. With no HAT attached it still renders to the web mirror.
+The panel shows a top icon strip (Bluetooth PAN and Wi-Fi link, a GPS satellite with signal bars, and battery), the mascot face with a mood-matched voice line, the **agent** mode (`off` / `baseline` / `learned`) and **capture** state, uptime, the channel plan and how many radios are in range (`NEAR`), the device's address on each connected link (so you can find the dashboard without your router's client list), the counters for captured handshakes (a key glyph, with this session's count in brackets), access points (`AP`) and networks (`NET`), and the Kestrel mark in the corner. With no HAT attached it still renders to the web mirror.
+
+The HAT's four keys work too: KEY1 opens an info screen, a long KEY2 press stops capture (or, after a second press, starts it again, but only once the authorized-use acknowledgment has been given on the dashboard), and long KEY3/KEY4 presses reboot or shut down after a second press.
 
 ## What's in the image
 
