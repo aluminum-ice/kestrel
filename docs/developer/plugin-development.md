@@ -100,9 +100,11 @@ core never loads one. The shipped plugins show both:
   the offline queue, rate limits, quiet hours) is the `alerts` library. Each
   plugin holds only its settings, the request that delivers a message and its
   status page.
-- `eink` holds everything about its panel and its HAT, including the HAT's
-  four keys. A plugin for another e-ink HAT starts from a copy of it, not from
-  shared code.
+- `eink` and `eink-ws213` draw the same face on two different panels, so the
+  face (moods, voices, motion, the Kestrel mark, glyphs) is the `eink_face`
+  library. Each plugin holds its own options, layout, panel driver and redraw,
+  and `eink` its HAT's four keys. A plugin for another e-ink HAT loads
+  `eink_face` and supplies its own layout and panel.
 
 What core offers every plugin, and you may use freely:
 

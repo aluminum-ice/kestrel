@@ -113,6 +113,7 @@ its `LIB_API`; a test (`tests/test_load_library.py`) keeps the two in step.
 | Library | File | API | Status | Used by |
 | --- | --- | --- | --- | --- |
 | `alerts` | `_lib_alerts.py` | 1.0 | stable | `ntfy`, `telegram` |
+| `eink_face` | `_lib_eink_face.py` | 1.0 | stable | `eink`, `eink-ws213` |
 
 Each library has its own section below: what it is for, a minimal plugin using
 it, its public functions and classes, the rules it enforces and what stays in
@@ -245,3 +246,141 @@ a chat). Declare `network`: the alerts leave the device, so enabling the
 plugin takes the authorized-use acknowledgment. If your service is public by
 default (a social network, say), only ever post privately, and keep
 `include_names` off by default.
+
+## `eink_face`: the Kestrel face for e-ink panels
+
+`load_library(__file__, "eink_face", api=1)`. The animated "tamagotchi" face
+the e-ink plugins draw, without anything that depends on a particular panel:
+the faces and their voices, the mood ladder that picks one from live device
+and learning-agent state, the motion estimate from GPS, the Kestrel mark, the
+small glyphs of the status rows, text helpers and the address lookup. Your
+plugin decides the layout (what goes where on its panel), brings its panel up
+and redraws it. `eink` (2.7" HAT, 264x176, with keys) and `eink-ws213` (2.13"
+HAT, 250x122, partial redraws) are built on it, and are the best examples.
+
+### A minimal plugin
+
+A face with no panel at all: it draws a frame on request and serves it as a
+PNG from a **View** button on the Plugins page. A real plugin adds its panel
+driver, a render thread that redraws on a timer and only when the frame
+changed, and more rows (see `eink-ws213.py`).
+
+```python
+from kestrel_pi import Plugin, load_library
+
+face = load_library(__file__, "eink_face", api=1)
+W, H = 212, 104                          # your panel's size, landscape
+
+
+class TinyFace(Plugin):
+    __version__ = "0.1.0"
+    __target_api__ = 2
+    __capabilities__ = ("ui", "web")
+    __optional_requires__ = ("agent", "battery", "position")
+    __actions__ = ({"label": "View", "path": "display", "method": "get", "order": 1},)
+    __options__ = {"faces": {"type": "dict"}, "voices": {"type": "dict"}}
+
+    def on_loaded(self):
+        self._state = None
+        self._moods = face.MoodTracker()
+        self._motion = face.MobilityTracker()
+
+    def on_ui_update(self, ui, state):
+        self._state = state                  # the latest device snapshot
+
+    def on_handshake(self, event):
+        state = self._state
+        self._moods.handshake(state.epoch if state is not None else None)
+
+    def frame(self):
+        from PIL import Image, ImageDraw     # inside the method: no PIL at import
+
+        state, opts = self._state, self.context.options
+        fix = self.context.services.get("position") or (state.position if state else None)
+        motion = self._motion.update(fix)
+        mood = self._moods.decide(state, opts, motion)
+        img = Image.new("1", (W, H), 255)
+        draw = ImageDraw.Draw(img)
+        draw.text((4, 4), face.face_glyph(mood, opts.get("faces")),
+                  font=face.font(20), fill=0)
+        small = face.font(10)
+        voice = face.voice_for(mood, 0, opts.get("voices"))
+        for i, line in enumerate(face.wrap_text(draw, voice, small, W - 8)[:2]):
+            draw.text((4, 34 + 12 * i), line, font=small, fill=0)
+        linked = {iface for iface, _ip in face.addresses()}
+        face.draw_bt(draw, 4, H - 16, 8, 12, "bnep0" in linked)
+        face.draw_wifi(draw, 18, H - 14, 14, 10, "wlan0" in linked)
+        face.draw_kestrel(draw, W - 26, H - 26, 24, motion in face.MOVING)
+        return img
+
+    def on_webhook(self, path, request):
+        return (face.png_bytes(self.frame()), 200,
+                {"Content-Type": "image/png", "Cache-Control": "no-store"})
+```
+
+### What it provides
+
+- **Moods.** `MoodTracker()` holds what changes from frame to frame (the
+  agent's smoothed reward trend, a just-promoted model, the few seconds after a
+  handshake, idle epochs, the look-left/right toggle).
+  `decide(state, options, mobility, fault=False)` returns the mood for this
+  frame, a key into `FACES`, from the plugin's last `UIState` and its live
+  options (`battery_low_percent`, `bored_epochs`, `sad_epochs`); call
+  `handshake(epoch)` from `on_handshake`. Underneath, `MoodInputs` and
+  `decide_mood(inputs)` are the pure priority ladder (fault, power, milestone,
+  handshake, agent posture, idle, base), usable on their own.
+- **Faces and voices.** `FACES` and `VOICES` (mood to glyph, mood to phrases);
+  `face_glyph(mood, overrides)` and `voice_for(mood, rot, overrides)` apply
+  your plugin's `faces`/`voices` options (dict options an operator sets under
+  `[plugins.<name>.faces]`); `voice_phrases(mood, overrides)` gives the whole
+  list. Advance `rot` when the mood changes, not every frame, so the words vary
+  without redrawing a still face.
+- **Motion.** `MobilityTracker()`: `update(fix)` folds in a `position` service
+  fix (or None) and returns `parked`, `walking`, `driving` or `unknown`
+  (`.state` keeps it). Speed is timed by when each fix was taken
+  (`fix_seconds(fix)`: its `ts`, else the `gps` plugin's `fix_time`), so
+  reading the same fix again isn't a stop. Read the position service each
+  frame, falling back to `state.position`, which the daemon refreshes only once
+  an epoch. `MOVING`, `MOBILITY_LABEL`, `PARK_MS`/`WALK_MS`/`DRIVE_MS`,
+  `classify_speed(speed)` and `haversine_m(a, b)` are there too.
+- **The Kestrel mark.** `draw_kestrel(draw, x, y, size, moving)`: hovering when
+  parked, stooping when moving. `KESTREL_HOVER`/`KESTREL_STOOP`,
+  `flatten_svg_path` and `scaled_polygon` are the parts.
+- **Glyphs**, each `(draw, x, y, w, h, ...)` in 1-bit: `draw_bt` and
+  `draw_wifi` (slashed when the link is down), `draw_sat` (solid when locked)
+  and `draw_sigbars` with `signal_level(cn0, locked)`, `draw_battery`,
+  `draw_chip` (the agent), `draw_antenna` (capture), `draw_key` (handshakes),
+  `draw_density`, and `draw_motion`/`draw_person`/`draw_car`.
+- **Text.** `font(size)` (DejaVu, falling back to PIL's default), `text_w`,
+  `text_right`, `wrap_text(draw, text, font, max_w)`, `fmt_uptime(seconds)`
+  (`H:MM`, so a ticking clock doesn't redraw the panel every frame),
+  `agent_label(agent)` (`off`/`baseline`/`learned`) and `as_float`.
+- **Device facts.** `addresses()` lists the management links that have an
+  IPv4 address (Bluetooth first), via `iface_ipv4(iface)`. Make your plugin's
+  own `_addresses()` method call it, so tests and screenshots can substitute
+  placeholder addresses. `png_bytes(image)` for a web mirror.
+
+### Rules it keeps for you
+
+- **The face never lies:** every mood maps to a real device or agent state.
+  `smart` shows only while a *learned* policy is driving, never under the
+  scripted baseline; with capture off the face sleeps, and a real event (a
+  fault, a low battery, a handshake) still shows through.
+- **No hardware or PIL at load:** PIL is imported inside the functions that
+  draw or measure, so loading the library, and deciding moods, works on any
+  host.
+
+### What stays in your plugin
+
+Its declarations (the face options, `faces` and `voices`, are declared by your
+plugin like any other), its layout (fonts, sizes and where each row goes: the
+two shipped plugins lay the same face out differently), its panel driver
+(Waveshare's code ships as the plugin's own `_<plugin>_*.py` helpers), how and
+when it redraws, any keys, the web mirror and the dashboard card, and the
+start-up HTTPS fingerprint lines (`webtls.fingerprint()`), whose format
+depends on the space you have. Keep importing your driver and PIL inside
+methods. A panel plugin needs no `network` capability, so it needs no
+authorized-use acknowledgment; if it drives keys that start capture, the rule
+in [Keep plugins standalone](plugin-development.md#keep-plugins-standalone)
+applies: a key never sends the acknowledgment.
+
