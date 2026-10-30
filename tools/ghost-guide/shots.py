@@ -92,6 +92,20 @@ def _scroll_to_text(page, text):
                   box["y"] - 24 + page.evaluate("window.scrollY"))
 
 
+def _sign_in(page, base_url):
+    """Sign in through the dashboard's own form, as a phone does since 1.0.9
+    (the demo accepts any password), so each page is what a signed-in operator
+    sees, Sign out link included. A release with no sign-in page skips this."""
+    resp = page.goto(base_url + "/login", wait_until="networkidle")
+    if resp is None or resp.status == 404 or not page.locator("#p").count():
+        return
+    page.fill("#p", "demo")
+    page.click("button[type=submit]")
+    page.wait_for_load_state("networkidle")
+    if page.locator("#p").count():
+        raise RuntimeError("the demo couldn't sign in to the dashboard")
+
+
 def capture(demo, base_url, figures, out_dir, browser="webkit"):
     """Write ``<key>.png`` for each figure into ``out_dir``. Returns
     ``{key: (path, width, height)}``."""
@@ -125,9 +139,13 @@ def capture(demo, base_url, figures, out_dir, browser="webkit"):
                 reduced_motion="reduce",
             )
             page = context.new_page()
+            _sign_in(page, base_url)
             for fig in phone:
                 demo.set_update_available(fig.get("scenario") == "update-available")
-                page.goto(base_url + fig["path"], wait_until="networkidle")
+                resp = page.goto(base_url + fig["path"], wait_until="networkidle")
+                if resp is None or resp.status != 200:
+                    raise RuntimeError("the demo answered %s for %s (figure %s)" % (
+                        resp.status if resp else "nothing", fig["path"], fig["key"]))
                 if fig.get("focus"):
                     _scroll_to_text(page, fig["focus"])
                 raw = os.path.join(out_dir, fig["key"] + ".page.png")

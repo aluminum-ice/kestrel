@@ -149,6 +149,18 @@ class Demo:
         web._agent_has_model = lambda algorithm, agent_dir=None: True
         web._read_update_state = lambda path=None: copy.deepcopy(self.update_state)
         web._read_update_run_state = lambda path=None: {}
+        # Since 1.0.9 the dashboard has a sign-in page. The demo accepts any
+        # password for the documented device account (the page would otherwise
+        # name this desktop's login), and keeps the session key and certificate
+        # state in the scratch directory instead of this desktop's home.
+        web.system_login_user = lambda web_cfg: "pi"
+        web._verify_system_login = lambda username, password: True
+        try:
+            from kestrel_pi import webtls
+        except ImportError:
+            pass
+        else:
+            webtls.state_dir = lambda: os.path.join(workdir, "web-state")
 
         d = daemon_mod.Daemon(config_path=os.path.join(workdir, "config.toml"),
                               plugin_paths=(os.path.join(files_dir, "plugins"),),
