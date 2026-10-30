@@ -687,6 +687,26 @@ prompt_text() {   # args: title current -> echo value (prefilled with current)
     printf '%s' "$val"
 }
 
+prompt_choice() {   # args: title current choices(a,b,c) -> echo one of the choices
+    local title=$1 cur=$2 val c
+    local -a list items
+    IFS=, read -r -a list <<<"$3"
+    if have_whiptail; then
+        items=()
+        for c in "${list[@]}"; do items+=("$c" ""); done
+        val=$(whiptail --title "$title" --noitem --default-item "$cur" \
+            --menu "Choose one:" 15 60 6 "${items[@]}" 3>&1 1>&2 2>&3) || val="$cur"
+    else
+        while :; do
+            read -r -p "$title [$cur] (${3//,/\/}): " val
+            [ -n "$val" ] || val="$cur"
+            for c in "${list[@]}"; do [ "$val" = "$c" ] && break 2; done
+            echo "choose one of: ${3//,/, }" >&2
+        done
+    fi
+    printf '%s' "$val"
+}
+
 cmd_plugins_list() {
     printf '%-16s %-9s %s\n' NAME STATE SOURCE
     plugins_ctl list | while IFS=$'\t' read -r name state source; do
@@ -757,9 +777,9 @@ cmd_plugins_enable() {
     local -a schema_lines=()
     mapfile -t schema_lines < <(plugins_ctl schema "$name")
     declare -A is_secret
-    local line opt typ required secret has_value current val
+    local line opt typ required secret has_value choices current val
     for line in "${schema_lines[@]}"; do
-        IFS=$'\t' read -r opt typ required secret has_value current <<<"$line"
+        IFS=$'\t' read -r opt typ required secret has_value choices current <<<"$line"
         [ "$secret" = 1 ] && is_secret["$opt"]=1
     done
 
@@ -788,7 +808,8 @@ cmd_plugins_enable() {
     { [ "$yes" != yes ] && [ -t 0 ]; } && interactive=yes
 
     for line in "${schema_lines[@]}"; do
-        IFS=$'\t' read -r opt typ required secret has_value current <<<"$line"
+        IFS=$'\t' read -r opt typ required secret has_value choices current <<<"$line"
+        choices=${choices#choices=}
         [ -n "$opt" ] || continue
         # Already supplied via --set: don't prompt for it again.
         [ -n "${preset[$opt]+x}" ] && continue
@@ -816,6 +837,9 @@ cmd_plugins_enable() {
                     else
                         plugins_ctl_set_secret "$name" "$opt" "$val"
                     fi
+                elif [ -n "$choices" ]; then
+                    val=$(prompt_choice "$name: $opt" "$current" "$choices")
+                    [ "$val" = "$current" ] || plugins_ctl set "$name" "$opt" "$val"
                 else
                     val=$(prompt_text "$name: $opt" "$current")
                     { [ -z "$val" ] && [ "$required" = 1 ] && [ "$has_value" = 0 ]; } && die "option '$opt' is required"

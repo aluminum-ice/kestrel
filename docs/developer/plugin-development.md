@@ -450,6 +450,23 @@ __options__ = {
   --set <option>=...`): the web page shows it read-only, and the root apply
   helper refuses it, because anything that can reach that socket runs as `pi`.
   Mark any option whose value a root process trusts.
+- `"choices": [...]` makes a `str` or `int` option one of a fixed set:
+
+  ```python
+  "variant": {"type": "str", "default": "v4", "choices": ["v4", "v3", "v2"],
+              "help": "The panel revision printed on the sticker on its back."},
+  ```
+
+  The Plugins page shows a dropdown, `kestrel plugins enable` lists the choices
+  and asks again on anything else, and both the root helper and `--set` refuse
+  a value outside them before writing `config.toml`; a stored value outside them
+  disables the plugin with a reason, like a wrong type. Matching is exact
+  (`"V4"` is not `"v4"`). The list is a plain literal of at least one value of
+  the option's type (a `str` choice non-empty, with no comma or tab), and the
+  `default` must be one of them; anything else and the plugin is refused at
+  load. **Add `choices` only to a new option, or at a release that needs a
+  reflash anyway:** an existing option's stored values may fall outside the
+  list, and the plugin would stop on devices that update in place.
 
 In config.toml, your options live under `[plugins.<name>]` alongside the
 framework's own `enabled` flag. **Config is edited one key at a time** through the
