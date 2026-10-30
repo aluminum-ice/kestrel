@@ -381,6 +381,8 @@ Draws the classic animated "tamagotchi" face on a Waveshare 2.7" e-Paper HAT, so
 
 The face reads the learning agent's state and the battery when those are available (the agent and `ups-hat`), and degrades cleanly when they are not. The faces themselves are the classic pwnagotchi emoticons and can be overridden per mood in `config.toml` under `[plugins.eink.faces]`.
 
+
+**The HAT's keys.** With `eink` on, the HAT's four keys work too (turn them off with `buttons = false`). **KEY1** (short) shows an info screen for 30 seconds: version, addresses, the dashboard's HTTPS fingerprint, uptime and free space. A long **KEY2** stops capture at once, or, when capture is off, starts it after you press KEY2 again; starting works only if you've already accepted the authorized-use acknowledgment (on the dashboard or with `sudo kestrel capture enable`), and a key never accepts it for you. A long **KEY3** reboots and a long **KEY4** shuts down, each only after a second press within 5 seconds, so a press in a pocket does nothing. "Starting capture..." and "Stopping capture..." stay on the panel until capture has actually started or stopped. The dashboard card shows the last key pressed; if your board wires the keys elsewhere, set `pins` (default `5,6,13,19`).
 ### wpa-sec (upload and fetch recovered results)
 
 Uploads captured handshakes to [wpa-sec.stanev.org](https://wpa-sec.stanev.org), a distributed cracking service, and downloads the passwords recovered under your key. Off by default, and a network plugin, so enabling it takes the authorized-use acknowledgment.
@@ -507,10 +509,6 @@ Two plugins send the same short alerts, one per service: **ntfy** to an ntfy top
 
 - **ntfy:** leave `topic` empty and the plugin makes a long random topic, shown on its **Status** page; subscribe to it in the ntfy app, keep it private, and press **Send test**. Set `server` (and `token`) to use your own ntfy server.
 - **telegram:** create a bot with @BotFather, send it a message, then set `bot_token` and `chat_id` (your chat id); both are kept secret. Press **Send test**.
-
-### hat-buttons (the e-Paper HAT's keys)
-
-Gives the four keys on the Waveshare 2.7" e-Paper HAT jobs you want with no phone at hand. Off by default; local only, so no acknowledgment. **KEY1** (short) shows an info screen for 30 seconds: version, addresses, the dashboard's HTTPS fingerprint, uptime and free space. A long **KEY2** stops capture (buttons never start it: that takes the acknowledgment). A long **KEY3** reboots and a long **KEY4** shuts down, each only after you press the same key again within 5 seconds, so a press in a pocket does nothing. A short press of KEY2 to KEY4 shows a reminder. The panel shows what's happening when `eink` is on; the dashboard card shows the last key pressed. If your board wires the keys elsewhere, set `pins` (default `5,6,13,19`).
 
 ### remote-train (offload training to a desktop)
 

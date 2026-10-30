@@ -87,11 +87,43 @@ The same from the terminal:
 sudo kestrel plugins enable eink
 ```
 
-## The HAT's buttons
+## The HAT's keys
 
-The HAT's four keys can show an info screen, stop capture, and reboot or shut
-down (after a second press): enable the `hat-buttons` plugin. See
-[The e-Paper HAT's buttons](hat-buttons.md).
+The HAT has four keys along its edge, KEY1 to KEY4. With `eink` on, they do
+jobs you want with no phone at hand:
+
+| Key | Short press | Long press (3 seconds) |
+| --- | --- | --- |
+| **KEY1** | Info screen for 30 seconds: version, the device's addresses, the dashboard's HTTPS fingerprint, uptime and free space. Press again to close. | — |
+| **KEY2** | A reminder of what the long press does | **Stop capture** at once, or, when capture is off, **start capture** after you press KEY2 again |
+| **KEY3** | A reminder | **Reboot**, after you press KEY3 again |
+| **KEY4** | A reminder | **Shut down**, after you press KEY4 again |
+
+- **Starting capture, rebooting and shutting down ask first.** After the long
+  press, the panel says, for example, "Press KEY2 again to start capture"; press
+  it again within 5 seconds to confirm. Do nothing and it's cancelled, so a
+  press in a pocket does nothing. Stopping capture doesn't ask.
+- **Starting capture needs your acknowledgment from before.** KEY2 starts
+  capture only if you've already accepted the authorized-use acknowledgment, on
+  the dashboard or with `sudo kestrel capture enable`. If you haven't, the panel
+  says to accept it on the dashboard first; a key never accepts it for you.
+- **The panel shows what's happening:** "Starting capture..." or "Stopping
+  capture..." stays until capture has actually started or stopped.
+- **The dashboard card** shows the last key pressed, which is handy for checking
+  the wiring.
+
+If the keys don't respond, the card says why (for example "keys unavailable"
+when the board has no GPIO). The default pins are BCM GPIO 5, 6, 13 and 19,
+which suit the Waveshare 2.7" HAT; a different board or revision may wire them
+elsewhere, so set `pins` to the four GPIO numbers for KEY1 to KEY4, in order.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `buttons` | `true` | Use the keys at all. |
+| `pins` | `5,6,13,19` | BCM GPIO pins of KEY1 to KEY4. |
+| `hold_seconds` | `3` | How long a press counts as a long press. |
+| `allow_capture` | `true` | Let KEY2 stop capture, and start it after a second press. |
+| `allow_power` | `true` | Let KEY3/KEY4 reboot or shut down. |
 
 ## The live web mirror
 

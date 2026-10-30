@@ -339,7 +339,7 @@ class EinkFace(Plugin):
     __capabilities__ = ("ui", "web")
     # All optional: the face degrades to capture/online/idle moods when the
     # agent is off, no UPS HAT is present, or there is no GPS fix.
-    __optional_requires__ = ("agent", "battery", "position", "buttons")
+    __optional_requires__ = ("agent", "battery", "position")
     # One row button: a read-only mirror of the exact panel frame (a GET, so no
     # auth/CSRF gate - it shows only the rendered face, no secret).
     __actions__ = ({"label": "View", "path": "display",
@@ -364,6 +364,24 @@ class EinkFace(Plugin):
                     "help": "Show the Bluetooth tether and Wi-Fi addresses on the "
                             "panel, so you can find the dashboard without a "
                             "router's client list."},
+        # The HAT's four keys (kestrel_pi.hatkeys): KEY1 info screen, KEY2 stop
+        # or (after a second press) start capture, KEY3/KEY4 reboot/shut down
+        # after a second press.
+        "buttons": {"type": "bool", "default": True,
+                    "help": "Use the HAT's four keys: info screen, start and stop "
+                            "capture, reboot, shut down."},
+        "pins": {"type": "str", "default": "5,6,13,19",
+                 "help": "BCM GPIO pins of KEY1-KEY4, comma-separated. The defaults "
+                         "suit the Waveshare 2.7\" e-Paper HAT."},
+        "hold_seconds": {"type": "int", "default": 3,
+                         "help": "How long a press counts as a long press."},
+        "allow_capture": {"type": "bool", "default": True,
+                          "help": "Let a long KEY2 press stop capture, or start it "
+                                  "after a second press (only once you've accepted "
+                                  "the authorized-use acknowledgment)."},
+        "allow_power": {"type": "bool", "default": True,
+                        "help": "Let a long KEY3/KEY4 press, then a second press, "
+                                "reboot or shut down."},
         "battery_low_percent": {"type": "int", "default": 10},
         "bored_epochs": {"type": "int", "default": 15},
         "sad_epochs": {"type": "int", "default": 25},
@@ -382,6 +400,11 @@ class EinkFace(Plugin):
     # -- lifecycle -------------------------------------------------------
     def on_loaded(self):
         self._setup()
+        if self.context.options.get("buttons", True):
+            from kestrel_pi.hatkeys import HatKeys
+
+            self._keys = HatKeys(lambda: self.context.options, self.context.apply, self.log)
+            self._keys.start()
         self._worker = threading.Thread(
             target=self._run, name="eink-face", daemon=True)
         self._worker.start()
@@ -407,7 +430,8 @@ class EinkFace(Plugin):
         self._started = time.monotonic()
         self._fp = None                 # dashboard certificate fingerprint
         self._fp_checked = None         # monotonic time of the last lookup
-        self._buttons_seq = None        # last `buttons` service seq drawn
+        self._keys = None               # the HAT keys (kestrel_pi.hatkeys), if on
+        self._buttons_seq = None        # last key-state seq drawn
         # mood trackers
         self._reward_ema = None
         self._promo_marker = None
@@ -430,6 +454,8 @@ class EinkFace(Plugin):
         # the worker thread must not race our Clear() on the SPI bus, nor push a
         # fresh frame right after it and redraw the face. With no panel there is
         # nothing to blank (the plugin is optional and HAT-less-safe).
+        if self._keys is not None:
+            self._keys.stop()
         self._stop.set()
         worker = getattr(self, "_worker", None)
         if worker is not None and worker.is_alive():
@@ -449,6 +475,8 @@ class EinkFace(Plugin):
         ui.add_element("voice", "", label="Says")
         ui.add_element("mobility", "gps?", label="Motion")
         ui.add_element("panel", "checking", label="Display")
+        if self._keys is not None:
+            ui.add_element("keys", self._keys.last, label="Last key press")
 
     def on_ui_update(self, ui, state):
         # Fast path only: stash the state and update the web card from the last
@@ -464,6 +492,9 @@ class EinkFace(Plugin):
         ui.set("voice", voice or "")
         ui.set("mobility", _MOBILITY_LABEL.get(self._mobility, "gps?"))
         ui.set("panel", "not detected" if self._absent else "detected")
+        if self._keys is not None:
+            self._keys.set_capturing(bool(getattr(state, "capture_active", False)))
+            ui.set("keys", self._keys.last)
 
     def on_handshake(self, event):
         # A fresh handshake lights up an excited face briefly and counts as
@@ -606,7 +637,7 @@ class EinkFace(Plugin):
                 self._fault = True
                 self.log.debug("eink: render tick failed: %s", exc)
             # Sleep until the next render, but wake within a second when a HAT
-            # key is pressed (the `buttons` service's seq changes), so the info
+            # key is pressed (the key state's seq changes), so the info
             # screen or a prompt appears at once.
             deadline = time.monotonic() + self._refresh_seconds()
             while not self._stop.is_set() and time.monotonic() < deadline:
@@ -942,12 +973,9 @@ class EinkFace(Plugin):
         return img.rotate(rotation, expand=True) if rotation else img
 
     def _buttons_state(self):
-        """The `buttons` service (the hat-buttons plugin), or ``{}``."""
-        try:
-            state = self.context.services.get("buttons")
-        except Exception:  # noqa: BLE001
-            return {}
-        return state if isinstance(state, dict) else {}
+        """The HAT keys' ``{"seq", "screen", "prompt"}``, or ``{}`` when off."""
+        keys = getattr(self, "_keys", None)
+        return keys.state() if keys is not None else {}
 
     def _info_image(self, state):
         """The info screen a short KEY1 press asks for: version, addresses, the

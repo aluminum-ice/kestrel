@@ -678,10 +678,12 @@ def test_fingerprint_off_or_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(EINK.webtls, "fingerprint", lambda *a: None)
     assert _plugin(tmp_path)._fingerprint_lines() == []
 
-# --- the HAT keys (the `buttons` service) -------------------------------------------
+# --- the HAT keys (kestrel_pi.hatkeys; their own tests are in test_hatkeys.py) -------
 
 def _with_buttons(p, state):
-    p.context.services.provide("buttons", lambda: dict(state))
+    """Stand in for the plugin's HatKeys with a fixed key state."""
+    p._keys = types.SimpleNamespace(state=lambda: dict(state), last="none yet",
+                                    set_capturing=lambda active: None, stop=lambda: None)
     return p
 
 
@@ -707,7 +709,7 @@ def test_a_button_prompt_takes_the_voice_slot(tmp_path):
     assert list(prompted.getdata()) != list(plain.getdata())
 
 
-def test_no_buttons_service_changes_nothing(tmp_path):
+def test_no_keys_changes_nothing(tmp_path):
     p = _plugin(tmp_path)
     assert p._buttons_state() == {}
     assert EINK._free_disk_text(str(tmp_path)).endswith("GB free")
@@ -743,7 +745,7 @@ def test_a_button_prompt_beats_the_fingerprint_which_beats_the_voice(tmp_path, m
     prompt_frame = p._compose_image(UIState(), "awake", "on a roll!")
     assert list(prompt_frame.getdata()) != list(fp_frame.getdata())
     p._started -= 11 * 60                                            # fingerprint window over
-    p.context.services = ServiceRegistry()
+    p._keys = None
     voice_frame = p._compose_image(UIState(), "awake", "on a roll!")
     assert list(voice_frame.getdata()) not in (list(fp_frame.getdata()),
                                                list(prompt_frame.getdata()))
