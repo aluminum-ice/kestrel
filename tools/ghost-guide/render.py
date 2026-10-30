@@ -205,3 +205,10 @@ def image_sources(page_html):
 
 def heading_ids(page_html):
     return set(re.findall(r'<h[1-6][^>]*\bid="([^"]+)"', page_html))
+
+
+def anchor_links(page_html):
+    """The page's in-page link targets (``#...``), in order. :func:`blocks`
+    compares text only, so a contents link that now points at a different
+    heading id would otherwise read as no change."""
+    return re.findall(r'href="(#[^"]*)"', page_html)

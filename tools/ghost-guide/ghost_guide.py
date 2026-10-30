@@ -312,7 +312,8 @@ def cmd_push(args, cfg):
                   % (url.rstrip("/"), result["id"]))
         else:
             if (marker and marker.group(1) == build.tag
-                    and render.blocks(page) == render.blocks(live["html"])):
+                    and render.blocks(page) == render.blocks(live["html"])
+                    and render.anchor_links(page) == render.anchor_links(live["html"])):
                 print("the page already matches %s; nothing to publish" % build.tag)
                 return
             result = ghost.update_page(live, html=page)
