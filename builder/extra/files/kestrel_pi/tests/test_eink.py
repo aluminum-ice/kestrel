@@ -349,6 +349,12 @@ def _install_fake_panels(monkeypatch, v2="ok", v1="ok"):
             def init(self):
                 if behavior is None:
                     raise RuntimeError("no panel")
+                if behavior == "stuck":
+                    # A panel holding BUSY asserted (driven) and never finishing:
+                    # a present panel the driver doesn't suit.
+                    cfg.level = 1
+                    while cfg.digital_read(cfg.BUSY_PIN) != 999:
+                        time.sleep(0.003)
                 if behavior == "hang":
                     # Mismatched driver: the BUSY line never reads idle, so the
                     # guarded digital_read raises TimeoutError once the deadline
@@ -367,7 +373,7 @@ def _install_fake_panels(monkeypatch, v2="ok", v1="ok"):
 
             def Clear(self):
                 # a present panel also drives BUSY through the Clear busy-wait
-                if behavior not in (None, "hang", "phantom"):
+                if behavior not in (None, "hang", "phantom", "stuck"):
                     cfg.level = 1
                     cfg.digital_read(cfg.BUSY_PIN)
 
@@ -484,6 +490,35 @@ def test_auto_reports_absent_when_busy_never_driven(tmp_path, monkeypatch):
     # both drivers were tried and each closed SPI after its phantom init
     assert state["constructed"] == ["epd2in7_V2", "epd2in7"]
     assert state["exited"] >= 2
+
+
+def test_no_hat_is_logged_as_no_panel_for_every_attempt(tmp_path, monkeypatch, caplog):
+    # What a device with no HAT does: the V2 busy-wait returns at once (BUSY
+    # reads its pull-down), and the V1 busy-wait waits for a busy signal that
+    # never comes and times out. Both are "no panel wired", both are logged, and
+    # nothing suggests the wrong panel revision.
+    _install_fake_panels(monkeypatch, v2="phantom", v1="hang")
+    p = _plugin(tmp_path, {"variant": "auto"})
+    p._PROBE_TIMEOUT = 0.05
+    with caplog.at_level(logging.INFO):
+        assert p._ensure_panel() is None
+    line = [r.getMessage() for r in caplog.records if "no panel (" in r.getMessage()][-1]
+    assert "epd2in7_V2: BUSY line never driven (no panel wired)" in line
+    assert "epd2in7: BUSY line never driven (no panel wired)" in line
+    assert "wrong panel revision" not in line
+
+
+def test_a_panel_stuck_busy_still_suggests_the_revision(tmp_path, monkeypatch, caplog):
+    # BUSY driven but the driver never finishes: a panel is there, so the
+    # revision hint is the useful one.
+    _install_fake_panels(monkeypatch, v2="stuck", v1="stuck")
+    p = _plugin(tmp_path, {"variant": "auto"})
+    p._PROBE_TIMEOUT = 0.05
+    with caplog.at_level(logging.INFO):
+        assert p._ensure_panel() is None
+    line = [r.getMessage() for r in caplog.records if "no panel (" in r.getMessage()][-1]
+    assert "epd2in7_V2 did not initialise" in line and "epd2in7 did not initialise" in line
+    assert "wrong panel revision?" in line
 
 
 def test_forced_v2_reports_absent_when_busy_never_driven(tmp_path, monkeypatch):

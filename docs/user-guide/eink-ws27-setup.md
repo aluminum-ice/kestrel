@@ -228,11 +228,18 @@ is expected, not a fault. If your e-ink HAT reads "not detected", re-seat the
 ribbon and, if needed, pin `variant`.
 
 To collect a report you can attach when asking for help, run the diagnostics
-script from a computer (it reads only, and nothing real leaves the device):
+script from a computer:
 
 ```sh
 scripts/pull-eink-diagnostics.sh --plugin eink-ws27 pi@kestrel.local
 ```
+
+It only reads, and saves one text file, `eink-ws27-diagnostics-<time>.txt`. It keeps
+just the e-ink plugins' own log lines, and masks addresses, coordinates and a
+custom hostname on the device before anything leaves it; read it before you send
+it. While an e-ink plugin is enabled the daemon holds the e-Paper pins, so the
+report says the driver isn't imported then; disable the e-ink plugins first if
+you want that check too.
 
 ## Switching from `eink`
 

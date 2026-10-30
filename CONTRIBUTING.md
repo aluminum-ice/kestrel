@@ -82,9 +82,10 @@ try one, a report helps even without a patch. Email **patches@3ntropy.io** with:
 
 The same rules as for patches apply: **nothing real**. A photo of the panel
 shows the device's addresses, so blur them (and any network names) or turn off
-`show_ip` first. The bundle `scripts/pull-eink-diagnostics.sh` makes is meant to
-be shared (it pulls no credential, no capture data and no other config), but
-read it before you send it. Your name and email stay out of the repository;
+`show_ip` first. The report `scripts/pull-eink-diagnostics.sh` saves (one text
+file) is meant to be shared: it pulls no credential, no capture data and no
+other config, keeps only the e-ink plugins' log lines, and masks addresses on the
+device. Still, read it before you send it. Your name and email stay out of the repository;
 results are recorded under the project's identity.
 
 ## What happens next

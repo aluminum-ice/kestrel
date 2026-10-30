@@ -136,11 +136,18 @@ journalctl -u kestrel-daemon --no-pager | grep -i eink-ws213
   applies here too.
 
 To collect a report you can attach when asking for help, run the diagnostics
-script from a computer (it reads only, and nothing real leaves the device):
+script from a computer:
 
 ```sh
 scripts/pull-eink-diagnostics.sh --plugin eink-ws213 pi@kestrel.local
 ```
+
+It only reads, and saves one text file, `eink-ws213-diagnostics-<time>.txt`. It keeps
+just the e-ink plugins' own log lines, and masks addresses, coordinates and a
+custom hostname on the device before anything leaves it; read it before you send
+it. While an e-ink plugin is enabled the daemon holds the e-Paper pins, so the
+report says the driver isn't imported then; disable the e-ink plugins first if
+you want that check too.
 
 ## Reporting results
 
