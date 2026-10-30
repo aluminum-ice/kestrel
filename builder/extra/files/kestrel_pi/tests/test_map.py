@@ -192,7 +192,8 @@ def test_tiles_cover_the_view_and_line_up_with_the_pins(store, tmp_path):
     proj = MAP.Projection((LAT, LON, LAT + 0.2, LON + 0.3))
     html = p._tiles(proj, MAP.DEFAULT_TILE_URL)
     tiles = re.findall(r'src="https://tile\.openstreetmap\.org/(\d+)/(\d+)/(\d+)\.png" '
-                       r'alt="" loading="lazy" decoding="async" referrerpolicy="origin" '
+                       r'alt="" loading="lazy" decoding="async" draggable="false" '
+                       r'referrerpolicy="origin" '
                        r'style="position:absolute;left:([-\d.]+)%;top:([-\d.]+)%;'
                        r'width:calc\(([\d.]+)% \+ 1px\)', html)
     assert 4 <= len(tiles) <= 40
@@ -296,6 +297,31 @@ def test_the_spot_list_marks_recovered_networks(tmp_path):
     visible = re.sub(r'<span class="vh">[^<]*</span>|title="[^"]*"', "", items)
     assert "recovered" not in visible and "recorded" not in visible    # glyphs, not words
     assert "made-up-pass" not in body
+
+
+def test_the_map_carries_its_projection_for_the_gesture_script(store, tmp_path):
+    import re
+
+    body = _page(_plugin(store, tmp_path)).body
+    assert body.count("<script>") == 1 and MAP.GESTURE_JS in body
+    assert "</" not in MAP.GESTURE_JS                    # can't close its <script> early
+    assert "Drag to move the map" in body
+    lats = [LAT, LAT + 0.2, LAT + 0.01]
+    lons = [LON, LON + 0.3, LON - 0.01]
+    for css, size in (("wide-only", MAP.WIDE), ("narrow-only", MAP.NARROW)):
+        part = body.split('class="%s"' % css, 1)[1].split('class="kmap"', 1)[1]
+        attrs = dict(re.findall(r'data-(cx|cy|scale|w|h)="([^"]+)"', part.split(">", 1)[0]))
+        proj = MAP.Projection((min(lats), min(lons), max(lats), max(lons)), margin=0.1, size=size)
+        assert float(attrs["cx"]) == pytest.approx(proj.cx, rel=1e-11)
+        assert float(attrs["cy"]) == pytest.approx(proj.cy, rel=1e-11)
+        assert float(attrs["scale"]) == pytest.approx(proj.scale, rel=1e-11)
+        assert (int(attrs["w"]), int(attrs["h"])) == size
+        assert "touch-action:none" in part.split(">", 1)[0]
+        layer = part.split('class="kmap-layer"', 1)[1].split("</svg>", 1)[0]
+        assert "<img " in layer and "<svg" in layer          # tiles and pins move together
+        assert 'draggable="false"' in layer
+        attribution = part.split("</svg>", 1)[1].split('class="', 1)[0]
+        assert "OpenStreetMap</a> contributors" in attribution  # stays put
 
 
 def test_gates(store, tmp_path):
