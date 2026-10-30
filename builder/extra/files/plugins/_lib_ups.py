@@ -40,7 +40,7 @@ it with ``kestrel_pi.load_library`` (see docs/developer/plugin-libraries.md)::
             ...
 
         def _read(self, device):     # (volts, milliamps or None, watts or None); OSError on failure
-            ...
+            ...                      # or a dict, for a board that reports more (see Monitor)
 
 **The auto-shutdown rules**, the same for every UPS plugin: it fires only while
 the plugin is enabled, only while the pack is discharging, only at or below the
@@ -51,6 +51,12 @@ battery can't wait for a prompt - by sending ``{"target": "power",
 "action": "shutdown"}`` through the plugin's ``context.apply``: the same root
 helper as the dashboard's power buttons, which allows power changes whenever a
 plugin asks. A refused request is logged and retried on the next low poll.
+
+A board can also report a low of its own - say, one cell of several below a safe
+voltage - with its reading (``low``, see :class:`Monitor`). It counts like
+reaching ``shutdown_percent``: the same three polls, discharging only, once, and
+only while the auto-shutdown is on. A ``before_shutdown`` hook runs just before
+the request, for a board that has to be told something first.
 
 **One board reader at a time.** All plugins run in one daemon, so the monitors
 that have started agree on one to read the board: one that doesn't yield (a
@@ -70,7 +76,7 @@ import threading
 import time
 from collections import deque
 
-LIB_API = (0, 2)
+LIB_API = (0, 3)
 
 # Current near zero is "resting" (on external power, pack full); beyond this it
 # is charging (positive) or discharging (negative).
@@ -153,18 +159,25 @@ class Monitor:
     ``shutdown_percent`` and ``poll_seconds`` are read); ``name`` starts each log
     line; ``probe()`` returns ``(device, None)`` once the board is confirmed,
     else ``(None, (card text, health note))``; ``read(device)`` returns
-    ``(volts, current_ma, power_w)`` (current and power may be None) and raises
-    OSError when the board stops answering; ``pack`` is a :class:`Pack`;
+    ``(volts, current_ma, power_w)`` (current and power may be None) - or, for
+    a board that reports more, a dict with ``voltage``, ``current_ma`` and
+    ``power_w`` and optionally ``percent`` and ``status`` (the board's own,
+    used instead of the pack's estimate) and ``low`` (a short reason when the
+    board itself is low, e.g. "cell 3 at 3.10 V"; *0.3*) - and raises OSError
+    when the board stops answering; ``pack`` is a :class:`Pack`;
     ``board`` names the board in messages. ``yields`` makes this monitor give
     way to any other (a deprecated plugin), and ``notice`` is put first in the
-    plugin's health note (its deprecation, say)."""
+    plugin's health note (its deprecation, say). ``before_shutdown()`` runs
+    just before the shutdown request (*0.3*); what it raises is logged and the
+    shutdown goes ahead."""
 
     def __init__(self, plugin, name, probe, read, pack, board="UPS HAT",
-                 yields=False, notice=""):
+                 yields=False, notice="", before_shutdown=None):
         self.plugin = plugin
         self.name = name
         self.yields = yields
         self.notice = notice
+        self.before_shutdown = before_shutdown
         self._probe = probe
         self._read = read
         self.pack = pack
@@ -282,13 +295,27 @@ class Monitor:
         if device is None:
             return None
         try:
-            voltage, current, power = self._read(device)
+            raw = self._read(device)
         except (OSError, IOError) as exc:
             self.log.debug("%s: read failed: %s", self.name, exc)
             return None
-        percent = self.pack.percent(voltage)
-        return {"percent": percent, "voltage": voltage, "current_ma": current,
-                "power_w": power, "status": status_from_current(current, percent)}
+        if isinstance(raw, dict):
+            voltage, current, power = raw["voltage"], raw.get("current_ma"), raw.get("power_w")
+            percent = raw.get("percent")
+            percent = self.pack.percent(voltage) if percent is None else \
+                max(0.0, min(100.0, float(percent)))
+            status = raw.get("status") or status_from_current(current, percent)
+            low = raw.get("low") or None
+        else:
+            voltage, current, power = raw
+            percent = self.pack.percent(voltage)
+            status = status_from_current(current, percent)
+            low = None
+        reading = {"percent": percent, "voltage": voltage, "current_ma": current,
+                   "power_w": power, "status": status}
+        if low:
+            reading["low"] = str(low)
+        return reading
 
     def reading(self):
         """A copy of the latest reading for the ``battery`` service, or None
@@ -311,20 +338,30 @@ class Monitor:
             self._status_text = STATUS_LABEL.get(reading["status"])
             self._eta_seconds = eta
         threshold = self.shutdown_percent()
-        low = (threshold > 0 and reading["status"] == "discharging"
-               and reading["percent"] <= threshold)
+        discharging = threshold > 0 and reading["status"] == "discharging"
+        board_low = reading.get("low") if discharging else None
+        low = discharging and (reading["percent"] <= threshold or bool(board_low))
         self._low_count = self._low_count + 1 if low else 0
         if self._low_count < SHUTDOWN_DEBOUNCE or self.shutting_down:
             return False
         with self._lock:
             self.shutting_down = True
             self._shutdown_pct = int(reading["percent"])
-        self.log.warning(
-            "%s: battery %.0f%% at or below the %d%% limit while on "
-            "battery; shutting down", self.name, reading["percent"], threshold)
+        if reading["percent"] <= threshold:
+            self.log.warning(
+                "%s: battery %.0f%% at or below the %d%% limit while on "
+                "battery; shutting down", self.name, reading["percent"], threshold)
+        else:
+            self.log.warning("%s: %s while on battery; shutting down",
+                             self.name, board_low)
         return self._request_shutdown()
 
     def _request_shutdown(self):
+        if self.before_shutdown is not None:
+            try:
+                self.before_shutdown()
+            except Exception as exc:  # noqa: BLE001 - the shutdown matters more
+                self.log.error("%s: before shutdown: %r", self.name, exc)
         # The daemon runs as the pi user; the shutdown goes through the root
         # apply helper (the same one the dashboard's power buttons use).
         try:

@@ -116,7 +116,7 @@ its `LIB_API`; a test (`tests/test_load_library.py`) keeps the two in step.
 | `eink_face` | `_lib_eink_face.py` | 1.0 | stable | `eink-ws27`, `eink-ws213`, `eink` (deprecated) |
 | `hat_keys` | `_lib_hat_keys.py` | 0.1 | provisional | `eink-ws27`, `eink` (deprecated) |
 | `ina219` | `_lib_ina219.py` | 1.1 | stable | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-hat` (deprecated) |
-| `ups` | `_lib_ups.py` | 0.2 | provisional | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-hat` (deprecated) |
+| `ups` | `_lib_ups.py` | 0.3 | provisional | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-wse`, `ups-hat` (deprecated) |
 
 Each library has its own section below: what it is for, a minimal plugin using
 it, its public functions and classes, the rules it enforces and what stays in
@@ -646,6 +646,13 @@ class MyUps(Plugin):
   - `yields=True` makes it give way to any other UPS plugin (a deprecated
     plugin passes it), and `notice` is put first in the plugin's health note
     (its deprecation, say). *(0.2)*
+  - *(0.3)* `read` may return a dict instead, for a board that reports more:
+    `voltage`, `current_ma`, `power_w`, and optionally `percent` and `status`
+    (the board's own, used instead of the pack's estimate) and `low` (a short
+    reason when the board itself is low, such as "cell 3 at 3.10 V"; it counts
+    like reaching `shutdown_percent`). `before_shutdown()` runs just before the
+    shutdown request (a failure is logged and the shutdown goes ahead).
+    `ups-wse` uses all three.
 - **`Pack(cells, empty_v=3.0, full_v=4.2)`:** charge percent, linear per cell
   and clamped, as Waveshare's demos compute it (`(V - 6) / 2.4` for two cells,
   `(V - 3) / 1.2` for one).
