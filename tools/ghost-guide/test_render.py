@@ -108,3 +108,13 @@ def test_blocks_ignore_ghost_markup_differences():
         "[figure phone-plugins: Plugins page]", "The Plugins page.", "Hello x"]
     assert render.image_sources(ghosts) == {
         "phone-plugins": "https://blog.example/content/images/2026/10/phone-plugins-2.png"}
+
+
+def test_a_changed_link_target_is_a_change():
+    # Same text, so blocks() can't tell them apart; anchor_links() can, so a
+    # push that fixes a contents link isn't skipped as "already matches".
+    old = '<p><a href="#eink-ws213-the-face-on-the-2-13-hat">eink-ws213</a></p>'
+    new = '<p><a href="#eink-ws213-the-face-on-the-213-hat">eink-ws213</a></p>'
+    assert render.blocks(old) == render.blocks(new)
+    assert render.anchor_links(old) != render.anchor_links(new)
+    assert render.anchor_links(new) == ["#eink-ws213-the-face-on-the-213-hat"]
