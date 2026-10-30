@@ -918,7 +918,7 @@ def create_app(daemon):
         if reply.get("ok"):
             if reply.get("restart"):
                 return html(_render_applied(record.name, reply, ctl,
-                                            daemon.status().get("started")))
+                                            daemon.status().get("started"), change))
             return html(_render_manage(daemon, record, ctl, message="Nothing changed."))
         log.info("web: change to plugin %s refused: %s", name, reply.get("error"))
         return html(_render_manage(
@@ -1365,6 +1365,10 @@ _STATUS_CSS = (
     "form.inline{display:inline;margin:0;}"
     ".msg{padding:.6em .8em;border:1px solid var(--msg-bd);background:var(--msg-bg);border-radius:8px;}"
     ".msg.err{border-color:var(--msgerr-bd);background:var(--msgerr-bg);}"
+    # A plugin just switched on or off: green for enabled, red for disabled
+    # (the words say which, so it never rests on colour alone).
+    ".msg.on{border-color:var(--on-bd);background:var(--on-bg);}"
+    ".msg.off{border-color:var(--err-bd);background:var(--err-bg);}"
     ".notice,.hint{color:var(--muted);}"
     ".hint{font-size:.9em;}"
     # Discreet dashboard link to the advanced Settings page: muted and centred,
@@ -4139,12 +4143,25 @@ def _render_manage(daemon, record, control, message=None, error=False,
     return _page(name + " - Kestrel", "".join(parts))
 
 
-def _render_applied(name, reply, control, started):
+def _applied_message(name, change, reply):
+    """The line shown after a plugin change is saved, and its style: whether
+    the plugin is now enabled (green) or disabled (red), then the options that
+    changed (by name; never a value, which may be a secret)."""
+    changed = [c for c in (reply.get("changed") or []) if c != "enabled"]
+    also = ("; changed: " + ", ".join(changed)) if changed else ""
+    if "enabled" in change and "enabled" in (reply.get("changed") or []):
+        if change["enabled"]:
+            return "Saved: %s is now enabled%s." % (name, also), "msg on"
+        return "Saved: %s is now disabled%s." % (name, also), "msg off"
+    return "Saved (changed: %s)." % (", ".join(changed) or "nothing"), "msg"
+
+
+def _render_applied(name, reply, control, started, change=None):
     """Shown after a change is written: the daemon restarts a moment later, so
     poll /status.json until a new daemon answers, then go back to the plugin."""
     target = _manage_url(name, control)
     probe = _url("/status.json", control)
-    changed = ", ".join(reply.get("changed") or []) or "nothing"
+    message, style = _applied_message(name, change or {}, reply)
     script = _reconnect_script(
         target, probe, started,
         giveup="The plugin host has not come back yet; check "
@@ -4152,7 +4169,7 @@ def _render_applied(name, reply, control, started):
     return _page(
         name + " - Kestrel",
         "<h1>" + _esc(name) + "</h1>"
-        '<p class="msg">Saved (' + _esc(changed) + ").</p>"
+        '<p class="' + style + '">' + _esc(message) + "</p>"
         '<p id="wait">Restarting the plugin host to apply it; this page returns '
         'to the plugin when it is back.</p><p><a href="' + _esc(target)
         + '">Back to ' + _esc(name) + "</a></p>" + script,
