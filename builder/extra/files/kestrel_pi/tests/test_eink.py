@@ -640,6 +640,7 @@ def test_a_key_press_wakes_the_render_loop(tmp_path, monkeypatch):
     ticks = []
     monkeypatch.setattr(p, "_tick", lambda: ticks.append(time.monotonic())
                         or setattr(p, "_buttons_seq", state["seq"]))
+    p._ready.set()                             # on_ready: the panel's owner is settled
     worker = threading.Thread(target=p._run, daemon=True)
     worker.start()
     deadline = time.monotonic() + 3

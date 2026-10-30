@@ -104,6 +104,8 @@ class EinkWs213(Plugin):
     # The mirror has no cadence of its own: the page reloads at refresh_seconds
     # and re-reads this one frame store, so the panel and the mirror can't drift.
     _MIN_REFRESH = 10
+    # How long the render worker waits for on_ready before going on anyway.
+    _READY_WAIT = 60
 
     # Driver per revision; the helper files ship beside this plugin.
     _VARIANTS = {"v4": "epd2in13_V4", "v3": "epd2in13_V3", "v2": "epd2in13_V2"}
@@ -116,9 +118,30 @@ class EinkWs213(Plugin):
     # -- lifecycle -------------------------------------------------------
     def on_loaded(self):
         self._setup()
+        # One e-ink plugin drives the panel (the HATs share its pins); which
+        # one is settled in on_ready, once every plugin has loaded.
+        face.claim_panel(self, "eink-ws213")
         self._worker = threading.Thread(
             target=self._run, name="eink-ws213-face", daemon=True)
         self._worker.start()
+
+    def on_ready(self):
+        """Every plugin has loaded, so the panel's owner is settled: let the
+        worker bring the panel up, or stand down."""
+        owner = face.panel_owner()
+        if owner not in (None, "eink-ws213"):
+            self._stand_down(owner)
+        self._ready.set()
+
+    def _stand_down(self, owner):
+        """Another e-ink plugin drives the panel: never touch the pins, keep
+        the web mirror, and say which plugin has the panel."""
+        self._standing_down = owner
+        self._absent = True
+        self._panel_tried = True
+        text = "%s drives the e-Paper panel (one e-ink plugin at a time)" % owner
+        self.context.health_note = "standing down: " + text
+        self.log.info("eink-ws213: standing down: %s", text)
 
     def _setup(self):
         """Initialise state without the panel or the worker thread, so the
@@ -129,6 +152,8 @@ class EinkWs213(Plugin):
         self._panel = None
         self._panel_tried = False
         self._absent = True             # no panel until a probe succeeds
+        self._ready = threading.Event()  # set in on_ready: the panel's owner is settled
+        self._standing_down = None      # the e-ink plugin that drives the panel instead
         self._fault = False
         self._frame_png = None          # last composed frame (PNG bytes)
         self._frame_seq = 0             # increments on every frame change
@@ -152,6 +177,7 @@ class EinkWs213(Plugin):
         # render worker first, so an in-flight redraw can't race the blank on
         # the SPI bus or redraw the face after it.
         self._stop.set()
+        self._ready.set()
         worker = getattr(self, "_worker", None)
         if worker is not None and worker.is_alive():
             worker.join(timeout=self._PROBE_TIMEOUT)
@@ -161,6 +187,7 @@ class EinkWs213(Plugin):
                 panel.blank()
             except Exception as exc:  # noqa: BLE001 - best effort on the way out
                 self.log.debug("eink-ws213: shutdown render failed: %s", exc)
+        face.release_panel(self)
 
     # -- web dashboard data (the shared model's other view) --------------
     def on_ui_setup(self, ui):
@@ -182,7 +209,8 @@ class EinkWs213(Plugin):
         ui.set("mood", mood or "awake")
         ui.set("voice", voice or "")
         ui.set("mobility", face.MOBILITY_LABEL.get(self._motion.state, "gps?"))
-        ui.set("panel", "not detected" if self._absent
+        ui.set("panel", ("used by %s" % self._standing_down) if self._standing_down
+               else "not detected" if self._absent
                else "%s detected" % self._variant())
 
     def on_handshake(self, event):
@@ -221,6 +249,9 @@ class EinkWs213(Plugin):
 
     # -- rendering + panel ----------------------------------------------
     def _run(self):
+        # Wait for on_ready (every plugin loaded, the panel's owner settled);
+        # the bound keeps the face going should it never come.
+        self._ready.wait(timeout=self._READY_WAIT)
         while not self._stop.is_set():
             try:
                 self._tick()
@@ -297,6 +328,10 @@ class EinkWs213(Plugin):
         degrades cleanly to the web mirror)."""
         if self._panel is not None or self._panel_tried:
             return self._panel
+        owner = face.panel_owner()
+        if owner not in (None, "eink-ws213"):
+            self._stand_down(owner)
+            return None
         self._panel_tried = True
         variant = self._variant()
         module = self._VARIANTS.get(variant)
@@ -579,8 +614,12 @@ class EinkWs213(Plugin):
     def _mirror_page(self):
         esc = self.context.esc
         every = self._refresh_seconds()
-        note = (" (no HAT attached - this is the frame it would show)"
-                if self._absent else "")
+        if self._standing_down:
+            note = (" (%s drives the panel - this is the frame this plugin would "
+                    "show)" % self._standing_down)
+        else:
+            note = (" (no HAT attached - this is the frame it would show)"
+                    if self._absent else "")
         body = (
             '<p><a href="/plugins">&larr; Plugins</a></p>'
             "<h1>E-ink display (2.13&quot;)</h1>"

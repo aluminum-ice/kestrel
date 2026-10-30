@@ -287,7 +287,7 @@ def test_the_library_needs_no_pil_to_load():
     src = open(os.path.join(PLUGIN_DIR, "_lib_eink_face.py"), encoding="utf-8").read()
     top = src.split("\nLIB_API", 1)[0]
     assert "PIL" not in top.split('"""', 2)[2]
-    assert FACE.LIB_API == (1, 0)
+    assert FACE.LIB_API == (1, 1)
 
 
 @pytest.mark.parametrize("mood", sorted(FACE.FACES))

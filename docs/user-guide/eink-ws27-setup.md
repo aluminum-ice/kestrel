@@ -83,7 +83,10 @@ The HAT's four keys work too; see [The HAT's keys](#the-hats-keys) below.
 
 For the smaller 2.13" HAT, use the [`eink-ws213` plugin](eink-ws213-setup.md)
 instead. Enable one e-ink plugin at a time (`eink-ws27`, `eink` or
-`eink-ws213`): they drive the same pins.
+`eink-ws213`): they drive the same pins. With more than one enabled, the first
+to load drives the panel (the deprecated `eink` always gives way to the others);
+the rest stand down, keep only their web mirror and leave the pins and keys
+alone, and their card reads "Display: used by" the plugin that has the panel.
 
 ## Enabling
 

@@ -62,9 +62,10 @@ driver ships with the plugin, so a seated HAT needs no extra install. SPI must b
 enabled (it is, in the stock image).
 
 **Use one e-ink plugin at a time.** `eink-ws27` (or the deprecated `eink`) and
-`eink-ws213` drive the same pins; if both are enabled, only one gets the panel
-and the other draws only to its web mirror (`eink-ws213` then says "the e-Paper
-pins are in use", `eink-ws27` that no HAT was detected).
+`eink-ws213` drive the same pins; if both are enabled, the first to load drives
+the panel (the deprecated `eink` always gives way) and the other stands down: it
+draws only to its web mirror, leaves the pins alone, and its card reads
+"Display: used by" the plugin that has the panel.
 
 ## Enabling
 
@@ -129,8 +130,8 @@ journalctl -u kestrel-daemon --no-pager | grep -i eink-ws213
   match the sticker; change it and restart the daemon.
 - `eink-ws213: no panel (... BUSY line never driven ...)`: no panel answered.
   Check that the HAT is seated and that SPI is enabled (`ls /dev/spidev*`).
-- **"the e-Paper pins are in use"** on the dashboard: another e-ink plugin
-  (such as `eink-ws27`) is enabled. Disable one of them.
+- **"Display: used by eink-ws27"** (or "standing down" on the Plugins page):
+  another e-ink plugin drives the panel. Disable the one you don't use.
 - A GPIO backend error on a Pi 5: see the `lgpio` note under
   [Troubleshooting](eink-ws27-setup.md#troubleshooting) for the `eink-ws27` plugin; it
   applies here too.

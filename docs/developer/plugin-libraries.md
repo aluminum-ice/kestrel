@@ -113,7 +113,7 @@ its `LIB_API`; a test (`tests/test_load_library.py`) keeps the two in step.
 | Library | File | API | Status | Used by |
 | --- | --- | --- | --- | --- |
 | `alerts` | `_lib_alerts.py` | 1.0 | stable | `ntfy`, `telegram` |
-| `eink_face` | `_lib_eink_face.py` | 1.0 | stable | `eink-ws27`, `eink-ws213`, `eink` (deprecated) |
+| `eink_face` | `_lib_eink_face.py` | 1.1 | stable | `eink-ws27`, `eink-ws213`, `eink` (deprecated) |
 | `hat_keys` | `_lib_hat_keys.py` | 0.1 | provisional | `eink-ws27`, `eink` (deprecated) |
 | `ina219` | `_lib_ina219.py` | 1.1 | stable | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-hat` (deprecated) |
 | `ups` | `_lib_ups.py` | 0.3 | provisional | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-wse`, `ups-hat` (deprecated) |
@@ -362,6 +362,15 @@ class TinyFace(Plugin):
   IPv4 address (Bluetooth first), via `iface_ipv4(iface)`. Make your plugin's
   own `_addresses()` method call it, so tests and screenshots can substitute
   placeholder addresses. `png_bytes(image)` for a web mirror.
+- **One panel at a time** *(1.1)*. The e-ink HATs share the SPI bus and GPIO
+  pins, so only one e-ink plugin may drive a panel. Call
+  `claim_panel(self, name, yields=False)` in `on_loaded` and
+  `release_panel(self)` in `on_unload`; in `on_ready`, once every plugin has
+  loaded, `panel_owner()` names the plugin that drives the panel (the first to
+  claim that doesn't yield; a deprecated plugin passes `yields=True`). If it
+  isn't yours, stand down: never open the panel or the pins (or start HAT
+  keys), keep your web mirror, and say which plugin has the panel on your card
+  and health note. `eink-ws27` and `eink-ws213` show the pattern.
 
 ### Rules it keeps for you
 
