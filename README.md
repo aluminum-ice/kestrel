@@ -40,7 +40,7 @@ Kestrel exists for research and education: learning how WPA/WPA2 handshakes, cap
 - **The safeguards are on by default.** Capture and every network-touching plugin ship disabled. Turning one on asks for an explicit authorized-use acknowledgment, which is never pre-ticked. The capture whitelist keeps the networks you list from ever being attacked.
 - **Treat what the device collects as sensitive.** Handshakes, network names and locations can identify people and places. Keep them on the device or your own systems, and never publish them, including in issues and pull requests here: use placeholders such as `My Network` and `00:00:5E:00:53:01` instead.
 
-Found a security problem in Kestrel itself? Please report it privately, as described in [SECURITY.md](SECURITY.md), rather than in a public issue.
+Found a security problem in Kestrel itself? Please report it privately, as described in [SECURITY.md](SECURITY.md), rather than in a public issue. Want to contribute a fix or a feature? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Web interface
 
