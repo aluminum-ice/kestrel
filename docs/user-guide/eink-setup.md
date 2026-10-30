@@ -43,9 +43,10 @@ reference plugin it ships **disabled**.
   link, behind the same Bluetooth and Wi-Fi symbols as the top strip, so you
   can open the dashboard on a headless device without checking your router's
   client list. A link with no address is left out. Turn it off with `show_ip`.
-- Shows a **bottom counter row**: `PWND` captured handshakes (a key glyph) and
-  `AP` distinct captured access points, each the lifetime total with the count
-  from this session in parentheses, e.g. `200 (30)`.
+- Shows a **bottom counter row**: `PWND` captured handshakes (a key glyph), the
+  lifetime total with the count from this session in parentheses, e.g.
+  `200 (30)`; then `AP` distinct captured access points and `NET` distinct
+  networks, both lifetime totals.
 - Draws the **Kestrel brand mark** once, in the lower-right corner; its pose
   reflects motion — stooping (diving) when moving, hovering when parked.
 - **Motion** (parked / walking / driving) is estimated from your GPS speed
