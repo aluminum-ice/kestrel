@@ -23,6 +23,11 @@ nothing to show yet.
 
 Press **Map** on the plugin's row on the Plugins page.
 
+- **Drag** the map to move it, and **pinch** (or use the mouse wheel) to zoom.
+  The map follows your fingers straight away, then redraws for the new area
+  when you let go: sharp map images, and markers regrouped for that view.
+  To scroll the page on a phone, drag outside the map.
+
 - **A pin** is a network whose location was recorded by your GPS.
 - **A ring with `~`** is an estimated location.
 - **A square with a number** is several networks close together. Tap it to zoom

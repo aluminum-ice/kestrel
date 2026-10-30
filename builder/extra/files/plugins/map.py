@@ -62,6 +62,150 @@ RECOVERED_FILL = "#2e7d32"
 PLAIN_FILL = "#6b6b75"
 
 
+# The page's only script: drag/pinch/wheel to move and zoom, then redraw on
+# release. One constant, never formatted (its braces would clash), written so
+# its maths and gesture state load on their own.
+GESTURE_JS = r"""
+// Drag and pinch (or wheel) move the map at once with what is already drawn;
+// on release the page asks the device for the area now in view, so the tiles
+// are sharp and the clusters right for it. No library: the maths and the
+// gesture state are plain functions, and the page works without this script.
+(function (root) {
+  var MAX_LAT = 85.05112878;
+  function latOf(my) { return Math.atan(Math.sinh(Math.PI * (1 - 2 * my))) * 180 / Math.PI; }
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  // The area a container shows after the layer is moved by t = {x, y, s}
+  // (translate, then scale, in CSS px), as [south, west, north, east]. d holds
+  // the server's projection: cx, cy (world units), scale (viewBox units per
+  // world unit) and the viewBox w and h; cw and ch are the container's size.
+  function bboxFor(d, t, cw, ch) {
+    var k = d.w / cw;
+    function wx(px) { return d.cx + (((px - t.x) / t.s) * k - d.w / 2) / d.scale; }
+    function wy(py) { return d.cy + (((py - t.y) / t.s) * k - d.h / 2) / d.scale; }
+    return [clamp(latOf(wy(ch)), -MAX_LAT, MAX_LAT), clamp(wx(0) * 360 - 180, -180, 180),
+            clamp(latOf(wy(0)), -MAX_LAT, MAX_LAT), clamp(wx(cw) * 360 - 180, -180, 180)];
+  }
+
+  // Pointer bookkeeping: one finger (or the mouse) pans, two pinch around
+  // their midpoint. A gesture counts as a move past 6 px or 3% of scale.
+  function Gesture() { this.pts = {}; this.n = 0; this.t = {x: 0, y: 0, s: 1}; this.moved = false; this._snap(); }
+  Gesture.prototype._snap = function () {
+    var ids = Object.keys(this.pts), p = this.pts;
+    this.t0 = {x: this.t.x, y: this.t.y, s: this.t.s};
+    this.a = ids.length ? {x: p[ids[0]].x, y: p[ids[0]].y} : null;
+    if (ids.length >= 2) {
+      var b = p[ids[1]];
+      this.m0 = {x: (this.a.x + b.x) / 2, y: (this.a.y + b.y) / 2};
+      this.d0 = Math.max(1, Math.hypot(b.x - this.a.x, b.y - this.a.y));
+    } else { this.m0 = null; }
+  };
+  Gesture.prototype.down = function (id, x, y) {
+    if (this.n >= 2) { return; }
+    this.pts[id] = {x: x, y: y}; this.n = Object.keys(this.pts).length; this._snap();
+  };
+  Gesture.prototype.move = function (id, x, y) {
+    if (!this.pts[id]) { return; }
+    this.pts[id] = {x: x, y: y};
+    var ids = Object.keys(this.pts), t0 = this.t0;
+    if (ids.length >= 2 && this.m0) {
+      var a = this.pts[ids[0]], b = this.pts[ids[1]];
+      var m = {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2};
+      var s = clamp(t0.s * Math.hypot(b.x - a.x, b.y - a.y) / this.d0, 0.25, 16);
+      var px = (this.m0.x - t0.x) / t0.s, py = (this.m0.y - t0.y) / t0.s;
+      this.t = {x: m.x - px * s, y: m.y - py * s, s: s};
+    } else if (ids.length === 1 && this.a) {
+      var c = this.pts[ids[0]];
+      this.t = {x: t0.x + c.x - this.a.x, y: t0.y + c.y - this.a.y, s: t0.s};
+    }
+    if (Math.abs(this.t.x) > 6 || Math.abs(this.t.y) > 6 || Math.abs(this.t.s - 1) > 0.03) {
+      this.moved = true;
+    }
+  };
+  Gesture.prototype.up = function (id) {
+    if (!this.pts[id]) { return this.n === 0; }
+    delete this.pts[id]; this.n = Object.keys(this.pts).length; this._snap();
+    return this.n === 0;
+  };
+  // Zoom by factor f around the point (x, y), as a mouse wheel does.
+  Gesture.prototype.zoomAt = function (x, y, f) {
+    var t = this.t, s = clamp(t.s * f, 0.25, 16);
+    var px = (x - t.x) / t.s, py = (y - t.y) / t.s;
+    this.t = {x: x - px * s, y: y - py * s, s: s};
+    if (Math.abs(s - 1) > 0.03) { this.moved = true; }
+  };
+
+  function viewUrl(search, bbox) {
+    var q = new URLSearchParams(search);
+    q.set("bbox", bbox.map(function (v) { return v.toFixed(6); }).join(","));
+    q.delete("spot");
+    return "?" + q.toString();
+  }
+
+  function attach(el) {
+    var d = {cx: +el.dataset.cx, cy: +el.dataset.cy, scale: +el.dataset.scale,
+             w: +el.dataset.w, h: +el.dataset.h};
+    var layer = el.querySelector(".kmap-layer"), g = new Gesture(), wheelTimer = null;
+    var swallowClick = false, captured = false;
+    function paint() {
+      layer.style.transform = "translate(" + g.t.x + "px," + g.t.y + "px) scale(" + g.t.s + ")";
+    }
+    function commit() {
+      var r = el.getBoundingClientRect(), b = bboxFor(d, g.t, r.width, r.height);
+      if (!(b[0] < b[2] && b[1] < b[3])) { g = new Gesture(); paint(); return; }
+      el.classList.add("kmap-busy");
+      root.location.assign(viewUrl(root.location.search, b));
+    }
+    function local(e) { var r = el.getBoundingClientRect(); return {x: e.clientX - r.left, y: e.clientY - r.top}; }
+    el.addEventListener("pointerdown", function (e) {
+      if (e.button > 0) { return; }
+      var p = local(e); g.down(e.pointerId, p.x, p.y);
+    });
+    el.addEventListener("pointermove", function (e) {
+      var p = local(e); g.move(e.pointerId, p.x, p.y);
+      if (g.moved) {
+        if (!captured) {
+          captured = true;
+          Object.keys(g.pts).forEach(function (id) {
+            try { el.setPointerCapture(+id); } catch (err) { /* already gone */ }
+          });
+        }
+        e.preventDefault(); paint();
+      }
+    });
+    function lift(e) {
+      if (g.up(e.pointerId) && g.moved) { swallowClick = true; commit(); }
+      if (g.n === 0) { captured = false; }
+    }
+    el.addEventListener("pointerup", lift);
+    el.addEventListener("pointercancel", lift);
+    // A drag ends with a click on whatever is under the finger: not a tap.
+    el.addEventListener("click", function (e) {
+      if (swallowClick) { e.preventDefault(); e.stopPropagation(); swallowClick = false; }
+    }, true);
+    el.addEventListener("wheel", function (e) {
+      e.preventDefault();
+      var p = local(e), dy = e.deltaY * (e.deltaMode === 1 ? 16 : 1);
+      g.zoomAt(p.x, p.y, Math.exp(-dy * 0.0015)); paint();
+      clearTimeout(wheelTimer);
+      wheelTimer = setTimeout(function () { if (g.moved) { commit(); } }, 450);
+    }, {passive: false});
+  }
+
+  var api = {bboxFor: bboxFor, Gesture: Gesture, viewUrl: viewUrl, attach: attach};
+  if (typeof module !== "undefined" && module.exports) { module.exports = api; }
+  if (root.document) {
+    var start = function () {
+      Array.prototype.forEach.call(root.document.querySelectorAll(".kmap"), attach);
+    };
+    if (root.document.readyState === "loading") {
+      root.document.addEventListener("DOMContentLoaded", start);
+    } else { start(); }
+  }
+})(typeof window !== "undefined" ? window : globalThis);
+"""
+
+
 def _lock(cx, cy, colour):
     """A small padlock (about 8 x 10 viewBox units) centred on ``cx, cy``."""
     return ('<rect x="%.1f" y="%.1f" width="8" height="6" rx="1" fill="%s"/>'
@@ -312,6 +456,10 @@ class CaptureMap(Plugin):
                                           (shown, len(points))) + "</p>")
         if spot:
             body += self._spot_list(points, spot, names, token, recovered)
+        body += ('<p class="hint">Drag to move the map, pinch or scroll to zoom; it '
+                 "redraws for the new area when you let go.</p>")
+        body += ("<style>.kmap{cursor:grab}.kmap-busy{opacity:.6;cursor:progress}</style>"
+                 "<script>" + GESTURE_JS + "</script>")
         body += ('<p class="hint"><b>&#9679; Pin</b>: recorded by the onboard GPS. '
                  "<b>&#9675; ~</b>: estimated from an outside source. <b>Square with a "
                  "number</b>: several networks close together (tap to zoom in, or to list "
@@ -413,12 +561,21 @@ class CaptureMap(Plugin):
     def _map(self, proj, groups, names, which, bbox, token, css, tiles, recovered=()):
         """One rendering: the tile layer (if any) under a see-through SVG."""
         ratio = "%d/%d" % (proj.w, proj.h)
-        out = ['<div class="%s"><div style="position:relative;overflow:hidden;'
-               "aspect-ratio:%s;background:var(--card);border:1px solid var(--border);"
-               'border-radius:8px">' % (css, ratio)]
+        # The projection rides on the container so the gesture script can work
+        # out which area a drag or pinch ends on; the tiles and the SVG sit in
+        # one layer it moves while a finger is down.
+        out = ['<div class="%s"><div class="kmap" data-cx="%.12g" data-cy="%.12g" '
+               'data-scale="%.12g" data-w="%d" data-h="%d" style="position:relative;'
+               "overflow:hidden;aspect-ratio:%s;background:var(--card);"
+               "border:1px solid var(--border);border-radius:8px;touch-action:none;"
+               '-webkit-user-select:none;user-select:none">'
+               % (css, proj.cx, proj.cy, proj.scale, proj.w, proj.h, ratio),
+               '<div class="kmap-layer" style="position:absolute;inset:0;'
+               'transform-origin:0 0">']
         if tiles:
             out.append(self._tiles(proj, tiles))
         out.append(self._svg(proj, groups, names, which, bbox, token, bool(tiles), recovered))
+        out.append("</div>")
         if tiles:
             # The tile policy asks for the attribution on the map itself.
             out.append('<div style="position:absolute;right:0;bottom:0;font-size:11px;'
@@ -450,7 +607,8 @@ class CaptureMap(Plugin):
                 top = (ty / float(n) - y0) * proj.scale / proj.h * 100.0
                 src = url.replace("{z}", str(z)).replace("{x}", str(tx)).replace("{y}", str(ty))
                 out.append('<img src="%s" alt="" loading="lazy" decoding="async" '
-                           'referrerpolicy="origin" style="position:absolute;left:%.4f%%;'
+                           'draggable="false" referrerpolicy="origin" '
+                           'style="position:absolute;left:%.4f%%;'
                            "top:%.4f%%;width:calc(%.4f%% + 1px);height:calc(%.4f%% + 1px);"
                            'max-width:none">' % (esc(src), left, top, size / proj.w * 100.0,
                                                  size / proj.h * 100.0))
