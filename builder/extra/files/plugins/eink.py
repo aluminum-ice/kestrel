@@ -1,4 +1,12 @@
-"""e-ink "tamagotchi" face plugin (Phase 5).
+"""e-ink "tamagotchi" face plugin (Phase 5) - deprecated, replaced by ``eink-ws27``.
+
+**Deprecated.** ``eink-ws27.py`` is this plugin under a name that says which
+display it drives: the same code, options and helper files. ``eink`` stays for
+devices that still have it enabled, and is removed in a future release that
+requires a reflash (docs/developer/deferred.md). Change the face in both files:
+``tests/test_eink_ws27.py`` fails when they differ anywhere but the lines that
+must (this docstring, ``DEPRECATED``, the class name, the description and the
+``choices`` of ``variant`` and ``rotation``).
 
 Renders the classic pwnagotchi-style animated face to a Waveshare 2.7" e-Paper
 HAT (264x176, 1-bit mono): a top icon strip (BT PAN + Wi-Fi link glyphs, a GPS
@@ -20,11 +28,13 @@ Kestrel mark and the glyphs - comes from the shared ``eink_face`` plugin library
 (``_lib_eink_face.py``), which ``eink-ws213`` uses too; a fix to the face is made
 there once. This file holds what is particular to this HAT: its options, its
 layout, how it brings the panel up, the HAT's four keys (on the shared
-``hat_keys`` library) and the web mirror. Waveshare's own driver ships beside it unmodified as helper
-files (``_eink_epdconfig.py``, ``_eink_epd2in7.py``, ``_eink_epd2in7_V2.py``; see
-``docs/developer/vendored-code.md``) loaded with :func:`kestrel_pi.load_helper`.
+``hat_keys`` library) and the web mirror. Waveshare's own driver ships beside it
+unmodified as helper files (``_eink_epdconfig.py``, ``_eink_epd2in7.py``,
+``_eink_epd2in7_V2.py``; see ``docs/developer/vendored-code.md``) loaded with
+:func:`kestrel_pi.load_helper`.
 
-Operator guide: ``docs/user-guide/eink-setup.md``. The plugin is optional and
+Operator guide: ``docs/user-guide/eink-ws27-setup.md`` (``eink-setup.md`` says how
+to switch). The plugin is optional and
 absent-safe: the Waveshare driver, gpiozero and PIL are imported lazily, only on
 a real device, so importing this module (and running on a HAT-less device or the
 test host) never touches the hardware. It ships disabled.
@@ -48,6 +58,15 @@ face = load_library(__file__, "eink_face", api=1)
 # The HAT's keys: gestures, prompts and the safety rules for capture and power.
 keys = load_library(__file__, "hat_keys", api=0)
 
+# The plugin's name is its file name ("eink" for eink.py): it starts the log
+# lines and names the helper files and the mirror's ETag, so this file and its
+# copy under the HAT's newer name (eink-ws27.py) differ only where they must.
+NAME = os.path.splitext(os.path.basename(__file__))[0]
+# A plugin kept only for devices that still have it enabled names its
+# replacement; the notice shows on the Plugins page and in the log.
+DEPRECATED = ("deprecated: replaced by eink-ws27; enable eink-ws27 and disable eink "
+              "(eink will be removed in a future release that requires a reflash)")
+
 # Panel geometry: the 2.7" HAT is 264x176 landscape (176x264 native portrait;
 # the Waveshare getbuffer rotates a landscape image to fit).
 PANEL_W, PANEL_H = 264, 176
@@ -57,7 +76,9 @@ class EinkFace(Plugin):
     __author__ = "kestrel"
     __version__ = "0.2.0"
     __license__ = "GPL3"
-    __description__ = "e-ink tamagotchi face for the Waveshare 2.7\" e-Paper HAT."
+    __description__ = ("Deprecated: replaced by eink-ws27; eink will be removed in a future "
+                       "release that requires a reflash. e-ink tamagotchi face for the "
+                       "Waveshare 2.7\" e-Paper HAT.")
 
     __target_api__ = 2
     # Local display + a read-only web mirror page; nothing leaves the device, so
@@ -112,10 +133,10 @@ class EinkFace(Plugin):
         "bored_epochs": {"type": "int", "default": 15},
         "sad_epochs": {"type": "int", "default": 25},
         # Optional per-mood face overrides: a {mood_key: glyph} table under
-        # [plugins.eink.faces]. Unset keeps the shipped classic emoticons.
+        # [plugins.<name>.faces]. Unset keeps the shipped classic emoticons.
         "faces": {"type": "dict"},
         # Optional per-mood voice overrides: a {mood_key: phrase-or-[phrases]}
-        # table under [plugins.eink.voices]. Unset keeps the shipped phrases.
+        # table under [plugins.<name>.voices]. Unset keeps the shipped phrases.
         "voices": {"type": "dict"},
     }
 
@@ -126,10 +147,13 @@ class EinkFace(Plugin):
     # -- lifecycle -------------------------------------------------------
     def on_loaded(self):
         self._setup()
+        if DEPRECATED:
+            self.log.warning("%s: %s", NAME, DEPRECATED)
+            self._note("")
         if self.context.options.get("buttons", True):
             self._start_keys()
         self._worker = threading.Thread(
-            target=self._run, name="eink-face", daemon=True)
+            target=self._run, name=NAME + "-face", daemon=True)
         self._worker.start()
 
     def _start_keys(self):
@@ -139,10 +163,10 @@ class EinkFace(Plugin):
             pins = keys.parse_pins(self.context.options.get("pins"), 4, DEFAULT_PINS)
         except ValueError as exc:
             self._keys_note = "keys unavailable: %s" % exc
-            self.log.info("eink: HAT keys unavailable (%s)", exc)
+            self.log.info("%s: HAT keys unavailable (%s)", NAME, exc)
             return
         self._keys = keys.Keys(
-            "eink",
+            NAME,
             [keys.Key("KEY1", pins[0], press=self._toggle_info),
              keys.Key("KEY2", pins[1], hold="capture"),
              keys.Key("KEY3", pins[2], hold="reboot"),
@@ -208,7 +232,7 @@ class EinkFace(Plugin):
                 epd.Clear()
                 epd.sleep()
             except Exception as exc:  # noqa: BLE001 - best effort on the way out
-                self.log.debug("eink: shutdown render failed: %s", exc)
+                self.log.debug("%s: shutdown render failed: %s", NAME, exc)
 
     # -- web dashboard data (the shared model's other view) --------------
     def on_ui_setup(self, ui):
@@ -280,7 +304,7 @@ class EinkFace(Plugin):
                 self._tick()
             except Exception as exc:  # noqa: BLE001 - a render error never kills the loop
                 self._fault = True
-                self.log.debug("eink: render tick failed: %s", exc)
+                self.log.debug("%s: render tick failed: %s", NAME, exc)
             # Sleep until the next render, but wake within a second when a HAT
             # key is pressed (the key state's seq changes), so the info
             # screen or a prompt appears at once.
@@ -289,6 +313,11 @@ class EinkFace(Plugin):
                 if self._buttons_state().get("seq") != self._buttons_seq:
                     break
                 self._stop.wait(timeout=1)
+
+    def _note(self, text):
+        """Set the plugin's health note (the Plugins page and ``kestrel plugins
+        info``), after the deprecation notice when there is one."""
+        self.context.health_note = "; ".join(t for t in (DEPRECATED, text) if t)
 
     def _refresh_seconds(self):
         return max(self._MIN_REFRESH,
@@ -328,7 +357,7 @@ class EinkFace(Plugin):
             epd.display(epd.getbuffer(image))
         except Exception as exc:  # noqa: BLE001
             self._fault = True
-            self.log.debug("eink: panel display failed: %s", exc)
+            self.log.debug("%s: panel display failed: %s", NAME, exc)
 
     # Driver module per 2.7" HAT revision. "auto" tries them in this order,
     # bounding each bring-up so a wrong revision falls back instead of hanging.
@@ -360,12 +389,12 @@ class EinkFace(Plugin):
             if epd is not None:
                 self._epd = epd
                 self._absent = False
-                self.log.info("eink: %s panel ready", module)
+                self.log.info("%s: %s panel ready", NAME, module)
                 return self._epd
             reason = err
         self._absent = True
-        self.context.health_note = "no e-Paper HAT detected"
-        self.log.info("eink: no panel (%s); rendering to the web mirror only", reason)
+        self._note("no e-Paper HAT detected")
+        self.log.info("%s: no panel (%s); rendering to the web mirror only", NAME, reason)
         return None
 
     def _try_panel(self, module, timeout):
@@ -387,8 +416,8 @@ class EinkFace(Plugin):
         try:
             # The drivers ship beside this plugin as helper files, epdconfig
             # first: each driver does ``from . import epdconfig``.
-            epdconfig = load_helper(__file__, "_eink_epdconfig.py")
-            drv = load_helper(__file__, "_eink_%s.py" % module)
+            epdconfig = load_helper(__file__, "_%s_epdconfig.py" % NAME)
+            drv = load_helper(__file__, "_%s_%s.py" % (NAME, module))
         except Exception as exc:  # noqa: BLE001 - driver/SPI/GPIO absent off-Pi
             return None, "%s unavailable (%s)" % (module, exc)
         epd = drv.EPD()
@@ -720,7 +749,7 @@ class EinkFace(Plugin):
                     self._mood = mood
                     self._voice = voice
                 png, seq = self._frame_png, self._frame_seq
-        etag = '"eink-%d"' % seq
+        etag = '"%s-%d"' % (NAME, seq)
         headers = {"Content-Type": "image/png", "Cache-Control": "no-store",
                    "ETag": etag}
         if request is not None and request.headers.get("If-None-Match") == etag:

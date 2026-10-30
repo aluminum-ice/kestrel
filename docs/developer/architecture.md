@@ -141,8 +141,8 @@ exists for particular plugins, and it never imports a plugin. A feature lives in
 its plugin. Code several plugins share lives with the plugins as a **shared
 plugin library** (`plugins/_lib_<name>.py`), which a plugin loads with
 `load_library` and core never loads; until a library exists, each plugin
-carries a copy (`ntfy` and `telegram` share the `alerts` library, `eink` and
-`eink-ws213` the `eink_face` library, and `eink` the `hat_keys` library for its
+carries a copy (`ntfy` and `telegram` share the `alerts` library, `eink-ws27` and
+`eink-ws213` the `eink_face` library, and `eink-ws27` the `hat_keys` library for its
 HAT's keys; each keeps Waveshare's driver as its own helper files).
 `tests/test_core_lean.py` fails on a module only plugins use and on core loading
 a library. See [Keep plugins standalone](plugin-development.md#keep-plugins-standalone)

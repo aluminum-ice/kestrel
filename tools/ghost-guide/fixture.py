@@ -37,7 +37,10 @@ WHITELIST = ["My Network", "My Network 5G", "00:00:5E:00:53:F0"]
 UPTIME_S = 2 * 3600 + 14 * 60
 EPOCH = 268
 
-ENABLED_PLUGINS = ("eink", "gps", "map", "memtemp", "session-stats", "ups-hat", "updates")
+ENABLED_PLUGINS = ("gps", "map", "memtemp", "session-stats", "ups-hat", "updates")
+# The 2.7" HAT's e-ink plugin: eink-ws27 in the releases that ship it (eink is
+# then deprecated), eink before that. This renders the latest stable release.
+EINK_NAMES = ("eink-ws27", "eink")
 
 POSITION = {"lat": 12.34567, "lon": -45.67890, "alt": 18.0, "fix": 3, "sats": 11,
             "cn0": 41.0, "strong": 9}
@@ -138,6 +141,9 @@ class Demo:
     tree; ``workdir`` a scratch directory for the fake store and state."""
 
     def __init__(self, files_dir, workdir, tag, previous_tag, release_url):
+        self.eink_name = next(n for n in EINK_NAMES
+                              if os.path.exists(os.path.join(files_dir, "plugins", n + ".py")))
+        self.enabled = (self.eink_name,) + ENABLED_PLUGINS
         sys.path.insert(0, os.path.join(files_dir, "kestrel_pi"))
         try:
             import tomllib
@@ -165,7 +171,7 @@ class Demo:
             "capture": {"enabled": True, "whitelist": list(WHITELIST)},
             "agent": {"enabled": True, "policy": "learned",
                       "algorithm": "RecurrentPPO", "train": "auto"},
-            "plugins": {name: {"enabled": True} for name in ENABLED_PLUGINS},
+            "plugins": {name: {"enabled": True} for name in self.enabled},
         }
         config = _merge(copy.deepcopy(shipped), overrides)
 
@@ -217,7 +223,7 @@ class Demo:
         # plugins' own on_ui_setup and fill them with demo readings.
         d.loader._safe_lifecycle = lambda rec, hook: True
         d.loader.load_all()
-        missing = [n for n in ENABLED_PLUGINS
+        missing = [n for n in self.enabled
                    if getattr(d.loader.records.get(n), "state", None) != "loaded"]
         if missing:
             raise RuntimeError("demo plugins did not load: %s" % ", ".join(
@@ -257,7 +263,7 @@ class Demo:
         memtemp = self._instance("memtemp")
         memtemp._has_fan = False
         memtemp._fan_pct = False
-        eink = self._instance("eink")
+        eink = self._instance(self.eink_name)
         eink._setup()
         # The panel's address row would otherwise read this desktop's real
         # interfaces; show the same placeholder link the dashboard shots use.
@@ -265,7 +271,7 @@ class Demo:
         eink._addresses = lambda: [("bnep0", "192.168.44.1")]
         # Nor the first-minutes HTTPS fingerprint, which would replace the voice.
         eink._fingerprint_lines = lambda: []
-        for name in ENABLED_PLUGINS:
+        for name in self.enabled:
             try:
                 self._instance(name).on_ui_setup(self.daemon.ui.for_plugin(name))
             except Exception as exc:
@@ -314,7 +320,7 @@ class Demo:
             labels, motion = plugin_globals["face"].MOBILITY_LABEL, eink._motion.state
         else:
             labels, motion = plugin_globals["_MOBILITY_LABEL"], eink._mobility
-        self._set("eink", {"face": eink._face_glyph(mood), "mood": mood, "voice": voice,
+        self._set(self.eink_name, {"face": eink._face_glyph(mood), "mood": mood, "voice": voice,
                            "mobility": labels.get(motion, "gps?"),
                            "panel": "detected"})
 
@@ -355,7 +361,7 @@ class Demo:
         """The e-ink panel frame for the demo state, from the plugin's own
         compositor (a 1-bit PIL image at panel resolution)."""
         state, mood, voice = self._eink_frame
-        return self._instance("eink")._compose_image(state, mood, voice)
+        return self._instance(self.eink_name)._compose_image(state, mood, voice)
 
     # -- serving -----------------------------------------------------------------
     def serve(self):

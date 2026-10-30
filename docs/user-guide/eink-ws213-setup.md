@@ -4,7 +4,7 @@ Operator guide for the `eink-ws213` reference plugin, which draws the Kestrel
 "tamagotchi" face on a
 [Waveshare 2.13" e-Paper HAT](https://www.waveshare.com/wiki/2.13inch_e-Paper_HAT_Manual)
 (250×122, black and white). It is the 2.13" sibling of the
-[`eink` plugin](eink-setup.md) for the 2.7" HAT: the same face, moods and voice,
+[`eink-ws27` plugin](eink-ws27-setup.md) for the 2.7" HAT: the same face, moods and voice,
 laid out for the smaller panel. Like every reference plugin it ships
 **disabled**.
 
@@ -15,8 +15,8 @@ laid out for the smaller panel. Like every reference plugin it ships
 
 ## What it shows
 
-The same face as the `eink` plugin (see
-[What it does](eink-setup.md#what-it-does)): the mood follows real device and
+The same face as the `eink-ws27` plugin (see
+[What it does](eink-ws27-setup.md#what-it-does)): the mood follows real device and
 learning-agent state, the face never lies, it sleeps when capture is off, and
 the voice changes with the mood. On the smaller panel it shows, top to bottom:
 
@@ -44,7 +44,7 @@ Left out to keep it readable: the 2.7" panel's channel plan (`CH`) and the
 nearby-radios meter (`NEAR`). Both stay on the dashboard. This HAT has no keys,
 so there is no info screen either.
 
-Like `eink`, it reads and drives only local hardware, so it needs no
+Like `eink-ws27`, it reads and drives only local hardware, so it needs no
 authorized-use acknowledgment, it serves a live **web mirror** of the exact
 frame (the **View** button on the Plugins page, also with no HAT attached), and
 it blanks the panel on shutdown.
@@ -61,10 +61,10 @@ The image already has the SPI and GPIO backends and the fonts, and Waveshare's
 driver ships with the plugin, so a seated HAT needs no extra install. SPI must be
 enabled (it is, in the stock image).
 
-**Use one e-ink plugin at a time.** `eink` and `eink-ws213` drive the same pins;
-if both are enabled, only one gets the panel and the other draws only to its web
-mirror (`eink-ws213` then says "the e-Paper pins are in use", `eink` says no HAT
-was detected).
+**Use one e-ink plugin at a time.** `eink-ws27` (or the deprecated `eink`) and
+`eink-ws213` drive the same pins; if both are enabled, only one gets the panel
+and the other draws only to its web mirror (`eink-ws213` then says "the e-Paper
+pins are in use", `eink-ws27` that no HAT was detected).
 
 ## Enabling
 
@@ -114,7 +114,7 @@ every redraw a full refresh (it flashes each time), and please report it.
 
 Faces and voices can be overridden per mood under
 `[plugins.eink-ws213.faces]` and `[plugins.eink-ws213.voices]`, the same way as
-for `eink` (see [Faces and voices](eink-setup.md#faces-and-voices)).
+for `eink-ws27` (see [Faces and voices](eink-ws27-setup.md#faces-and-voices)).
 
 ## Troubleshooting
 
@@ -130,9 +130,9 @@ journalctl -u kestrel-daemon --no-pager | grep -i eink-ws213
 - `eink-ws213: no panel (... BUSY line never driven ...)`: no panel answered.
   Check that the HAT is seated and that SPI is enabled (`ls /dev/spidev*`).
 - **"the e-Paper pins are in use"** on the dashboard: another e-ink plugin
-  (such as `eink`) is enabled. Disable one of them.
+  (such as `eink-ws27`) is enabled. Disable one of them.
 - A GPIO backend error on a Pi 5: see the `lgpio` note under
-  [Troubleshooting](eink-setup.md#troubleshooting) for the `eink` plugin; it
+  [Troubleshooting](eink-ws27-setup.md#troubleshooting) for the `eink-ws27` plugin; it
   applies here too.
 
 To collect a report you can attach when asking for help, run the diagnostics

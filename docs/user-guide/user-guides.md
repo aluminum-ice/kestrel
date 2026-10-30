@@ -39,7 +39,8 @@ for the person using the device.
 - [WiGLE](wigle-setup.md) — wardriving uploads of observed networks with GPS.
 - [Remote backup](backup-setup.md) — mirror the capture store off-device over SSH.
 - [UPS HAT](ups-hat-setup.md) — Waveshare UPS HAT battery readout and low-battery auto-shutdown.
-- [e-ink face](eink-setup.md) — animated tamagotchi face on the Waveshare 2.7" e-Paper HAT, with a live web mirror and the HAT's four keys.
+- [e-ink face for the 2.7" HAT](eink-ws27-setup.md) — animated tamagotchi face on the Waveshare 2.7" e-Paper HAT, with a live web mirror and the HAT's four keys (`eink-ws27`).
+- [e-ink face, the old name](eink-setup.md) — **deprecated:** `eink` is replaced by `eink-ws27` and will be removed in a future release that requires a reflash; how to switch.
 - [e-ink face for the 2.13" HAT](eink-ws213-setup.md) — the same face on the smaller Waveshare 2.13" e-Paper HAT (V2/V3/V4), with a lean layout; not yet tested on hardware.
 - [memtemp and session-stats](memtemp-session-stats.md) — built-in local readout cards.
 - [Remote training](remote-training.md) — train the learning agent on a desktop host over SSH.

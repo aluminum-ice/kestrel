@@ -113,8 +113,8 @@ its `LIB_API`; a test (`tests/test_load_library.py`) keeps the two in step.
 | Library | File | API | Status | Used by |
 | --- | --- | --- | --- | --- |
 | `alerts` | `_lib_alerts.py` | 1.0 | stable | `ntfy`, `telegram` |
-| `eink_face` | `_lib_eink_face.py` | 1.0 | stable | `eink`, `eink-ws213` |
-| `hat_keys` | `_lib_hat_keys.py` | 0.1 | provisional | `eink` |
+| `eink_face` | `_lib_eink_face.py` | 1.0 | stable | `eink-ws27`, `eink-ws213`, `eink` (deprecated) |
+| `hat_keys` | `_lib_hat_keys.py` | 0.1 | provisional | `eink-ws27`, `eink` (deprecated) |
 
 Each library has its own section below: what it is for, a minimal plugin using
 it, its public functions and classes, the rules it enforces and what stays in
@@ -256,7 +256,7 @@ the faces and their voices, the mood ladder that picks one from live device
 and learning-agent state, the motion estimate from GPS, the Kestrel mark, the
 small glyphs of the status rows, text helpers and the address lookup. Your
 plugin decides the layout (what goes where on its panel), brings its panel up
-and redraws it. `eink` (2.7" HAT, 264x176, with keys) and `eink-ws213` (2.13"
+and redraws it. `eink-ws27` (2.7" HAT, 264x176, with keys; formerly `eink`) and `eink-ws213` (2.13"
 HAT, 250x122, partial redraws) are built on it, and are the best examples.
 
 ### A minimal plugin
@@ -388,7 +388,8 @@ applies: a key never sends the acknowledgment.
 ## `hat_keys`: push-buttons on a HAT
 
 `load_library(__file__, "hat_keys", api=0)`. **Provisional (API 0):** one HAT
-uses it so far (the 2.7" e-Paper HAT's four keys in `eink`), so its API may
+uses it so far (the 2.7" e-Paper HAT's four keys in `eink-ws27`, and the
+deprecated `eink`), so its API may
 still change in a minor release when a second HAT with keys shows what really
 varies. Pin `api=0` and expect to follow its changes until it reaches 1.
 
@@ -520,7 +521,7 @@ class TwoKeys(Plugin):
 ### What stays in your plugin
 
 Its declarations (including the key options above), which key does what, any
-screen of its own (`eink`'s info screen on KEY1 is a plugin function), and
+screen of its own (`eink-ws27`'s info screen on KEY1 is a plugin function), and
 where the prompt is shown. A plugin that only reads keys needs no `network`
 capability; the actions go through the same checks as the dashboard.
 
