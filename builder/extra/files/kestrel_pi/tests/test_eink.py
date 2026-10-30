@@ -557,12 +557,15 @@ def test_fingerprint_off_or_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(EINK.webtls, "fingerprint", lambda *a: None)
     assert _plugin(tmp_path)._fingerprint_lines() == []
 
-# --- the HAT keys (HatKeys; their own tests are in test_hatkeys.py) -------
+# --- the HAT keys (the hat_keys library: test_hat_keys_lib.py; wiring: test_eink_keys.py) --
 
 def _with_buttons(p, state):
-    """Stand in for the plugin's HatKeys with a fixed key state."""
-    p._keys = types.SimpleNamespace(state=lambda: dict(state), last="none yet",
-                                    set_capturing=lambda active: None, stop=lambda: None)
+    """Stand in for the hat_keys library's Keys with a fixed key state (its
+    press count and prompt); the info screen is the plugin's own."""
+    p._keys = types.SimpleNamespace(
+        state=lambda: {"seq": state["seq"], "prompt": state.get("prompt")},
+        last="none yet", set_capturing=lambda active: None, stop=lambda: None)
+    p._screen_until = time.monotonic() + 60 if state.get("screen") == "info" else 0.0
     return p
 
 

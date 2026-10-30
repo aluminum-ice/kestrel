@@ -128,8 +128,10 @@ rule, the copy enforces it too, and review checks it. In particular, a plugin
 that lets a button, a key or any other input start capture sends
 `{"target": "capture", "enabled": true}` with **no** `ack`: the root helper
 starts capture only if the operator has already given the authorized-use
-acknowledgment, and no plugin ever gives it on the operator's behalf. The
-`eink` plugin's `HatKeys` and its test (`test_hatkeys.py`) show how.
+acknowledgment, and no plugin ever gives it on the operator's behalf. For a
+HAT's keys, the `hat_keys` library keeps that rule (and the confirmation for
+power and capture) for you; see the
+[plugin library reference](plugin-libraries.md#hat_keys-push-buttons-on-a-hat).
 
 ### Helper files
 

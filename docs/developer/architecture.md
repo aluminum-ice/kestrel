@@ -142,8 +142,8 @@ its plugin. Code several plugins share lives with the plugins as a **shared
 plugin library** (`plugins/_lib_<name>.py`), which a plugin loads with
 `load_library` and core never loads; until a library exists, each plugin
 carries a copy (`ntfy` and `telegram` share the `alerts` library, `eink` and
-`eink-ws213` the `eink_face` library; `eink` holds its HAT's keys, with
-Waveshare's driver as its own helper files).
+`eink-ws213` the `eink_face` library, and `eink` the `hat_keys` library for its
+HAT's keys; each keeps Waveshare's driver as its own helper files).
 `tests/test_core_lean.py` fails on a module only plugins use and on core loading
 a library. See [Keep plugins standalone](plugin-development.md#keep-plugins-standalone)
 and the [plugin library reference](plugin-libraries.md).

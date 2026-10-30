@@ -114,6 +114,7 @@ its `LIB_API`; a test (`tests/test_load_library.py`) keeps the two in step.
 | --- | --- | --- | --- | --- |
 | `alerts` | `_lib_alerts.py` | 1.0 | stable | `ntfy`, `telegram` |
 | `eink_face` | `_lib_eink_face.py` | 1.0 | stable | `eink`, `eink-ws213` |
+| `hat_keys` | `_lib_hat_keys.py` | 0.1 | provisional | `eink` |
 
 Each library has its own section below: what it is for, a minimal plugin using
 it, its public functions and classes, the rules it enforces and what stays in
@@ -383,4 +384,143 @@ methods. A panel plugin needs no `network` capability, so it needs no
 authorized-use acknowledgment; if it drives keys that start capture, the rule
 in [Keep plugins standalone](plugin-development.md#keep-plugins-standalone)
 applies: a key never sends the acknowledgment.
+
+## `hat_keys`: push-buttons on a HAT
+
+`load_library(__file__, "hat_keys", api=0)`. **Provisional (API 0):** one HAT
+uses it so far (the 2.7" e-Paper HAT's four keys in `eink`), so its API may
+still change in a minor release when a second HAT with keys shows what really
+varies. Pin `api=0` and expect to follow its changes until it reaches 1.
+
+It reads a HAT's keys, turns presses into gestures and acts on them: your
+plugin's own functions, or built-in actions that start or stop capture and
+reboot or shut down, with the confirmation and safety rules kept for you. You
+say how many keys there are, on which pins, and what each gesture does.
+
+### A minimal plugin
+
+A two-key HAT: a short press on KEY1 runs your function, a long press on KEY2
+shuts down after a second press. It shows its prompts on its dashboard card; a
+plugin with a display draws them on the panel instead (see `eink.py`).
+
+```python
+from kestrel_pi import Plugin, load_library
+
+keys = load_library(__file__, "hat_keys", api=0)
+
+
+class TwoKeys(Plugin):
+    __version__ = "0.1.0"
+    __target_api__ = 2
+    __capabilities__ = ("ui",)
+    __options__ = {
+        "pins": {"type": "str", "default": "5,6",
+                 "help": "BCM GPIO pins of KEY1 and KEY2."},
+        "hold_seconds": {"type": "int", "default": 3},
+        "allow_power": {"type": "bool", "default": True},
+    }
+
+    def on_loaded(self):
+        self.presses = 0
+        self._keys = None
+        try:
+            pins = keys.parse_pins(self.context.options.get("pins"), 2, "5,6")
+        except ValueError as exc:
+            self.context.health_note = "keys off: %s" % exc
+            return
+        self._keys = keys.Keys(
+            "twokeys",
+            [keys.Key("KEY1", pins[0], press=self._count),
+             keys.Key("KEY2", pins[1], hold="shutdown")],
+            apply=self.context.apply, logger=self.context.logger,
+            options=lambda: self.context.options)
+        note = self._keys.start()            # "" or why the keys are unavailable
+        if note:
+            self.context.health_note = note
+
+    def _count(self):
+        self.presses += 1
+        return "Pressed %d times" % self.presses     # shown as the prompt
+
+    def on_unload(self):
+        if self._keys is not None:
+            self._keys.stop()
+
+    def on_ui_setup(self, ui):
+        ui.add_element("prompt", "", label="Keys")
+
+    def on_ui_update(self, ui, state):
+        if self._keys is not None:
+            self._keys.set_capturing(bool(state.capture_active))
+            ui.set("prompt", self._keys.state()["prompt"] or self._keys.last)
+```
+
+### Gestures
+
+- **press:** released before `hold_seconds` (your plugin's option, default 3).
+  It fires at once, unless the key also binds `double`.
+- **hold:** kept down for `hold_seconds`; it fires while the key is still down,
+  and the release does nothing more.
+- **double:** two presses within `DOUBLE_SECONDS` (0.4 s). Only a key that binds
+  one waits to see if a second press follows, so every other key answers at
+  once.
+- **arm and confirm:** a hold arms the action and shows "Press KEY3 again to
+  reboot"; a press of the same key within `CONFIRM_SECONDS` (5) carries it
+  out. Pressing any other key, or waiting, cancels it. The built-in reboot,
+  shutdown and capture start always work this way; your own function bound to
+  `hold` does too when its `Key` has `confirm="<prompt>"`.
+- A key that binds only a built-in `hold` answers a short press with a hint
+  ("Hold KEY4 to shut down", "Hold KEY2 to start capture").
+
+### The contract
+
+- **`Key(name, pin, press=None, hold=None, double=None, confirm=None)`:** `name`
+  is how the prompts say it ("KEY3"). A binding is a function of no arguments
+  (run on the worker thread; a returned string is shown as the prompt) or, on
+  `hold` only, a built-in: `"capture"` (stop at once while capturing; else arm
+  a start), `"reboot"` or `"shutdown"` (arm).
+- **`Keys(plugin_name, keys, apply, logger, options=None, source=None)`:**
+  `apply` is `self.context.apply`; `options` returns your live options, of
+  which it reads `hold_seconds`, `allow_capture` and `allow_power` (declare
+  the ones you use). `start()` returns `""` or why the keys are unavailable
+  (the worker runs either way); `stop()` in `on_unload`.
+- **What you read and set:** `state()` is `{"seq", "prompt"}`: `prompt` is the
+  line to show now (or None) and `seq` changes on every press and message, so a
+  display can redraw at once. `last` is the last gesture ("KEY2 (long)").
+  `set_capturing(active)` from `on_ui_update`, so the capture key knows which
+  way to go and "Starting capture..." clears when capture has started.
+  `say(text, seconds)` and `clear_prompt()` for your own messages.
+- **Input:** by default a `GpioSource` on the keys' pins (gpiozero, imported
+  only when the keys start; active low with the internal pull-up and a 50 ms
+  debounce, as on Waveshare's HATs). For keys wired otherwise (active high, an
+  I2C expander), pass `source=` any object with `start(on_down, on_up)`, which
+  calls `on_down(index)`/`on_up(index)` for the key at that position in
+  `keys`, and `close()`. The library times holds and double presses itself, so
+  every source behaves the same.
+- **Pins:** `parse_pins(raw, count, default)` checks a `pins` option: `count`
+  different BCM numbers from 0 to 27, with a message fit for the dashboard.
+
+### Rules it keeps for you
+
+- The built-in actions bind to a hold only; `Keys` raises `ValueError` if one
+  is bound to a press or a double press, so a brush against a key can't reboot
+  the device.
+- Rebooting, shutting down and starting capture always need the confirming
+  press; stopping capture is immediate, since it is the safe direction.
+  `allow_power` and `allow_capture` switch them off.
+- Every action goes through your plugin's `context.apply`, the same checked path
+  as the dashboard, so keys grant no new privilege.
+- **A key never gives the authorized-use acknowledgment.** Starting capture
+  sends `{"target": "capture", "enabled": true}` with no `ack`; the root helper
+  starts capture only if the operator has already accepted it, and otherwise
+  the prompt says to accept it on the dashboard first.
+- Input callbacks only queue; a worker thread acts, and an action that fails is
+  logged without stopping the keys.
+
+### What stays in your plugin
+
+Its declarations (including the key options above), which key does what, any
+screen of its own (`eink`'s info screen on KEY1 is a plugin function), and
+where the prompt is shown. A plugin that only reads keys needs no `network`
+capability; the actions go through the same checks as the dashboard.
 

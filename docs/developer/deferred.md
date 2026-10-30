@@ -235,3 +235,19 @@ How to use this file:
   minor if the existing names stay, and keep the frames byte-identical (the
   comparison from the `eink_face` PR: render the same states before and after).
 - **Pick up when:** a third e-ink plugin is written.
+
+### Settle the `hat_keys` library at API 1
+
+- **What:** review the `hat_keys` plugin library (`_lib_hat_keys.py`, API 0,
+  provisional) against a second HAT with keys and fix its API at `LIB_API = (1, 0)`:
+  whether `Key`/`Keys` and the `GpioSource` interface (`start(on_down, on_up)`,
+  `close()`) fit that HAT, whether its bindings need more than press, hold,
+  double and arm-and-confirm, and whether operators should remap keys from
+  `config.toml` (a remap would still have to keep the built-ins' rules).
+- **Why deferred:** only `eink` has keys today, so the API is shaped by one HAT;
+  fixing it now would make third-party plugins rely on guesses. API 0 says it
+  may still change in a minor release.
+- **What to do:** write the second keyed HAT's plugin on the library, change the
+  API where that HAT needs it (updating `eink` in the same change), then set
+  `LIB_API = (1, 0)` and mark it stable in `plugin-libraries.md`.
+- **Pick up when:** a plugin for a second HAT with keys is written.
