@@ -91,13 +91,13 @@ echo "uptime:     $(uptime -p 2>/dev/null)"
 echo "python3:    $(/usr/bin/python3 -V 2>&1)"
 echo "web auth:   $web_auth"
 
-# ================================================================ 1.0.10-beta.2 checks (#92-#98)
-# Beta 2: the saved message says enabled or disabled (#92), the ups and ina219
-# plugin libraries (#93), ups-ws beside a deprecated ups-hat (#94), ups-wsc and
-# ups-wsd (#95), the e-ink no-panel message and the private diagnostics report
-# (#96) and ups-wse (#98), as sections 2-7. Section 8 repeats beta 1's and
-# 1.0.9's cheap checks as regressions. The CHECK ids match the checklist issue
-# for 1.0.10-beta.2.
+# ================================================================ 1.0.10-beta.3 checks (#101)
+# Beta 3: one e-ink plugin drives the e-Paper panel at a time and the
+# diagnostics report masks a non-default login (#101), as sections 2-3.
+# Sections 4-9 repeat beta 2's checks (#92-#98: the ups and ina219 libraries,
+# ups-ws and the deprecated ups-hat, ups-wsc/ups-wsd/ups-wse, the e-ink
+# no-panel message, all twenty plugins) and beta 1's and 1.0.9's cheap checks
+# as regressions. The CHECK ids match the checklist issue for 1.0.10-beta.3.
 upd=/var/lib/kestrel/update-run/status.json
 
 # ---------------------------------------------------------------- 1. update to this beta
@@ -156,12 +156,69 @@ else
   check 1.5 SKIP "settings unchanged by the update" "no in-place update recorded"
 fi
 
-# ---------------------------------------------------------------- 2. the saved message (#92)
-sec "2. the saved message (#92)"
-check 2.1 MANUAL "see the checklist" "by hand (the Plugins page)"
+# ---------------------------------------------------------------- 2. one e-ink plugin drives the panel (#101)
+sec "2. one e-ink plugin drives the panel (#101)"
+face_api=$(as_dev "$VENV_PY" -I - "$LIBDIR/plugins" <<'PY' 2>&1 | tail -1
+import os, sys
+from kestrel_pi import load_library
+try:
+    mod = load_library(os.path.join(sys.argv[1], "eink-ws27.py"), "eink_face", api=1)
+    print("%d.%d %s" % (tuple(mod.LIB_API) + (all(hasattr(mod, n) for n in
+          ("claim_panel", "release_panel", "panel_owner")),)))
+except Exception as exc:
+    print("FAIL(%s)" % type(exc).__name__)
+PY
+)
+echo "  eink_face: $face_api"
+case "$face_api" in
+  "1."[1-9]*" True") check 2.1 PASS "eink_face loads at 1.1 or later, with the one-panel rule" "$face_api" ;;
+  *) check 2.1 FAIL "eink_face loads at 1.1 or later, with the one-panel rule" "$face_api" ;;
+esac
+# This daemon run only (the update restarted it): which e-ink plugins stood
+# down and for whom, and whether any still fought over the pins. Counts and
+# plugin names only.
+inv=$(systemctl show -p InvocationID --value kestrel-daemon 2>/dev/null)
+run_log=$work/daemon-run.log
+if [ -n "$inv" ]; then
+  journalctl -q --no-pager "_SYSTEMD_INVOCATION_ID=$inv" >"$run_log" 2>/dev/null
+else
+  : >"$run_log"
+fi
+eon=""
+n_on=0
+for n in eink-ws27 eink eink-ws213; do
+  if [ "$(cfg "plugins.$n.enabled" false)" = true ]; then eon="$eon $n"; n_on=$((n_on + 1)); fi
+done
+standing=$(grep -oE '(eink|eink-ws27|eink-ws213): standing down: (eink|eink-ws27|eink-ws213) drives' "$run_log" | sort -u)
+n_standing=$(printf '%s\n' "$standing" | grep -c 'standing down' || true)
+owners=$(printf '%s\n' "$standing" | grep -oE '(eink|eink-ws27|eink-ws213) drives' | awk '{print $1}' | sort -u | tr '\n' ' ')
+in_use=$(grep -c 'already in use' "$run_log" || true)
+nokeys=$(grep -c 'HAT keys unavailable' "$run_log" || true)
+echo "  enabled e-ink:${eon:- none}   standing down: $n_standing (for: ${owners:-none})   'already in use': $in_use   'HAT keys unavailable': $nokeys"
+printf '%s\n' "$standing" | grep 'standing down' | sed 's/^/  /'
+if [ "$n_on" -eq 0 ]; then
+  check 2.2 SKIP "one e-ink plugin drives the panel, the others stand down" "no e-ink plugin enabled"
+elif [ -z "$inv" ]; then
+  check 2.2 INFO "one e-ink plugin drives the panel, the others stand down" "no daemon run to read"
+elif [ "$in_use" -eq 0 ] && [ "$n_standing" -eq $((n_on - 1)) ] \
+    && [ "$(printf '%s' "$owners" | wc -w)" -le 1 ]; then
+  check 2.2 PASS "one e-ink plugin drives the panel, the others stand down" \
+    "$n_on enabled, $n_standing standing down${owners:+ for $owners}"
+else
+  check 2.2 FAIL "one e-ink plugin drives the panel, the others stand down" \
+    "$n_on enabled, $n_standing standing down, $in_use 'already in use' line(s)"
+fi
+# 2.3 (the cards) comes from the dashboard section below.
+for id in 2.4 2.5 2.6; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
 
-# ---------------------------------------------------------------- 3. the ups and ina219 plugin libraries (#93)
-sec "3. the ups and ina219 plugin libraries (#93)"
+# ---------------------------------------------------------------- 3. the diagnostics login (#101)
+sec "3. the diagnostics login (#101)"
+check 3.1 MANUAL "see the checklist" "by hand (runs on a computer)"
+
+# ---------------------------------------------------------------- 4. the ups and ina219 plugin libraries (#93)
+sec "4. the ups and ina219 plugin libraries (#93)"
 bad=""
 for f in _lib_alerts.py _lib_eink_face.py _lib_hat_keys.py _lib_ups.py _lib_ina219.py; do
   st=$(stat -c '%U %a' "$LIBDIR/plugins/$f" 2>/dev/null || echo missing)
@@ -169,9 +226,9 @@ for f in _lib_alerts.py _lib_eink_face.py _lib_hat_keys.py _lib_ups.py _lib_ina2
   [ "$st" = "root 644" ] || bad="$bad $f($st)"
 done
 if [ -z "$bad" ]; then
-  check 3.1 PASS "the five plugin libraries are installed, root-owned 0644" "alerts, eink_face, hat_keys, ups, ina219"
+  check 4.1 PASS "the five plugin libraries are installed, root-owned 0644" "alerts, eink_face, hat_keys, ups, ina219"
 else
-  check 3.1 FAIL "the five plugin libraries are installed, root-owned 0644" "$bad"
+  check 4.1 FAIL "the five plugin libraries are installed, root-owned 0644" "$bad"
 fi
 # Load each library the way a plugin does, as the device user in the venv.
 # Loading runs no plugin and touches no hardware (drawing, GPIO and I2C are lazy).
@@ -193,31 +250,31 @@ echo "  libraries: $apis"
 # ups must be 0.3 or later (ups-wse needs it) and ina219 1.1 or later (answers()).
 case "$apis" in
   "alerts=1."*" eink_face=1."*" hat_keys=0."*" ups=0."[3-9]*" ina219=1."[1-9]*)
-    check 3.2 PASS "each library loads with the API its plugins ask for" "$apis" ;;
-  *) check 3.2 FAIL "each library loads with the API its plugins ask for" "$(printf '%s' "$apis" | cut -c1-160)" ;;
+    check 4.2 PASS "each library loads with the API its plugins ask for" "$apis" ;;
+  *) check 4.2 FAIL "each library loads with the API its plugins ask for" "$(printf '%s' "$apis" | cut -c1-160)" ;;
 esac
 liberr=$(journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null \
   | grep -cE 'library API|plugin library .* not found|has no LIB_API' || true)
 if [ "${liberr:-0}" -eq 0 ]; then
-  check 3.3 PASS "no plugin-library load errors in this boot's daemon journal" ""
+  check 4.3 PASS "no plugin-library load errors in this boot's daemon journal" ""
 else
-  check 3.3 FAIL "no plugin-library load errors in this boot's daemon journal" "$liberr line(s)"
+  check 4.3 FAIL "no plugin-library load errors in this boot's daemon journal" "$liberr line(s)"
 fi
 
-# ---------------------------------------------------------------- 4. ups-ws and the deprecated ups-hat (#94)
-sec "4. ups-ws and the deprecated ups-hat (#94)"
-# 4.1 and 4.2 are in the config tests; 4.3 and 4.4 in the dashboard section.
-for id in 4.5 4.6; do
+# ---------------------------------------------------------------- 5. ups-ws and the deprecated ups-hat (#94)
+sec "5. ups-ws and the deprecated ups-hat (#94)"
+# 5.1 and 5.2 are in the config tests; 5.3 and 5.4 in the dashboard section.
+for id in 5.5 5.6; do
   check "$id" MANUAL "see the checklist" "by hand"
 done
 
-# ---------------------------------------------------------------- 5. ups-wsc, ups-wsd and ups-wse (#95, #98)
-sec "5. ups-wsc, ups-wsd and ups-wse (#95, #98)"
-# 5.1 and 5.2 are in the config tests; 5.3 in the dashboard section.
-check 5.4 MANUAL "see the checklist" "by hand"
+# ---------------------------------------------------------------- 6. ups-wsc, ups-wsd and ups-wse (#95, #98)
+sec "6. ups-wsc, ups-wsd and ups-wse (#95, #98)"
+# 6.1 and 6.2 are in the config tests; 6.3 in the dashboard section.
+check 6.4 MANUAL "see the checklist" "by hand"
 
-# ---------------------------------------------------------------- 6. the e-ink no-panel message and diagnostics (#96)
-sec "6. the e-ink no-panel message and diagnostics (#96)"
+# ---------------------------------------------------------------- 7. the e-ink no-panel message and diagnostics (#96)
+sec "7. the e-ink no-panel message and diagnostics (#96)"
 # An enabled e-ink plugin with no HAT now says plainly that no panel is wired.
 # Only the count of each kind of line is reported.
 eon=""
@@ -228,31 +285,31 @@ nopanel=$(journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null | grep -c 'n
 plain=$(journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null | grep -c 'BUSY line never driven (no panel wired)' || true)
 echo "  enabled e-ink:${eon:- none}   'no panel' lines: $nopanel   'never driven' lines: $plain"
 if [ -z "$eon" ]; then
-  check 6.1 SKIP "with no HAT, the journal says no panel is wired" "no e-ink plugin enabled"
+  check 7.1 SKIP "with no HAT, the journal says no panel is wired" "no e-ink plugin enabled"
 elif [ "${nopanel:-0}" -eq 0 ]; then
-  check 6.1 INFO "with no HAT, the journal says no panel is wired" "no 'no panel' line: a panel answered"
+  check 7.1 INFO "with no HAT, the journal says no panel is wired" "no 'no panel' line: a panel answered"
 elif [ "${plain:-0}" -ge 1 ]; then
-  check 6.1 PASS "with no HAT, the journal says no panel is wired" "$plain line(s)"
+  check 7.1 PASS "with no HAT, the journal says no panel is wired" "$plain line(s)"
 else
-  check 6.1 FAIL "with no HAT, the journal says no panel is wired" "'no panel' without the plain reason"
+  check 7.1 FAIL "with no HAT, the journal says no panel is wired" "'no panel' without the plain reason"
   journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null | grep 'no panel (' | tail -2 | jscrub
 fi
-check 6.2 MANUAL "see the checklist" "by hand (runs on a computer)"
+check 7.2 MANUAL "see the checklist" "by hand (runs on a computer)"
 
-# ---------------------------------------------------------------- 7. all twenty plugins
-sec "7. all twenty plugins"
-# 7.1 and 7.2 are in the config tests below.
+# ---------------------------------------------------------------- 8. all twenty plugins
+sec "8. all twenty plugins"
+# 8.1 and 8.2 are in the config tests below.
 
-# ---------------------------------------------------------------- 8. regressions from 1.0.10-beta.1 and 1.0.9
-sec "8. regressions from 1.0.10-beta.1 and 1.0.9"
+# ---------------------------------------------------------------- 9. regressions from 1.0.10-beta.1 and 1.0.9
+sec "9. regressions from 1.0.10-beta.1 and 1.0.9"
 # Code that served particular plugins left the kestrel_pi package in beta 1.
 gone=$(as_dev "$VENV_PY" -I -c 'import importlib.util
 names = ("kestrel_pi.hatkeys", "kestrel_pi.alerts", "kestrel_pi.vendor")
 print(" ".join(n for n in names if importlib.util.find_spec(n) is not None) or "none")' 2>&1 | tail -1)
 if [ "$gone" = none ]; then
-  check 8.1 PASS "plugin-only modules are gone from the installed package" "no hatkeys, alerts or vendor"
+  check 9.1 PASS "plugin-only modules are gone from the installed package" "no hatkeys, alerts or vendor"
 else
-  check 8.1 FAIL "plugin-only modules are gone from the installed package" "still there: $(printf '%s' "$gone" | cut -c1-120)"
+  check 9.1 FAIL "plugin-only modules are gone from the installed package" "still there: $(printf '%s' "$gone" | cut -c1-120)"
 fi
 miss=""
 for f in _eink_epdconfig.py _eink_epd2in7.py _eink_epd2in7_V2.py \
@@ -267,18 +324,18 @@ for f in epdconfig epd2in7 epd2in7_V2; do
   { [ -n "$h_old" ] && [ "$h_old" = "$h_new" ]; } || miss="$miss differ:$f"
 done
 if [ -z "$miss" ]; then
-  check 8.2 PASS "the e-ink driver helpers are installed; eink-ws27's match eink's" "sha256 identical"
+  check 9.2 PASS "the e-ink driver helpers are installed; eink-ws27's match eink's" "sha256 identical"
 else
-  check 8.2 FAIL "the e-ink driver helpers are installed; eink-ws27's match eink's" "$miss"
+  check 9.2 FAIL "the e-ink driver helpers are installed; eink-ws27's match eink's" "$miss"
 fi
-# 8.3-8.5 and 8.8-8.9 are in the config tests below.
+# 9.3-9.5 and 9.8-9.9 are in the config tests below.
 topic=$DEV_HOME/.local/state/kestrel-ntfy/topic
 if as_dev test -f "$topic"; then
   [ "$(as_dev stat -c '%a' "$topic" 2>/dev/null)" = 600 ] \
-    && check 8.6 PASS "generated ntfy topic file is still private" "0600 (contents not read)" \
-    || check 8.6 FAIL "generated ntfy topic file is still private" "mode $(as_dev stat -c '%a' "$topic" 2>/dev/null)"
+    && check 9.6 PASS "generated ntfy topic file is still private" "0600 (contents not read)" \
+    || check 9.6 FAIL "generated ntfy topic file is still private" "mode $(as_dev stat -c '%a' "$topic" 2>/dev/null)"
 else
-  check 8.6 SKIP "generated ntfy topic file is still private" "no generated topic"
+  check 9.6 SKIP "generated ntfy topic file is still private" "no generated topic"
 fi
 # Only the number of queued alerts is read, never their text.
 queues=$(as_dev /usr/bin/python3 -I - "$DEV_HOME/.local/state" <<'PY' 2>&1
@@ -297,11 +354,11 @@ print(" ".join(out) or "none")
 PY
 )
 case "$queues" in
-  none) check 8.7 SKIP "the alert queues read back" "no queue file yet" ;;
-  *BAD*) check 8.7 FAIL "the alert queues read back" "$queues" ;;
-  *) check 8.7 PASS "the alert queues read back" "queued: $queues" ;;
+  none) check 9.7 SKIP "the alert queues read back" "no queue file yet" ;;
+  *BAD*) check 9.7 FAIL "the alert queues read back" "$queues" ;;
+  *) check 9.7 PASS "the alert queues read back" "queued: $queues" ;;
 esac
-# 8.10 and 8.11 come from the dashboard section below.
+# 9.10 and 9.11 come from the dashboard section below.
 tls=$(cfg web.tls on)
 port=$(cfg web.port 8080)
 tport=$(cfg web.tls_port 8443)
@@ -313,22 +370,22 @@ done
 if [ "$(as_dev stat -c '%a' "$WEBSTATE" 2>/dev/null)" = 700 ] \
     && [ "$(as_dev stat -c '%a' "$WEBSTATE/cert.pem" 2>/dev/null)" = 600 ] \
     && [ "$(as_dev stat -c '%a' "$WEBSTATE/key.pem" 2>/dev/null)" = 600 ]; then
-  check 8.12 PASS "certificate made and private" "dir 700, cert.pem and key.pem 600"
+  check 9.12 PASS "certificate made and private" "dir 700, cert.pem and key.pem 600"
 elif [ "$tls" = off ]; then
-  check 8.12 SKIP "certificate made and private" "[web] tls is off"
+  check 9.12 SKIP "certificate made and private" "[web] tls is off"
 else
-  check 8.12 FAIL "certificate made and private" "see the modes above"
+  check 9.12 FAIL "certificate made and private" "see the modes above"
 fi
 # The fingerprint itself never goes in the report: only whether they match.
 fp_cli=$(timeout 20 "$CLI" web fingerprint 2>/dev/null | tail -1)
 fp_log=$(journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null \
   | grep -oE 'HTTPS certificate SHA-256 [0-9A-F:]+' | tail -1 | awk '{print $NF}')
 if [ -n "$fp_cli" ] && [ "$fp_cli" = "$fp_log" ]; then
-  check 8.13 PASS "kestrel web fingerprint matches the daemon's journal" "values not shown"
+  check 9.13 PASS "kestrel web fingerprint matches the daemon's journal" "values not shown"
 elif [ -z "$fp_log" ]; then
-  check 8.13 INFO "kestrel web fingerprint matches the daemon's journal" "no HTTPS line in this boot's daemon journal"
+  check 9.13 INFO "kestrel web fingerprint matches the daemon's journal" "no HTTPS line in this boot's daemon journal"
 else
-  check 8.13 FAIL "kestrel web fingerprint matches the daemon's journal" "they differ (values not shown)"
+  check 9.13 FAIL "kestrel web fingerprint matches the daemon's journal" "they differ (values not shown)"
 fi
 # Listening sockets only (read-only, no request): HTTPS and the forwarder on each
 # management address, plain HTTP on loopback. Addresses are counted, not shown.
@@ -338,43 +395,43 @@ http_ext=$(printf '%s\n' "$lst" | grep -E ":$port\$" | grep -vcE '^(127\.|\[::1\
 http_lo=$(printf '%s\n' "$lst" | grep -cE "^127\.[0-9.]+:$port\$" || true)
 echo "  listeners: $tport off-loopback=$https_ext  $port off-loopback=$http_ext  $port loopback=$http_lo"
 if [ "$tls" = off ]; then
-  check 8.14 SKIP "HTTPS and the forwarder listen on each management address" "[web] tls is off"
+  check 9.14 SKIP "HTTPS and the forwarder listen on each management address" "[web] tls is off"
 elif [ "${https_ext:-0}" -ge 1 ] && [ "$https_ext" = "$http_ext" ] && [ "${http_lo:-0}" -ge 1 ]; then
-  check 8.14 PASS "HTTPS and the forwarder listen on each management address" "$https_ext address(es); loopback plain HTTP too"
+  check 9.14 PASS "HTTPS and the forwarder listen on each management address" "$https_ext address(es); loopback plain HTTP too"
 else
-  check 8.14 FAIL "HTTPS and the forwarder listen on each management address" "see the listener counts above"
+  check 9.14 FAIL "HTTPS and the forwarder listen on each management address" "see the listener counts above"
 fi
-# 8.15 (loopback Basic) and 8.16 (nosniff) come from the dashboard section below.
+# 9.15 (loopback Basic) and 9.16 (nosniff) come from the dashboard section below.
 cat_ok=$(as_dev "$VENV_PY" -I -c 'from kestrel_pi import config_catalog as c
 a, b = c.find("web", "tls"), c.find("web", "tls_port")
 print(bool(a) and bool(b) and a.get("editable") is False and b.get("editable") is False)' 2>&1)
 if [ "$cat_ok" = True ]; then
-  check 8.17 PASS "Advanced settings lists web.tls and web.tls_port read-only" ""
+  check 9.17 PASS "Advanced settings lists web.tls and web.tls_port read-only" ""
 else
-  check 8.17 FAIL "Advanced settings lists web.tls and web.tls_port read-only" "$(printf '%s' "$cat_ok" | tr '\n' ' ' | cut -c1-120)"
+  check 9.17 FAIL "Advanced settings lists web.tls and web.tls_port read-only" "$(printf '%s' "$cat_ok" | tr '\n' ' ' | cut -c1-120)"
 fi
-# 8.18 (web.tls refused through the settings channel) is in the config tests below.
+# 9.18 (web.tls refused through the settings channel) is in the config tests below.
 # The helper run directly with a malformed request: it answers without reading
 # any password (a bad request never reaches the check) and writes nothing, and
 # exits 0 once it has answered, so a refused request leaves no failed unit.
 auth_out=$(printf '{}' | timeout 10 /usr/bin/python3 -I "$CTL" checkauth 2>/dev/null); auth_rc=$?
 if [ "$auth_rc" -eq 0 ] && printf '%s' "$auth_out" | grep -q '"ok": false'; then
-  check 8.19 PASS "the login helper exits 0 after answering a refused request" "rc=0, refused"
+  check 9.19 PASS "the login helper exits 0 after answering a refused request" "rc=0, refused"
 else
-  check 8.19 FAIL "the login helper exits 0 after answering a refused request" \
+  check 9.19 FAIL "the login helper exits 0 after answering a refused request" \
     "rc=$auth_rc reply=$(printf '%s' "$auth_out" | tr -cd '[:alnum:] :{}",_' | cut -c1-80)"
 fi
 for old in notify hat-buttons; do
   [ -e "$LIBDIR/plugins/$old.py" ] && gone_old="${gone_old:-} $old"
 done
 if [ -z "${gone_old:-}" ]; then
-  check 8.20 PASS "the replaced notify and hat-buttons plugins are gone" ""
+  check 9.20 PASS "the replaced notify and hat-buttons plugins are gone" ""
 else
-  check 8.20 FAIL "the replaced notify and hat-buttons plugins are gone" "still installed:$gone_old"
+  check 9.20 FAIL "the replaced notify and hat-buttons plugins are gone" "still installed:$gone_old"
 fi
-# 8.21-8.23 come from the dashboard section below.
-check 8.24 MANUAL "see the checklist" "by hand (a browser)"
-check 9.1 MANUAL "see the checklist" "the closing step"
+# 9.21-9.23 come from the dashboard section below.
+check 9.24 MANUAL "see the checklist" "by hand (a browser)"
+check 10.1 MANUAL "see the checklist" "the closing step"
 
 # ---------------------------------------------------------------- config tests (throwaway copy)
 sec "config tests (throwaway copy of config.toml; commands blocked)"
@@ -403,10 +460,10 @@ def check(cid, ok, what, detail=""): print("CHECK %-5s %-6s %s :: %s" % (cid, "P
 def apply(ch):
     try: return ctl.apply_change(ch)
     except Exception as e: return {"ok": False, "error": "exc %s" % type(e).__name__}
-# 8.18: HTTPS can only be switched from a terminal, never through the settings socket.
+# 9.18: HTTPS can only be switched from a terminal, never through the settings socket.
 before = read("web.tls")
 r = apply({"target": "config-set", "table": "web", "key": "tls", "value": "off"})
-check("8.18", not r.get("ok") and read("web.tls") == before,
+check("9.18", not r.get("ok") and read("web.tls") == before,
       "web.tls is refused through the settings channel (CLI only)", "error=%s" % r.get("error"))
 # Plugin declarations, read statically (nothing imported or run).
 plugs = ctl.static_plugins()
@@ -416,34 +473,34 @@ def decl(name):
 def caps(name): return set(decl(name).get("capabilities") or ())
 def opts(name): return decl(name).get("options") or {}
 def state(name): return "enabled" if read("plugins.%s.enabled" % name) is True else "disabled"
-# 7.2: library and helper files are never plugins, and no plugin is called lib.
-check("7.2", not any(n.startswith("_") for n in plugs) and "lib" not in plugs,
+# 8.2: library and helper files are never plugins, and no plugin is called lib.
+check("8.2", not any(n.startswith("_") for n in plugs) and "lib" not in plugs,
       "no _lib_/_<plugin>_ file or plugin named lib is listed as a plugin",
       "%d plugins listed" % len(plugs))
-# 8.3: choices where a plugin declares a fixed set; none on eink (stored values stay valid).
+# 9.3: choices where a plugin declares a fixed set; none on eink (stored values stay valid).
 c213 = (opts("eink-ws213").get("variant") or {}).get("choices")
 c27v = (opts("eink-ws27").get("variant") or {}).get("choices")
 c27r = (opts("eink-ws27").get("rotation") or {}).get("choices")
-check("8.3", c213 == ["v4", "v3", "v2"] and c27v == ["auto", "v2", "v1"]
+check("9.3", c213 == ["v4", "v3", "v2"] and c27v == ["auto", "v2", "v1"]
       and c27r == [0, 90, 180, 270] and "choices" not in (opts("eink").get("variant") or {}),
       "eink-ws213 and eink-ws27 declare their choices; eink none",
       "ws213 %s, ws27 %s" % (state("eink-ws213"), state("eink-ws27")))
-# 8.4: a value outside the choices is refused through the settings channel and
+# 9.4: a value outside the choices is refused through the settings channel and
 # the (throwaway) config is left as it was.
 table_before = read("plugins.eink-ws213")
 r = apply({"plugin": "eink-ws213", "set": {"variant": "V4"}})
-check("8.4", not r.get("ok") and read("plugins.eink-ws213") == table_before
+check("9.4", not r.get("ok") and read("plugins.eink-ws213") == table_before
       and "one of" in str(r.get("error", "")),
       "a variant outside the choices is refused through the settings channel",
       "error=%s" % str(r.get("error", ""))[:80])
-# 8.5: one plugin per service, each with only its own secret options.
+# 9.5: one plugin per service, each with only its own secret options.
 def secrets(name):
     return {k for k, v in opts(name).items() if (v or {}).get("secret")}
-check("8.5", "network" in caps("ntfy") and "network" in caps("telegram")
+check("9.5", "network" in caps("ntfy") and "network" in caps("telegram")
       and secrets("ntfy") == {"topic", "token"} and secrets("telegram") == {"bot_token", "chat_id"},
       "ntfy and telegram still declare network and only their own secrets",
       "ntfy %s, telegram %s" % (state("ntfy"), state("telegram")))
-# 8.8: the HAT key options, on eink-ws27 and the deprecated eink alike.
+# 9.8: the HAT key options, on eink-ws27 and the deprecated eink alike.
 def keyopts(name):
     o = opts(name)
     return ((o.get("buttons") or {}).get("default") is True
@@ -452,52 +509,52 @@ def keyopts(name):
             and (o.get("allow_capture") or {}).get("default") is True
             and (o.get("allow_power") or {}).get("default") is True
             and "network" not in caps(name))
-check("8.8", keyopts("eink-ws27") and keyopts("eink"),
+check("9.8", keyopts("eink-ws27") and keyopts("eink"),
       "eink-ws27 and eink declare the HAT key options, local only",
       "buttons %s" % ("off" if read("plugins.eink-ws27.buttons") is False
                       or read("plugins.eink.buttons") is False else "on"))
-# 7.1: every shipped plugin is there and readable.
+# 8.1: every shipped plugin is there and readable.
 expected = {"memtemp", "session-stats", "gps", "wpa-sec", "wigle", "backup", "ups-hat", "eink",
             "eink-ws213", "eink-ws27", "updates", "remote-train", "downloads", "map", "ntfy",
             "telegram", "ups-ws", "ups-wsc", "ups-wsd", "ups-wse"}
 invalid = sorted(n for n, v in plugs.items() if v[0] is None)
 missing = sorted(expected - set(plugs))
-check("7.1", not invalid and not missing, "all twenty shipped plugins present and readable",
+check("8.1", not invalid and not missing, "all twenty shipped plugins present and readable",
       "missing=%s invalid=%s" % (missing, invalid))
-# 4.1: ups-ws is the same plugin as ups-hat under the board's name: local only,
+# 5.1: ups-ws is the same plugin as ups-hat under the board's name: local only,
 # the battery service, the same options.
 def defaults(name): return {k: (v or {}).get("default") for k, v in opts(name).items()}
 provides = lambda name: tuple(decl(name).get("provides") or ())
-check("4.1", caps("ups-ws") == {"ui"} and provides("ups-ws") == ("battery",)
+check("5.1", caps("ups-ws") == {"ui"} and provides("ups-ws") == ("battery",)
       and defaults("ups-ws") == defaults("ups-hat") and defaults("ups-ws").get("address") == 0x42,
       "ups-ws is local only, provides battery, with ups-hat's options",
       "ups-ws %s, ups-hat %s" % (state("ups-ws"), state("ups-hat")))
-# 4.2: ups-hat says it is deprecated and slated for removal; ups-ws doesn't.
+# 5.2: ups-hat says it is deprecated and slated for removal; ups-ws doesn't.
 d_hat = str(decl("ups-hat").get("description") or "")
 d_ws = str(decl("ups-ws").get("description") or "")
-check("4.2", d_hat.startswith("Deprecated: replaced by ups-ws") and "reflash" in d_hat
+check("5.2", d_hat.startswith("Deprecated: replaced by ups-ws") and "reflash" in d_hat
       and not d_ws.startswith("Deprecated"),
       "ups-hat's description marks it deprecated; ups-ws's doesn't", "")
-# 5.1: the three new UPS plugins: local only, the battery service, untested.
+# 6.1: the three new UPS plugins: local only, the battery service, untested.
 new_ups = ("ups-wsc", "ups-wsd", "ups-wse")
-check("5.1", all(caps(n) == {"ui"} and provides(n) == ("battery",)
+check("6.1", all(caps(n) == {"ui"} and provides(n) == ("battery",)
                  and "Not yet tested on hardware" in str(decl(n).get("description") or "")
                  for n in new_ups),
       "ups-wsc, ups-wsd and ups-wse are local only, provide battery, say untested",
       ", ".join("%s %s" % (n, state(n)) for n in new_ups))
-# 5.2: their defaults: the (C)/(D)'s INA219 at 0x43, the (E)'s controller at
+# 6.2: their defaults: the (C)/(D)'s INA219 at 0x43, the (E)'s controller at
 # 0x2D, and the (E)'s power-on when charged off unless asked for.
 d_c, d_d, d_e = defaults("ups-wsc"), defaults("ups-wsd"), defaults("ups-wse")
-check("5.2", d_c.get("address") == 0x43 and d_d.get("address") == 0x43
+check("6.2", d_c.get("address") == 0x43 and d_d.get("address") == 0x43
       and d_e.get("address") == 0x2D and d_e.get("power_on_when_charged") is False
       and d_c.get("shutdown_percent") == d_d.get("shutdown_percent") == d_e.get("shutdown_percent") == 5,
       "their defaults: 0x43, 0x43, 0x2D, power_on_when_charged off",
       "power_on_when_charged %s" % ("on" if read("plugins.ups-wse.power_on_when_charged") is True
                                      else "off"))
-# 8.9: eink says it is deprecated and slated for removal; eink-ws27 doesn't.
+# 9.9: eink says it is deprecated and slated for removal; eink-ws27 doesn't.
 d_eink = str(decl("eink").get("description") or "")
 d_27 = str(decl("eink-ws27").get("description") or "")
-check("8.9", d_eink.startswith("Deprecated: replaced by eink-ws27") and "reflash" in d_eink
+check("9.9", d_eink.startswith("Deprecated: replaced by eink-ws27") and "reflash" in d_eink
       and not d_27.startswith("Deprecated"),
       "eink's description marks it deprecated; eink-ws27's doesn't",
       "eink %s, eink-ws27 %s" % (state("eink"), state("eink-ws27")))
@@ -521,29 +578,30 @@ mode = str(web.get("auth", "system")).lower()
 port = int(web.get("port", 8080))
 def chk(cid, result, what, detail=""):
     print("CHECK %-5s %-6s %s :: %s" % (cid, result, what, detail))
-# 8.16: every response carries nosniff, the sign-in refusal included (no password needed).
+# 9.16: every response carries nosniff, the sign-in refusal included (no password needed).
 try:
     hdrs = urllib.request.urlopen("http://127.0.0.1:%d/status.json" % port, timeout=15).headers
 except urllib.error.HTTPError as exc:
     hdrs = exc.headers
 except Exception as exc:
     hdrs = None
-    chk("8.16", "INFO", "responses carry X-Content-Type-Options: nosniff", "no answer: %s" % type(exc).__name__)
+    chk("9.16", "INFO", "responses carry X-Content-Type-Options: nosniff", "no answer: %s" % type(exc).__name__)
 if hdrs is not None:
-    chk("8.16", "PASS" if hdrs.get("X-Content-Type-Options") == "nosniff" else "FAIL",
+    chk("9.16", "PASS" if hdrs.get("X-Content-Type-Options") == "nosniff" else "FAIL",
         "responses carry X-Content-Type-Options: nosniff", "")
 # The checks below need the dashboard's answer; without it each says why.
-DASH = [("8.10", "each enabled e-ink plugin is loaded, with its Motion card"),
-        ("8.11", "an enabled eink shows its deprecation on the Plugins page"),
-        ("8.21", "the running daemon offers the row buttons"),
-        ("8.22", "the map page: background, recovered colours, drag and zoom"),
-        ("8.23", "Captured networks has its controls at the top"),
-        ("4.3", "an enabled ups-hat shows its deprecation on the Plugins page"),
-        ("4.4", "with ups-ws enabled too, ups-hat stands down and says so"),
-        ("5.3", "each enabled ups-wsc/ups-wsd/ups-wse is loaded and its card shows a status")]
+DASH = [("9.10", "each enabled e-ink plugin is loaded, with its Motion card"),
+        ("9.11", "an enabled eink shows its deprecation on the Plugins page"),
+        ("9.21", "the running daemon offers the row buttons"),
+        ("9.22", "the map page: background, recovered colours, drag and zoom"),
+        ("9.23", "Captured networks has its controls at the top"),
+        ("5.3", "an enabled ups-hat shows its deprecation on the Plugins page"),
+        ("5.4", "with ups-ws enabled too, ups-hat stands down and says so"),
+        ("6.3", "each enabled ups-wsc/ups-wsd/ups-wse is loaded and its card shows a status"),
+        ("2.3", "one e-ink card shows the panel, the others 'used by' it")]
 def skip_all(why, basic=True):
     if basic:
-        chk("8.15", "SKIP", "loopback /status.json with Basic credentials", why)
+        chk("9.15", "SKIP", "loopback /status.json with Basic credentials", why)
     for cid, what in DASH:
         chk(cid, "SKIP", what, why)
 req = urllib.request.Request("http://127.0.0.1:%d/status.json" % port)
@@ -567,12 +625,12 @@ try:
     s = json.load(urllib.request.urlopen(req, timeout=15))
 except Exception as exc:
     print("(not available: %s)" % type(exc).__name__)
-    chk("8.15", "FAIL" if mode in ("basic", "system") else "INFO",
+    chk("9.15", "FAIL" if mode in ("basic", "system") else "INFO",
         "loopback /status.json with Basic credentials", type(exc).__name__)
     skip_all("no /status.json", basic=False)
     sys.exit(0)
 if mode in ("basic", "system"):
-    chk("8.15", "PASS", "loopback /status.json with Basic credentials", "plain HTTP on 127.0.0.1")
+    chk("9.15", "PASS", "loopback /status.json with Basic credentials", "plain HTTP on 127.0.0.1")
 print("version:", s.get("version"))
 cap = s.get("capture", {}) or {}
 print("capture:", {k: cap.get(k) for k in ("state", "enabled", "hashline_files", "located_aps")})
@@ -592,66 +650,79 @@ def widget(name):
     if isinstance(els, dict):
         els = list(els.values())
     return {e.get("name"): e.get("value") for e in els if isinstance(e, dict)}
-# 8.10: each enabled e-ink plugin loaded and showing its Motion card.
+# 9.10: each enabled e-ink plugin loaded and showing its Motion card.
 eplugs = [n for n in ("eink-ws27", "eink", "eink-ws213")
           if (plugins.get(n) or {}).get("state") not in (None, "disabled")]
 if not eplugs:
-    chk("8.10", "SKIP", DASH[0][1], "no e-ink plugin enabled")
+    chk("9.10", "SKIP", DASH[0][1], "no e-ink plugin enabled")
 else:
     bad = [n for n in eplugs if plugins[n].get("state") != "loaded" or "mobility" not in widget(n)]
-    chk("8.10", "FAIL" if bad else "PASS", DASH[0][1],
+    chk("9.10", "FAIL" if bad else "PASS", DASH[0][1],
         ("not loaded or no Motion card: %s" % ", ".join(bad)) if bad else
         ", ".join("%s motion=%s" % (n, widget(n).get("mobility")) for n in eplugs))
-# 8.11: the deprecated eink says so on its health note while it is enabled.
+# 9.11: the deprecated eink says so on its health note while it is enabled.
 e = plugins.get("eink") or {}
 if e.get("state") in (None, "disabled"):
-    chk("8.11", "SKIP", DASH[1][1], "eink not enabled")
+    chk("9.11", "SKIP", DASH[1][1], "eink not enabled")
 else:
     note = str(e.get("note") or "")
-    chk("8.11", "PASS" if note.startswith("deprecated: replaced by eink-ws27") else "FAIL",
+    chk("9.11", "PASS" if note.startswith("deprecated: replaced by eink-ws27") else "FAIL",
         DASH[1][1], "note starts %r" % note[:40])
-# 4.3: the deprecated ups-hat says so on its health note while it is enabled.
+# 5.3: the deprecated ups-hat says so on its health note while it is enabled.
 hat = plugins.get("ups-hat") or {}
 hat_on = hat.get("state") not in (None, "disabled")
 if not hat_on:
-    chk("4.3", "SKIP", DASH[5][1], "ups-hat not enabled")
+    chk("5.3", "SKIP", DASH[5][1], "ups-hat not enabled")
 else:
     note = str(hat.get("note") or "")
-    chk("4.3", "PASS" if note.startswith("deprecated: replaced by ups-ws") else "FAIL",
+    chk("5.3", "PASS" if note.startswith("deprecated: replaced by ups-ws") else "FAIL",
         DASH[5][1], "note starts %r" % note[:40])
-# 4.4: with both enabled, ups-hat gives way to ups-ws (its card names it).
+# 5.4: with both enabled, ups-hat gives way to ups-ws (its card names it).
 ws_on = (plugins.get("ups-ws") or {}).get("state") not in (None, "disabled")
 if not (hat_on and ws_on):
-    chk("4.4", "SKIP", DASH[6][1], "needs both ups-hat and ups-ws enabled")
+    chk("5.4", "SKIP", DASH[6][1], "needs both ups-hat and ups-ws enabled")
 else:
     status = str(widget("ups-hat").get("status") or "")
-    chk("4.4", "PASS" if status.startswith("replaced by ups-ws") else "FAIL", DASH[6][1],
+    chk("5.4", "PASS" if status.startswith("replaced by ups-ws") else "FAIL", DASH[6][1],
         "ups-hat card: %r" % status[:60])
-# 5.3: each enabled new UPS plugin loads and its card shows a status (with no
+# 6.3: each enabled new UPS plugin loads and its card shows a status (with no
 # board: "no UPS HAT (C) detected" and the like). The status text is the
 # plugin's own, never a reading of anything off the device.
 new_on = [n for n in ("ups-wsc", "ups-wsd", "ups-wse")
           if (plugins.get(n) or {}).get("state") not in (None, "disabled")]
 if not new_on:
-    chk("5.3", "SKIP", DASH[7][1], "none of ups-wsc, ups-wsd, ups-wse enabled")
+    chk("6.3", "SKIP", DASH[7][1], "none of ups-wsc, ups-wsd, ups-wse enabled")
 else:
     bad = [n for n in new_on if plugins[n].get("state") != "loaded"
            or str(widget(n).get("status") or "") in ("", "checking")]
-    chk("5.3", "FAIL" if bad else "PASS", DASH[7][1],
+    chk("6.3", "FAIL" if bad else "PASS", DASH[7][1],
         ("not loaded or no status: %s" % ", ".join(bad)) if bad else
         "; ".join("%s: %s" % (n, str(widget(n).get("status"))[:50]) for n in new_on))
-# 8.21: an enabled, loaded downloads/map/ntfy/telegram offers its main-page button.
+# 2.3: one enabled e-ink plugin's card shows the panel's state, every other
+# enabled one reads "used by <that plugin>".
+eon = [n for n in ("eink-ws27", "eink", "eink-ws213")
+       if (plugins.get(n) or {}).get("state") not in (None, "disabled")]
+if not eon:
+    chk("2.3", "SKIP", DASH[8][1], "no e-ink plugin enabled")
+else:
+    shown = {n: str(widget(n).get("panel") or "") for n in eon}
+    drivers = [n for n, v in shown.items() if not v.startswith("used by ")]
+    ok = len(drivers) == 1 and all(v == "used by " + drivers[0]
+                                   for n, v in shown.items() if n != drivers[0])
+    chk("2.3", "PASS" if ok else "FAIL", DASH[8][1],
+        "; ".join("%s: %s" % (n, v[:40]) for n, v in shown.items()))
+# 9.21: an enabled, loaded downloads/map/ntfy/telegram offers its main-page button.
 offered = {p.get("name"): [a.get("label") for a in (p.get("actions") or []) if isinstance(a, dict)]
            for p in s.get("plugins", []) if p.get("state") == "loaded"}
 want = {"downloads": "Download", "map": "Map", "ntfy": "Status", "telegram": "Status"}
 on = sorted(n for n in want if n in offered)
 if not on:
-    chk("8.21", "SKIP", DASH[2][1], "none of downloads, map, ntfy, telegram loaded")
+    chk("9.21", "SKIP", DASH[2][1], "none of downloads, map, ntfy, telegram loaded")
 else:
     bad = [n for n in on if want[n] not in offered[n]]
-    chk("8.21", "FAIL" if bad else "PASS", DASH[2][1],
+    chk("9.21", "FAIL" if bad else "PASS", DASH[2][1],
         ("missing: %s" % ", ".join(bad)) if bad else "checked: %s" % ", ".join(on))
-# 8.22 and 8.23: pages read over loopback with the same credentials. Only
+# 9.22 and 9.23: pages read over loopback with the same credentials. Only
 # markers are checked; nothing from a page (locations, network names) is printed.
 def page(path):
     r = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path))
@@ -665,14 +736,14 @@ def page(path):
     except Exception as exc:
         return None, None, type(exc).__name__
 if "map" not in offered:
-    chk("8.22", "SKIP", DASH[3][1], "map not loaded")
+    chk("9.22", "SKIP", DASH[3][1], "map not loaded")
 else:
     code, hdrs, body = page("/plugins/map/")
     policy = (hdrs or {}).get("Referrer-Policy") if hdrs else None
     if code != 200:
-        chk("8.22", "FAIL", DASH[3][1], "HTTP %s" % code)
+        chk("9.22", "FAIL", DASH[3][1], "HTTP %s" % code)
     elif "No captured network matching" in body:
-        chk("8.22", "SKIP", DASH[3][1], "no located networks")
+        chk("9.22", "SKIP", DASH[3][1], "no located networks")
     else:
         background = ("OpenStreetMap</a> contributors" not in body
                       or ('referrerpolicy="origin"' in body and policy == "no-referrer"))
@@ -681,17 +752,17 @@ else:
                     and body.count("data-scale=") == 2 and "bboxFor" in body
                     and "touch-action:none" in body)
         ok = background and legend and gestures
-        chk("8.22", "PASS" if ok else "FAIL", DASH[3][1],
+        chk("9.22", "PASS" if ok else "FAIL", DASH[3][1],
             "background %s, legend %s, gestures %s" % (background, legend, gestures))
 code, hdrs, body = page("/networks")
 if code != 200:
-    chk("8.23", "FAIL", DASH[4][1], "HTTP %s" % code)
+    chk("9.23", "FAIL", DASH[4][1], "HTTP %s" % code)
 else:
     top = body.split("<h1>", 1)[0]
     # With the web login off the import control is hidden on purpose.
     ok = ('class="nethead"' in top and 'class="countbar"' in body
           and ("Import results" in top or mode == "none"))
-    chk("8.23", "PASS" if ok else "FAIL", DASH[4][1],
+    chk("9.23", "PASS" if ok else "FAIL", DASH[4][1],
         ("Import results above the heading" if mode != "none" else "web login off: no import")
         if ok else "markers missing")
 for name in ("wpa-sec", "wigle", "backup", "remote-train", "updates", "ntfy", "telegram",
@@ -709,21 +780,28 @@ cat >>"$raw" <<'EOF'
 ===== by hand (the script can't see these) =====
 1.6  with the updates plugin's beta OFF this beta is NOT offered; with beta ON it
      is offered and applies in place
-2.1  on the Plugins page, disabling a plugin says "Saved: <plugin> is now
-     disabled." in red; enabling one says "is now enabled" in green
-4.5  with a UPS HAT (or (B)): ups-ws reads the same charge, status and voltage
+2.4  with only eink-ws27 enabled and a 2.7" HAT fitted, the keys still work
+     (KEY1 opens the info screen; a long KEY3 then a second press reboots)
+2.5  enable eink-ws213 beside eink-ws27: the Plugins page shows the one that
+     loads second "standing down: <the other> drives the e-Paper panel", its
+     View says which plugin drives the panel; disable one and the other drives
+2.6  enable the deprecated eink beside eink-ws27: eink stands down, whatever
+     the order
+3.1  from a computer: pull-eink-diagnostics.sh with the pi login shows
+     pi@<host> in the report header (any other login shows <user>@<host>)
+5.5  with a UPS HAT (or (B)): ups-ws reads the same charge, status and voltage
      as ups-hat did, and the auto-shutdown limit shows on its card
-4.6  the switch in ups-hat-setup.md (enable ups-ws with the same settings,
+5.6  the switch in ups-hat-setup.md (enable ups-ws with the same settings,
      disable ups-hat) works, and the Plugins page shows ups-hat's deprecation
      until then
-5.4  with two UPS plugins enabled, one reads the battery and the other's card
+6.4  with two UPS plugins enabled, one reads the battery and the other's card
      names it; with no board, nothing shuts the device down
-6.2  from a computer: pull-eink-diagnostics.sh --plugin eink-ws27 writes one
+7.2  from a computer: pull-eink-diagnostics.sh --plugin eink-ws27 writes one
      eink-ws27-diagnostics-<time>.txt, readable only by you, with no
      addresses, MAC addresses or account name in it
-8.24 first visit over HTTPS still shows the warning and the fingerprint
+9.24 first visit over HTTPS still shows the warning and the fingerprint
      matches; sign in / sign out
-9.1  the closing step: cut 1.0.10 stable (or the next beta)
+10.1 the closing step: cut 1.0.10 stable (or the next beta)
 EOF
 
 # ---------------------------------------------------------------- redact and save
