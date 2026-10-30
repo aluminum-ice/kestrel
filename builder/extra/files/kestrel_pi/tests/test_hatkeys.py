@@ -1,6 +1,5 @@
-"""The e-Paper HAT's four keys (kestrel_pi.hatkeys, owned by the eink plugin),
-with fake buttons (no gpiozero or GPIO needed) and a fake apply helper that
-records each change."""
+"""The e-Paper HAT's four keys (HatKeys, in the eink plugin), with fake buttons
+(no gpiozero or GPIO needed) and a fake apply helper that records each change."""
 
 import importlib.util
 import logging
@@ -10,12 +9,24 @@ import types
 
 import pytest
 
-from kestrel_pi import hatkeys as HK
 from kestrel_pi.capture import CaptureInterface
 from kestrel_pi.context import PluginContext, ServiceRegistry
 from kestrel_pi.ui import StubUI, UIState
 
 PLUGIN_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "plugins"))
+
+
+def _eink():
+    spec = importlib.util.spec_from_file_location(
+        "eink_keys_under_test", os.path.join(PLUGIN_DIR, "eink.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# The keys live in the plugin, so the key tests and the plugin tests share one
+# load of it (a monkeypatch on HK.HatKeys must reach the plugin's own class).
+HK = _eink()
 
 
 class FakeButton:
@@ -222,16 +233,8 @@ def test_real_callbacks_reach_the_worker(monkeypatch):
 
 # -- inside the eink plugin -------------------------------------------------------
 
-def _eink():
-    spec = importlib.util.spec_from_file_location(
-        "eink_keys_under_test", os.path.join(PLUGIN_DIR, "eink.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def test_the_eink_plugin_owns_the_keys(tmp_path, monkeypatch):
-    E = _eink()
+    E = HK
     monkeypatch.setattr(HK.HatKeys, "_make_button", lambda self, pin, hold: FakeButton(pin))
     monkeypatch.setattr(E.EinkFace, "_run", lambda self: None)       # no render loop
     applied = []

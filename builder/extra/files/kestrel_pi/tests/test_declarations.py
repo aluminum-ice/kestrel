@@ -107,8 +107,13 @@ def _read(reader, path):
         return ("error", type(exc).__name__)
 
 
-@pytest.mark.parametrize("path", sorted(
-    [os.path.join(PLUGINS_DIR, f) for f in os.listdir(PLUGINS_DIR) if f.endswith(".py")]))
+# A "_" file beside the plugins is a plugin's helper (kestrel_pi.load_helper),
+# never a plugin: the loader and plugins-ctl both skip it.
+SHIPPED_PLUGINS = sorted(f for f in os.listdir(PLUGINS_DIR)
+                         if f.endswith(".py") and not f.startswith("_"))
+
+
+@pytest.mark.parametrize("path", [os.path.join(PLUGINS_DIR, f) for f in SHIPPED_PLUGINS])
 def test_shipped_plugins_read_statically_and_match_their_classes(path):
     declared = declarations.read_declarations(path)
     assert declared, path
@@ -202,7 +207,7 @@ def test_cli_reads_need_no_venv_and_run_no_plugin_code(tmp_path):
     listed = _run_ctl(tmp_path, "list")
     assert listed.returncode == 0, listed.stderr
     rows = {line.split("\t")[0]: line.split("\t")[1] for line in listed.stdout.splitlines()}
-    shipped = {os.path.splitext(f)[0] for f in os.listdir(PLUGINS_DIR) if f.endswith(".py")}
+    shipped = {os.path.splitext(f)[0] for f in SHIPPED_PLUGINS}
     assert set(rows) == shipped
     assert rows["wpa-sec"] == "enabled" and rows["gps"] == "disabled"
 

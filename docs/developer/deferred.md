@@ -191,3 +191,24 @@ How to use this file:
 - **What to do:** add a step to `.forgejo/workflows/test.yml` that installs
   `markdown-it-py` and `Pillow` and runs the tool's tests.
 - **Trigger:** the tool's renderer starts changing often.
+
+## E-ink face (`eink` plugin)
+
+### Rename `eink` to name the HAT it drives
+
+- **What:** rename the plugin `eink` to `eink-waveshare-2in7`, so plugins for
+  other e-ink HATs (each standalone, starting from a copy of it) can sit beside
+  it under clear names. That renames `plugins/eink.py`, its helper files
+  (`_eink_*.py` become `_eink-waveshare-2in7_*.py`), the `[plugins.eink]` table
+  with its `faces`/`voices` sub-tables, and the plugin's mentions in the docs,
+  `GUIDE_MD`, the tests, `tools/beta-check/`, `tools/ghost-guide/` and
+  `scripts/pull-eink-diagnostics.sh`.
+- **Why deferred:** the plugin name is its config table, so the rename changes
+  the shipped `config.toml`, which makes the release reflash-class: the update
+  engine leaves operator config alone, so an updated device would keep the old
+  table and the face would stop.
+- **What to do:** make the rename in a release that is reflash-class for
+  another reason, say in its notes to enable `eink-waveshare-2in7` again after
+  reflashing, and keep the Ghost guide fixture working with both names until the
+  rename is in a stable release (it renders the latest stable release's code).
+- **Pick up when:** a release has to be reflash-class anyway.

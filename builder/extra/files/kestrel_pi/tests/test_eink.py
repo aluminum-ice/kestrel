@@ -453,7 +453,8 @@ def test_battery_low_only_while_discharging(tmp_path):
 
 # --- variant auto-probe and fallback --------------------------------------
 def _install_fake_panels(monkeypatch, v2="ok", v1="ok"):
-    """Inject fake Waveshare driver + epdconfig modules so _ensure_panel's
+    """Stand fake Waveshare driver + epdconfig helpers in for the plugin's
+    helper files (through its load_helper) so _ensure_panel's
     probe/fallback can be exercised with no hardware. Each driver behaves:
     "ok" (a present panel: init drives the BUSY line, which the probe reads as
     asserted and keeps the driver), "phantom" (init()+Clear() return at once but
@@ -464,7 +465,7 @@ def _install_fake_panels(monkeypatch, v2="ok", v1="ok"):
     cfg.level is the level the (pulled-down) BUSY line reads: 0 until a present
     panel drives it to 1, which is exactly how the plugin tells a real panel
     from a header sitting at its pull-down."""
-    cfg = types.ModuleType("kestrel_pi.vendor.waveshare_epd.epdconfig")
+    cfg = types.ModuleType("epdconfig")
     cfg.BUSY_PIN = 24
     cfg.level = 0
     cfg.digital_read = lambda pin: cfg.level
@@ -472,7 +473,7 @@ def _install_fake_panels(monkeypatch, v2="ok", v1="ok"):
     cfg.module_exit = lambda *a, **k: state.__setitem__("exited", state["exited"] + 1)
 
     def make(name, behavior):
-        mod = types.ModuleType("kestrel_pi.vendor.waveshare_epd." + name)
+        mod = types.ModuleType(name)
 
         class EPD:
             VARIANT = name
@@ -512,10 +513,10 @@ def _install_fake_panels(monkeypatch, v2="ok", v1="ok"):
         mod.EPD = EPD
         return mod
 
-    base = "kestrel_pi.vendor.waveshare_epd."
-    monkeypatch.setitem(sys.modules, base + "epdconfig", cfg)
-    monkeypatch.setitem(sys.modules, base + "epd2in7_V2", make("epd2in7_V2", v2))
-    monkeypatch.setitem(sys.modules, base + "epd2in7", make("epd2in7", v1))
+    helpers = {"_eink_epdconfig.py": cfg,
+               "_eink_epd2in7_V2.py": make("epd2in7_V2", v2),
+               "_eink_epd2in7.py": make("epd2in7", v1)}
+    monkeypatch.setattr(EINK, "load_helper", lambda plugin_file, filename: helpers[filename])
     return state
 
 
@@ -696,7 +697,7 @@ def test_fingerprint_off_or_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(EINK.webtls, "fingerprint", lambda *a: None)
     assert _plugin(tmp_path)._fingerprint_lines() == []
 
-# --- the HAT keys (kestrel_pi.hatkeys; their own tests are in test_hatkeys.py) -------
+# --- the HAT keys (HatKeys; their own tests are in test_hatkeys.py) -------
 
 def _with_buttons(p, state):
     """Stand in for the plugin's HatKeys with a fixed key state."""
@@ -767,3 +768,33 @@ def test_a_button_prompt_beats_the_fingerprint_which_beats_the_voice(tmp_path, m
     voice_frame = p._compose_image(UIState(), "awake", "on a roll!")
     assert list(voice_frame.getdata()) not in (list(fp_frame.getdata()),
                                                list(prompt_frame.getdata()))
+
+
+# --- the driver ships beside the plugin ----------------------------------------
+
+def test_the_drivers_are_helper_files_beside_the_plugin():
+    # Waveshare's files, kept verbatim, as the plugin's own helper files: the
+    # loader skips them, and nothing of the e-ink face is left in kestrel_pi.
+    for name in ("_eink_epdconfig.py", "_eink_epd2in7.py", "_eink_epd2in7_V2.py"):
+        assert os.path.isfile(os.path.join(PLUGIN_DIR, name)), name
+    pkg = os.path.join(PLUGIN_DIR, "..", "kestrel_pi", "kestrel_pi")
+    assert not os.path.exists(os.path.join(pkg, "vendor"))
+    assert not os.path.exists(os.path.join(pkg, "hatkeys.py"))
+
+
+def test_a_driver_reaches_epdconfig_through_its_relative_import(monkeypatch):
+    # The verbatim drivers do ``from . import epdconfig``; as helpers of one
+    # plugin they share a package, so the driver finds the epdconfig loaded
+    # before it. A fake epdconfig stands in so no GPIO backend starts.
+    from kestrel_pi.plugins import HELPERS_PACKAGE
+    fake = types.ModuleType("epdconfig")
+    fake.EPD_WIDTH = 0
+    monkeypatch.setitem(sys.modules, HELPERS_PACKAGE + ".eink.epdconfig", fake)
+    name = HELPERS_PACKAGE + ".eink.epd2in7_V2"
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    from kestrel_pi import load_helper
+    drv = load_helper(os.path.join(PLUGIN_DIR, "eink.py"), "_eink_epd2in7_V2.py")
+    try:
+        assert drv.epdconfig is fake and hasattr(drv, "EPD")
+    finally:
+        sys.modules.pop(name, None)
