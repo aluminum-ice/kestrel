@@ -112,7 +112,136 @@ its `LIB_API`; a test (`tests/test_load_library.py`) keeps the two in step.
 
 | Library | File | API | Status | Used by |
 | --- | --- | --- | --- | --- |
+| `alerts` | `_lib_alerts.py` | 1.0 | stable | `ntfy`, `telegram` |
 
-None ship yet. Each library gets its own section here when it is added: what it
-is for, a minimal plugin using it, its public functions and classes, the rules
-it enforces and what stays in the plugin.
+Each library has its own section below: what it is for, a minimal plugin using
+it, its public functions and classes, the rules it enforces and what stays in
+the plugin.
+
+## `alerts`: alerts to a messaging service
+
+`load_library(__file__, "alerts", api=1)`. Sends short alerts from the device
+to one messaging service: a digest of new handshakes, a low battery or a
+switch to battery power, a new release, capture stopping while it is switched
+on, and (opt-in) the device coming online. It handles what to send, when, and
+what happens when the device is offline; your plugin supplies the one request
+that delivers a message. `ntfy` and `telegram` are built on it, and are the
+best examples.
+
+### A minimal plugin
+
+```python
+from kestrel_pi import Plugin, httpsafe, load_library
+
+alerts = load_library(__file__, "alerts", api=1)
+
+
+class Webhook(Plugin):
+    __version__ = "0.1.0"
+    __target_api__ = 2
+    # network: it sends off the device, so enabling it takes the authorized-use
+    # acknowledgment. capture-read: it counts new handshakes. ui, web: card, page.
+    __capabilities__ = ("network", "capture-read", "ui", "web")
+    __optional_requires__ = ("battery",)
+    __actions__ = (
+        {"label": "Status", "path": "index", "method": "get", "order": 1},
+        {"label": "Send test", "path": "test", "method": "post", "order": 2},
+    )
+    __options__ = {
+        "url": {"type": "str", "default": "", "secret": True},
+        # the options the library reads (copy them as they are in ntfy.py):
+        "events": {"type": "str", "default": "handshakes,battery,update,capture"},
+        "digest_minutes": {"type": "int", "default": 30},
+        "include_names": {"type": "bool", "default": False},
+        "battery_percent": {"type": "int", "default": 20},
+        "max_per_hour": {"type": "int", "default": 6},
+        "quiet_hours": {"type": "str", "default": ""},
+        "timeout": {"type": "int", "default": 15},
+    }
+
+    def on_loaded(self):
+        self.alerts = alerts.Alerts(self, "webhook", self._deliver,
+                                    alerts.state_dir("kestrel-webhook"))
+        self.alerts.start()
+
+    def on_unload(self):
+        self.alerts.stop()
+
+    def on_handshake(self, event):
+        self.alerts.on_handshake(event)
+
+    def on_internet_available(self):
+        self.alerts.on_internet_available()
+
+    def on_ui_setup(self, ui):
+        self.alerts.on_ui_setup(ui)
+
+    def on_ui_update(self, ui, state):
+        self.alerts.on_ui_update(ui, state)
+
+    def _deliver(self, requests, msg, timeout):
+        # https_endpoint refuses an empty or non-https URL with UnsafeResponse.
+        url = httpsafe.https_endpoint(self.options.get("url"), "")
+        return requests.post(url, json={"title": msg["title"], "text": msg["body"]},
+                             timeout=timeout, allow_redirects=False, stream=True)
+
+    def on_webhook(self, path, request):
+        if path == "test" and getattr(request, "method", "GET") == "POST":
+            return self.alerts.send_test()
+        rows = ["<li>URL: %s</li>" % ("set" if self.options.get("url") else "<b>not set</b>")]
+        return self.context.page("Webhook alerts", self.alerts.status_page(
+            "Webhook alerts", rows,
+            token=(getattr(request, "args", {}) or {}).get("token") or ""))
+```
+
+### The contract
+
+- **`Alerts(plugin, service, deliver, directory)`**: `service` names it in logs
+  and errors; `directory` is where it keeps its state (use
+  `state_dir("kestrel-<plugin>")`, which is `~/.local/state/kestrel-<plugin>/` of
+  the daemon's account). Start it in `on_loaded`, stop it in `on_unload`, and
+  forward `on_handshake`, `on_internet_available`, `on_ui_setup` and
+  `on_ui_update` to it.
+- **`deliver(requests, msg, timeout)`**: your plugin's one request. `msg` is
+  `{"kind", "title", "body", "urgent", "ts"}`. Make the request with
+  `allow_redirects=False` and `stream=True` and return the response; the
+  library checks it through `httpsafe` and treats HTTP 400 and up as a failure.
+  Raise `httpsafe.UnsafeResponse` if your settings are incomplete. Use
+  `httpsafe.https_endpoint` for a configurable URL. If your service answers 200
+  with an error in the body, check it and raise.
+- **Options** are read live from `plugin.options`, which your plugin declares
+  itself: `events` (any of `handshakes`, `battery`, `update`, `capture`,
+  `online`), `digest_minutes`, `include_names`, `battery_percent`,
+  `max_per_hour`, `quiet_hours` (local hours such as `22-07`) and `timeout`.
+- **Pages:** `send_test()` returns the redirect for a Send test button;
+  `status_page(title, setup_rows, token)` returns the status page body, with
+  your own already-escaped `<li>` rows first.
+- **Functions:** `state_dir(name)`, `message(kind, title, body, urgent=False)`,
+  `handshake_digest(count, names, minutes, include_names)`,
+  `in_quiet_hours(spec, hour)`, `clean_name(name)`, `read_json(path, default)`,
+  `write_json(path, data)`; constants `EVENTS`, `DEFAULT_EVENTS`, `QUEUE_MAX`.
+
+### Rules it keeps for you
+
+- Messages are built from typed fields only (counts, a percentage, a release
+  tag and, only when `include_names` is on, cleaned network names), so a
+  hashline, an address, a location or a recovered password never ends up in
+  one.
+- Every send needs the plugin's `network` capability.
+- A transport error is reduced to its type before it is logged or shown,
+  because its text carries the URL and a credential may ride in it (Telegram's
+  bot token is in the path).
+- Quiet hours and the hourly limit hold ordinary alerts back; urgent ones (a
+  low battery, capture stopping) get through. Up to `QUEUE_MAX` alerts wait in
+  `queue.json` while the device is offline or the service fails, with backoff
+  between attempts.
+
+### What stays in your plugin
+
+Its declarations (including the alert options above), its own settings, the
+request in `_deliver`, its status-page setup rows, and anything particular to
+the service (`ntfy` generates a private topic; `telegram` needs a bot token and
+a chat). Declare `network`: the alerts leave the device, so enabling the
+plugin takes the authorized-use acknowledgment. If your service is public by
+default (a social network, say), only ever post privately, and keep
+`include_names` off by default.

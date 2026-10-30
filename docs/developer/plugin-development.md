@@ -94,12 +94,12 @@ at least two plugins really share it, it becomes a **shared plugin library**:
 a `_lib_<name>.py` file that lives with the plugins and that a plugin loads by
 name (see [Shared plugin libraries](#shared-plugin-libraries) and the
 [library reference](plugin-libraries.md)). A library is still plugin code:
-core never loads one. Where no library exists yet, the shipped plugins carry
-copies:
+core never loads one. The shipped plugins show both:
 
-- `ntfy` and `telegram` send the same alerts, and each holds its own copy of
-  the alert code (the digest, the offline queue, rate limits, quiet hours). A
-  change to the alerts is made to both copies, and both are tested.
+- `ntfy` and `telegram` send the same alerts, so the alert code (the digest,
+  the offline queue, rate limits, quiet hours) is the `alerts` library. Each
+  plugin holds only its settings, the request that delivers a message and its
+  status page.
 - `eink` holds everything about its panel and its HAT, including the HAT's
   four keys. A plugin for another e-ink HAT starts from a copy of it, not from
   shared code.
