@@ -39,6 +39,7 @@ def _mod():
 
 
 WS = _mod()
+FACE = WS.face          # the eink_face library the plugin loads
 W, H = WS.PANEL_W, WS.PANEL_H
 
 
@@ -119,7 +120,7 @@ def test_declarations_choose_the_revision_and_stay_local():
     assert "not yet tested on hardware" in decl["description"].lower()
 
 
-def test_standalone_with_its_own_driver_helpers():
+def test_its_own_driver_helpers_and_the_shared_face():
     names = ("epdconfig", "epd2in13_V4", "epd2in13_V3", "epd2in13_V2")
     for name in names:
         path = os.path.join(PLUGIN_DIR, "_eink-ws213_%s.py" % name)
@@ -127,8 +128,10 @@ def test_standalone_with_its_own_driver_helpers():
             text = handle.read()
         assert "Permission is hereby granted" in text, name     # MIT header kept
     src = open(PLUGIN, encoding="utf-8").read()
-    # nothing from the eink plugin or its helpers
-    assert "_eink_" not in src and "eink.py" not in src
+    # nothing from the eink plugin or its helpers: the face it shares with eink
+    # comes from the eink_face plugin library
+    assert "_eink_epd" not in src and "eink.py" not in src
+    assert 'load_library(__file__, "eink_face", api=1)' in src
 
 
 def test_view_button_is_declared():
@@ -246,32 +249,13 @@ def test_fingerprint_off_or_absent(tmp_path, monkeypatch):
 
 
 # --- the face (its own copy of the eink face) ----------------------------------
-def _M(**kw):
-    return WS.MoodInputs(**kw)
-
-
-def test_mood_ladder_and_honest_faces():
-    d = WS.decide_mood
-    assert d(_M(fault=True, battery_low=True)) == "broken"
-    assert d(_M(battery_low=True, just_promoted=True)) == "tired"
-    assert d(_M(just_promoted=True, fresh_handshake=True)) == "levelup"
-    assert d(_M(capture_active=True, learned_active=True)) == "smart"
-    assert d(_M(capture_active=True, posture="autohunt")) == "cool"
-    assert d(_M(capture_active=True, mobility="parked")) == "focused"
-    assert d(_M(capture_active=False)) == "sleep"
-    assert d(_M(capture_active=False, idle_epochs=30, sad_after=25)) == "sleep2"
-
-
-def test_every_face_has_a_voice():
-    for mood in WS.FACES:
-        assert WS._voice_phrases(mood, None), mood
 
 
 def test_voice_and_face_overrides(tmp_path):
     p = _plugin(tmp_path, {"voices": {"awake": "ready!"}, "faces": {"awake": ":-)"}})
     assert p._voice_for("awake", 3) == "ready!"
     assert p._face_glyph("awake") == ":-)"
-    assert p._face_glyph("cool") == WS.FACES["cool"]
+    assert p._face_glyph("cool") == FACE.FACES["cool"]
 
 
 def test_battery_low_only_while_discharging(tmp_path):
@@ -296,7 +280,7 @@ def test_ui_card_reports_mood_and_panel(tmp_path):
     p.on_ui_setup(view)
     p.on_ui_update(view, UIState(online=True))
     card = {e["name"]: e for e in ui.widgets()["eink-ws213"]}
-    assert card["face"]["value"] == WS.FACES["cool"]
+    assert card["face"]["value"] == FACE.FACES["cool"]
     assert card["panel"]["value"] == "not detected"
     p._absent = False
     p.on_ui_update(view, UIState(online=True))

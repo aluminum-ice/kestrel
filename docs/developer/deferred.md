@@ -216,3 +216,22 @@ How to use this file:
   reflashing, and keep the Ghost guide fixture working with both names until the
   rename is in a stable release (it renders the latest stable release's code).
 - **Pick up when:** a release has to be reflash-class anyway.
+
+### Share more of the e-ink plugins through `eink_face`
+
+- **What:** move the rest of what `eink` and `eink-ws213` still each carry into
+  the `eink_face` library: the render loop (`_run`/`_tick`), the frame store
+  and change-gated redraw, the web mirror (`display`/`display.png`), the
+  dashboard card and the start-up fingerprint lines. A plugin would then be its
+  declarations, a layout and a panel adapter, a few hundred lines.
+- **Why deferred:** those parts already differ between the two plugins (full
+  redraws vs partial ones with periodic full refreshes, keys and an info
+  screen on one only, the mirror's size and title, the fingerprint's two or
+  three lines), so sharing them means designing seams for a library API that
+  third-party plugins would then rely on. Two plugins aren't enough to tell
+  which seams are right; the library today holds only what was identical.
+- **What to do:** with a third e-ink plugin, compare the three, move what they
+  share into the library behind a small engine class, bump `LIB_API` only by a
+  minor if the existing names stay, and keep the frames byte-identical (the
+  comparison from the `eink_face` PR: render the same states before and after).
+- **Pick up when:** a third e-ink plugin is written.

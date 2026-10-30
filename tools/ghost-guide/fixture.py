@@ -305,9 +305,17 @@ class Demo:
         eink._state, eink._mood, eink._voice = state, mood, voice
         eink._absent = False
         self._eink_frame = (state, mood, voice)
-        mobility = type(eink).on_ui_update.__globals__["_MOBILITY_LABEL"]
+        # The motion label as the plugin's card shows it. Releases from the one
+        # that moved the face into the eink_face plugin library keep the
+        # estimate in eink._motion and the labels in the library; earlier ones
+        # keep both in the plugin (this renders the latest stable release).
+        plugin_globals = type(eink).on_ui_update.__globals__
+        if hasattr(eink, "_motion"):
+            labels, motion = plugin_globals["face"].MOBILITY_LABEL, eink._motion.state
+        else:
+            labels, motion = plugin_globals["_MOBILITY_LABEL"], eink._mobility
         self._set("eink", {"face": eink._face_glyph(mood), "mood": mood, "voice": voice,
-                           "mobility": mobility.get(eink._mobility, "gps?"),
+                           "mobility": labels.get(motion, "gps?"),
                            "panel": "detected"})
 
     def ui_state(self):
