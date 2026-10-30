@@ -74,7 +74,7 @@ regenerate` makes a new certificate.
   zero. Tune or turn it off with `[capture.environment]` (see
   [Capture setup](capture-setup.md)).
 - **Plugin cards** — each enabled readout plugin contributes a card (battery from
-  `ups-hat`, memory/temp from `memtemp`, upload status from `wpa-sec`/`wigle`,
+  `ups-ws`, memory/temp from `memtemp`, upload status from `wpa-sec`/`wigle`,
   and so on). You can **drag the cards to reorder** them; the order is remembered
   in your browser.
 - **AI Agent** — a compact card (like the Plugins card) showing whether the

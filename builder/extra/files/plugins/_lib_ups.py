@@ -52,6 +52,14 @@ battery can't wait for a prompt - by sending ``{"target": "power",
 helper as the dashboard's power buttons, which allows power changes whenever a
 plugin asks. A refused request is logged and retried on the next low poll.
 
+**One board reader at a time.** All plugins run in one daemon, so the monitors
+that have started agree on one to read the board: one that doesn't yield (a
+plugin not marked ``yields``), the first started. The others stand down - no
+polling, no shutdown, their card saying which plugin reads the battery - and
+pass the active monitor's reading on, so the ``battery`` service (which the
+loader maps to whichever provider registered last) never goes blank. A
+deprecated plugin passes ``yields=True`` so its replacement always wins.
+
 ``LIB_API`` is ``(0, ...)``: **provisional**. One family of boards uses it so
 far, and the API may still change in a minor release while more UPS plugins
 show what really varies; pin ``api=0``. Names with a leading underscore are
@@ -62,7 +70,7 @@ import threading
 import time
 from collections import deque
 
-LIB_API = (0, 1)
+LIB_API = (0, 2)
 
 # Current near zero is "resting" (on external power, pack full); beyond this it
 # is charging (positive) or discharging (negative).
@@ -76,6 +84,11 @@ SHUTDOWN_DEBOUNCE = 3
 HISTORY_LEN = 30            # ~10 min at the 20s default poll
 ETA_MIN_SPAN = 120.0        # seconds of history before an estimate is offered
 ETA_MIN_DROP = 0.5          # percent the pack must have fallen over that span
+
+# The monitors that have started, in start order; the first that doesn't yield
+# (else the first) reads the board. Shared by every plugin in the daemon.
+_running = []
+_running_lock = threading.Lock()
 
 STATUS_LABEL = {
     "charging": "Charging",
@@ -142,11 +155,16 @@ class Monitor:
     else ``(None, (card text, health note))``; ``read(device)`` returns
     ``(volts, current_ma, power_w)`` (current and power may be None) and raises
     OSError when the board stops answering; ``pack`` is a :class:`Pack`;
-    ``board`` names the board in messages."""
+    ``board`` names the board in messages. ``yields`` makes this monitor give
+    way to any other (a deprecated plugin), and ``notice`` is put first in the
+    plugin's health note (its deprecation, say)."""
 
-    def __init__(self, plugin, name, probe, read, pack, board="UPS HAT"):
+    def __init__(self, plugin, name, probe, read, pack, board="UPS HAT",
+                 yields=False, notice=""):
         self.plugin = plugin
         self.name = name
+        self.yields = yields
+        self.notice = notice
         self._probe = probe
         self._read = read
         self.pack = pack
@@ -173,10 +191,16 @@ class Monitor:
 
     # -- lifecycle --------------------------------------------------------------
     def start(self):
+        with _running_lock:
+            if self not in _running:
+                _running.append(self)
         self._worker = threading.Thread(target=self._run, name=self.name, daemon=True)
         self._worker.start()
 
     def stop(self):
+        with _running_lock:
+            if self in _running:
+                _running.remove(self)
         self._stop.set()
         device = self.device
         if device is not None:
@@ -185,9 +209,38 @@ class Monitor:
             except Exception:  # noqa: BLE001 - best effort on the way out
                 pass
 
+    def active(self):
+        """The monitor that reads the board now: this one, or the one it stands
+        down for."""
+        with _running_lock:
+            if self not in _running:
+                return self
+            keep = [m for m in _running if not m.yields] or list(_running)
+            return keep[0]
+
+    def _stand_down(self, active):
+        """Another monitor reads the board: drop ours, publish nothing of our
+        own, and say on the card and the Plugins page which plugin it is."""
+        device, self.device = self.device, None
+        if device is not None:
+            try:
+                device.close()
+            except Exception:  # noqa: BLE001
+                pass
+        self._low_count = 0
+        self.history.clear()
+        if self.yields:
+            text = "replaced by %s, which is enabled" % active.name
+        else:
+            text = "%s reads the battery (one UPS plugin at a time)" % active.name
+        self.set_absent(text, "standing down: %s" % text)
+
     def _run(self):
         while not self._stop.is_set():
-            if self.ensure_device():
+            active = self.active()
+            if active is not self:
+                self._stand_down(active)
+            elif self.ensure_device():
                 reading = self.read_battery()
                 if reading is None:
                     # Lost contact mid-run: drop the handle and re-probe next pass.
@@ -210,14 +263,17 @@ class Monitor:
             self.set_absent(*why)
             return False
         self.device = device
-        self.plugin.context.health_note = ""
+        self._note("")
         return True
+
+    def _note(self, text):
+        self.plugin.context.health_note = "; ".join(t for t in (self.notice, text) if t)
 
     def set_absent(self, status_text, health):
         with self._lock:
             self._reading = None
             self._status_text = status_text
-        self.plugin.context.health_note = health
+        self._note(health)
 
     def read_battery(self):
         """One reading as the ``battery`` service publishes it, or None if the
@@ -236,7 +292,11 @@ class Monitor:
 
     def reading(self):
         """A copy of the latest reading for the ``battery`` service, or None
-        when no board is present or nothing has been read yet."""
+        when no board is present or nothing has been read yet. A monitor that
+        stands down passes on the active one's."""
+        active = self.active()
+        if active is not self:
+            return active.reading()
         with self._lock:
             return dict(self._reading) if self._reading else None
 

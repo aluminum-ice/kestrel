@@ -1089,7 +1089,7 @@ def apply_change(change):
     # Power (reboot/shutdown) is allowed regardless of web auth. Unlike the plugin
     # and capture controls (which exist only to serve the web page, so they are
     # inert when the page is read-only), a power action is also driven by
-    # device-safety automation - the ups-hat plugin's low-battery auto-shutdown -
+    # device-safety automation - the UPS plugins' low-battery auto-shutdown -
     # which must work whenever that plugin is active, not only when the web UI is
     # on. The socket is already restricted to the pi group, and the web /power
     # buttons stay gated on web auth at the route, with their own confirm step.

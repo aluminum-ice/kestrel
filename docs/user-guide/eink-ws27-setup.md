@@ -30,7 +30,7 @@ see [Switching from `eink`](#switching-from-eink).
   present (outlined while searching, solid once locked); a **motion glyph** once
   you're moving — a walking person or a moving car (parked shows nothing here,
   since the Kestrel's hover pose denotes stopped); and
-  a battery symbol with its percent (with `ups-hat`).
+  a battery symbol with its percent (with `ups-ws`).
 - Gives the mascot a **voice**: a short, cute phrase beside the face that
   matches its mood (and changes when the mood does), just like classic
   pwnagotchi. Override any mood's phrases in `config.toml` under
@@ -64,7 +64,7 @@ needs no authorized-use acknowledgment. It is also harmless with **no HAT
 attached**: the face still renders to the web mirror.
 
 On shutdown — the dashboard power-off button (and its confirmation) or the
-`ups-hat` low-battery auto-off — the panel is **blanked** before the device
+`ups-ws` low-battery auto-off — the panel is **blanked** before the device
 powers down, so the last face is not left frozen on the e-paper (which keeps
 its image with no power).
 
@@ -155,7 +155,7 @@ never drift apart.
 | `show_brand_glyph` | `true` | Draw the small corner Kestrel mark. |
 | `show_fingerprint_minutes` | `10` | For this many minutes after start-up, the voice line shows the start of the dashboard's HTTPS certificate fingerprint, to compare with your browser on first sign-in. `0` never shows it. |
 | `show_ip` | `true` | Draw the address row: the Bluetooth tether and Wi-Fi addresses. Turn it off if the panel is visible to people who shouldn't see them. |
-| `battery_low_percent` | `10` | Show the tired face at or below this charge while on battery (needs `ups-hat`). |
+| `battery_low_percent` | `10` | Show the tired face at or below this charge while on battery (needs `ups-ws`). |
 | `bored_epochs` | `15` | Idle event-loop epochs before the face looks bored. |
 | `sad_epochs` | `25` | Idle event-loop epochs before the face looks sad. |
 
@@ -180,7 +180,7 @@ Leave it unset to keep the shipped phrases.
 
 ## What it reads from other plugins
 
-The face is richer when the **learning agent** and the **`ups-hat`** plugin are
+The face is richer when the **learning agent** and the **`ups-ws`** plugin are
 present: it reads the agent's posture, policy and reward trend to choose working
 moods, and the battery to show charge on the status line and the tired face. Both
 are optional — with neither enabled the face still reflects online/capture/idle
@@ -222,7 +222,7 @@ journalctl -u kestrel-daemon --no-pager | grep -i eink-ws27
 whether a panel was found. Because an e-Paper panel has no way to identify
 itself, the plugin confirms one is really wired by checking that the panel
 *drives* its BUSY line during start-up; a bare Pi — or a different HAT such as
-the `ups-hat`, which does not touch that line — reads **not detected**, and the
+the `ups-ws` board, which does not touch that line — reads **not detected**, and the
 face renders only to the web mirror. So "not detected" with another HAT seated
 is expected, not a fault. If your e-ink HAT reads "not detected", re-seat the
 ribbon and, if needed, pin `variant`.

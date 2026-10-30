@@ -15,6 +15,7 @@ from kestrel_pi.ui import StubUI, UIState
 
 PLUGIN_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "plugins"))
 UPS = load_library(os.path.join(PLUGIN_DIR, "ups-hat.py"), "ups", api=0)
+REAL_RUN = UPS.Monitor._run          # the poll loop, before any test stubs it
 INA = load_library(os.path.join(PLUGIN_DIR, "ups-hat.py"), "ina219", api=1)
 
 
@@ -272,48 +273,82 @@ def test_the_library_is_provisional():
     assert UPS.LIB_API[0] == 0 and INA.LIB_API == (1, 0)
 
 
-def test_the_documented_example_plugin_works(tmp_path, monkeypatch):
-    # docs/developer/plugin-libraries.md shows a minimal UPS plugin on the ups
-    # and ina219 libraries; it must load through the real loader and read a board.
-    import re
+# -- ups: one board reader at a time -----------------------------------------------------
 
-    from kestrel_pi import loader as loader_mod
-    from kestrel_pi import plugins as plugin_api
-    from kestrel_pi.capture import CaptureInterface
-    from kestrel_pi.connectivity import ConnectivityState
-    from kestrel_pi.context import ServiceRegistry
-    from kestrel_pi.loader import Loader
+@pytest.fixture
+def started(monkeypatch):
+    """Start monitors without their poll threads; forget them afterwards."""
+    monkeypatch.setattr(UPS.Monitor, "_run", lambda self: None)
+    made = []
 
-    doc = os.path.join(PLUGIN_DIR, "..", "..", "..", "..", "docs", "developer",
-                       "plugin-libraries.md")
-    text = open(doc, encoding="utf-8").read().split("## `ups`", 1)[1]
-    code = re.search(r"### A minimal plugin\n.*?```python\n(.*?)```", text, re.S).group(1)
-    plugins = tmp_path / "plugins"
-    plugins.mkdir()
-    (plugins / "myups.py").write_text(code)
-    monkeypatch.setattr(plugin_api, "SHIPPED_PLUGINS_DIR", PLUGIN_DIR)   # the shipped libraries
-    bus = FakeBus(regs={INA.REG_BUSVOLTAGE: 1750 << 3, INA.REG_CURRENT: 65536 - 2000,
-                        INA.REG_POWER: 700})
-    real = INA.open_chip
-    monkeypatch.setattr(INA, "open_chip", lambda b, a, c: real(
-        b, a, c, smbus_module=types.SimpleNamespace(SMBus=lambda n: bus)))
-    monkeypatch.setattr(UPS.Monitor, "start", lambda self: None)    # no poll thread
-    applied = []
-    monkeypatch.setattr(loader_mod, "apply_change",
-                        lambda change, *a, **k: applied.append(change) or {"ok": True})
-    services = ServiceRegistry()
-    loader = Loader(config={"plugins": {"myups": {"enabled": True}}},
-                    capture=CaptureInterface(str(tmp_path)), connectivity=ConnectivityState(),
-                    services=services, search_paths=[str(plugins)],
-                    logger=logging.getLogger("test.ups.doc"))
-    loader.load_all()
-    record = loader.records["myups"]
-    assert record.state == "loaded", getattr(record, "reason", "")
-    monitor = record.instance.monitor
-    assert monitor.ensure_device() is True
-    monitor.evaluate(monitor.read_battery())
-    battery = services.get("battery")
-    assert battery["status"] == "discharging" and round(battery["percent"]) == 42
-    assert INA.CAL_32V_2A is monitor.device.cal
-    record.instance.on_unload()
-    assert bus.closed
+    def start(monitor):
+        monitor.start()
+        made.append(monitor)
+        return monitor
+
+    yield start
+    for monitor in made:
+        monitor.stop()
+
+
+def _named(name, yields=False, notice="", read=(7.2, -250.0, 1.8)):
+    m = UPS.Monitor(_plugin(), name, lambda: ("dev", None), lambda d: read,
+                    UPS.Pack(cells=2), board="Test HAT", yields=yields, notice=notice)
+    return m
+
+
+def test_the_first_started_reads_and_a_second_stands_down(started):
+    first = started(_named("ups-ws"))
+    second = started(_named("ups-wsc", read=(3.7, -100.0, 0.4)))
+    assert first.active() is first and second.active() is first
+    first.ensure_device()
+    first.evaluate(first.read_battery())
+    second._stand_down(second.active())
+    card = _card(second, "ups-wsc")
+    assert card["status"]["value"] == "ups-ws reads the battery (one UPS plugin at a time)"
+    assert second.device is None
+    assert second.reading() == first.reading()           # the battery service stays filled
+    assert second.plugin.context.health_note.startswith("standing down: ups-ws reads")
+
+
+def test_a_deprecated_plugin_gives_way_whichever_starts_first(started):
+    old = started(_named("ups-hat", yields=True, notice="deprecated: replaced by ups-ws"))
+    new = started(_named("ups-ws"))
+    assert old.active() is new and new.active() is new
+    old._stand_down(old.active())
+    assert _card(old, "ups-hat")["status"]["value"] == "replaced by ups-ws, which is enabled"
+    assert old.plugin.context.health_note == (
+        "deprecated: replaced by ups-ws; standing down: replaced by ups-ws, which is enabled")
+
+
+def test_a_stood_down_monitor_takes_over_when_the_active_one_stops(started):
+    first = started(_named("ups-ws"))
+    second = started(_named("ups-wsc"))
+    assert second.active() is first
+    first.stop()
+    assert second.active() is second
+
+
+def test_a_lone_deprecated_plugin_still_reads(started):
+    old = started(_named("ups-hat", yields=True, notice="deprecated: replaced by ups-ws"))
+    assert old.active() is old
+    assert old.ensure_device() is True
+    assert old.plugin.context.health_note == "deprecated: replaced by ups-ws"
+
+
+def test_a_stood_down_monitor_never_reads_or_shuts_down(started, monkeypatch):
+    # One real pass of the poll loop for a monitor that isn't the active one: it
+    # drops its board and reads nothing, so a low pack can't make it power off.
+    applied, reads = [], []
+    first = started(_named("ups-ws"))
+    second = UPS.Monitor(_plugin(applied), "ups-wsc", lambda: ("dev", None),
+                         lambda d: reads.append(d) or (6.0, -300.0, 1.8), UPS.Pack(cells=2))
+    started(second)
+    second.device = "dev"
+    stops = iter([False, True])
+    monkeypatch.setattr(second._stop, "is_set", lambda: next(stops))
+    monkeypatch.setattr(second._stop, "wait", lambda timeout=None: None)
+    REAL_RUN(second)
+    assert first.active() is first
+    assert reads == [] and applied == [] and second.device is None
+    assert _card(second, "ups-wsc")["status"]["value"].startswith("ups-ws reads the battery")

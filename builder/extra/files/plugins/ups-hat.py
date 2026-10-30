@@ -1,4 +1,13 @@
-"""ups-hat - battery readout and low-battery auto-shutdown for the Waveshare UPS HAT.
+"""ups-hat - battery readout and low-battery auto-shutdown for the Waveshare UPS HAT
+- deprecated, replaced by ``ups-ws``.
+
+**Deprecated.** ``ups-ws.py`` is this plugin under a name that says which board
+it drives: the same code and options. ``ups-hat`` stays for devices that still
+have it enabled, gives way to ``ups-ws`` when both are enabled, and is removed
+in a future release that requires a reflash (docs/developer/deferred.md).
+Change the plugin in both files: ``tests/test_ups_ws.py`` fails when they
+differ anywhere but the lines that must (this docstring, ``DEPRECATED``, the
+class name and the description).
 
 The Waveshare UPS HAT (and UPS HAT (B), the same design) carries a TI INA219
 current/voltage monitor at I2C address 0x42 that measures the 2-cell Li-ion
@@ -50,6 +59,11 @@ ina219 = load_library(__file__, "ina219", api=1)
 # The plugin's name is its file name: it starts the log lines and names the
 # poll thread.
 NAME = os.path.splitext(os.path.basename(__file__))[0]
+# A plugin kept only for devices that still have it enabled names its
+# replacement; the notice shows on the Plugins page and in the log, and the
+# plugin gives way to any other UPS plugin that is enabled.
+DEPRECATED = ("deprecated: replaced by ups-ws; enable ups-ws and disable ups-hat "
+              "(ups-hat will be removed in a future release that requires a reflash)")
 BOARD = "UPS HAT"
 # The 2S Li-ion pack reads ~6.0V empty to ~8.4V full; percent is linear across
 # that span (Waveshare's demo formula).
@@ -63,7 +77,9 @@ class UpsHat(Plugin):
     __author__ = "kestrel"
     __version__ = "0.1.0"
     __license__ = "GPL3"
-    __description__ = "Waveshare UPS HAT battery readout and low-battery auto-shutdown."
+    __description__ = ("Deprecated: replaced by ups-ws; ups-hat will be removed in a future "
+                       "release that requires a reflash. Waveshare UPS HAT battery readout "
+                       "and low-battery auto-shutdown.")
 
     __target_api__ = 2
     __capabilities__ = ("ui",)
@@ -83,13 +99,17 @@ class UpsHat(Plugin):
     # -- lifecycle -------------------------------------------------------
     def on_loaded(self):
         self._setup()
+        if DEPRECATED:
+            self.log.warning("%s: %s", NAME, DEPRECATED)
+            self.context.health_note = DEPRECATED
         self.monitor.start()
 
     def _setup(self):
         """Initialise state without starting the poll thread (the tests use this
         to exercise the readout and shutdown logic with no hardware)."""
         self.log = self.context.logger
-        self._monitor = ups.Monitor(self, NAME, self._probe, self._read, PACK, board=BOARD)
+        self._monitor = ups.Monitor(self, NAME, self._probe, self._read, PACK, board=BOARD,
+                                    yields=bool(DEPRECATED), notice=DEPRECATED)
 
     @property
     def monitor(self):

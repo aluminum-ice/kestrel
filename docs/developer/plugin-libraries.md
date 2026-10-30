@@ -115,8 +115,8 @@ its `LIB_API`; a test (`tests/test_load_library.py`) keeps the two in step.
 | `alerts` | `_lib_alerts.py` | 1.0 | stable | `ntfy`, `telegram` |
 | `eink_face` | `_lib_eink_face.py` | 1.0 | stable | `eink-ws27`, `eink-ws213`, `eink` (deprecated) |
 | `hat_keys` | `_lib_hat_keys.py` | 0.1 | provisional | `eink-ws27`, `eink` (deprecated) |
-| `ina219` | `_lib_ina219.py` | 1.0 | stable | `ups-hat` |
-| `ups` | `_lib_ups.py` | 0.1 | provisional | `ups-hat` |
+| `ina219` | `_lib_ina219.py` | 1.0 | stable | `ups-ws`, `ups-hat` (deprecated) |
+| `ups` | `_lib_ups.py` | 0.2 | provisional | `ups-ws`, `ups-hat` (deprecated) |
 
 Each library has its own section below: what it is for, a minimal plugin using
 it, its public functions and classes, the rules it enforces and what stays in
@@ -637,7 +637,10 @@ class MyUps(Plugin):
     back to `idle`/`full`), and raises `OSError` when the board stops
     answering (the monitor drops it and re-probes);
   - it reads your live `shutdown_percent` and `poll_seconds` options (declare
-    both); `start()`/`stop()` run the poll thread.
+    both); `start()`/`stop()` run the poll thread;
+  - `yields=True` makes it give way to any other UPS plugin (a deprecated
+    plugin passes it), and `notice` is put first in the plugin's health note
+    (its deprecation, say). *(0.2)*
 - **`Pack(cells, empty_v=3.0, full_v=4.2)`:** charge percent, linear per cell
   and clamped, as Waveshare's demos compute it (`(V - 6) / 2.4` for two cells,
   `(V - 3) / 1.2` for one).
@@ -656,6 +659,12 @@ class MyUps(Plugin):
   sending `{"target": "power", "action": "shutdown"}` through your plugin's
   `context.apply`, the same root helper the dashboard's power buttons use. A
   refused request is logged and retried on the next low poll.
+- **One board reader at a time:** all plugins run in one daemon, so the
+  monitors that have started agree on one to read the board (the first that
+  doesn't yield). The others stand down - no polling, no shutdown, their card
+  naming the plugin that reads the battery - and pass that plugin's reading on,
+  so the `battery` service never goes blank whichever provider the loader
+  registered last.
 - **Nothing before the board is confirmed:** no reading, no `battery` value and
   no shutdown until `probe` succeeds, so a plugin enabled with no board (or the
   wrong one) stays idle.

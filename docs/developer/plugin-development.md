@@ -106,7 +106,7 @@ core never loads one. The shipped plugins show both:
   and `eink-ws27` its HAT's four keys (on the `hat_keys` library). A plugin for
   another e-ink HAT loads
   `eink_face` and supplies its own layout and panel.
-- `ups-hat` keeps only its options and how it finds and reads its board: the
+- `ups-ws` keeps only its options and how it finds and reads its board: the
   battery card, the time-to-shutdown estimate and the low-battery auto-shutdown
   rules are the `ups` library, and the INA219 chip driver the `ina219` library,
   so a plugin for another UPS HAT supplies a `probe`, a `read` and its pack.
