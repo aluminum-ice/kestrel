@@ -42,6 +42,20 @@ Kestrel exists for research and education: learning how WPA/WPA2 handshakes, cap
 
 Found a security problem in Kestrel itself? Please report it privately, as described in [SECURITY.md](SECURITY.md), rather than in a public issue. Want to contribute a fix or a feature? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Contents
+
+- [Web interface](#web-interface): [the map](#the-map), [more of the interface](#more-of-the-interface), [the e-ink face](#the-e-ink-face)
+- [What's in the image](#whats-in-the-image): [software](#software), [WiFi capture adapter](#wifi-capture-adapter), [Python](#python), [system configuration](#system-configuration), [the `pi` user](#the-pi-user), [adding Wi-Fi](#adding-wi-fi)
+- [Connecting to a headless device](#connecting-to-a-headless-device)
+- [WiFi capture (opt-in)](#wifi-capture-opt-in)
+- [Plugins](#plugins)
+- [Using a release](#using-a-release)
+- [Building](#building): [with Forgejo Actions](#with-forgejo-actions-recommended), [locally](#locally)
+- [Customizing](#customizing)
+- [Linting](#linting)
+- [Repository layout](#repository-layout)
+- [License](#license)
+
 ## Web interface
 
 The device serves a mobile-first web dashboard over its management link (Bluetooth PAN or Wi-Fi), over HTTPS with a sign-in page. It shows live status, how busy the RF environment is around you, per-plugin readout cards and the learning agent, and it drives capture, plugins and power — all server-rendered, dependency-free and dark-mode aware.
@@ -216,7 +230,42 @@ Captures land in `/var/lib/kestrel/capture/` — one `.hc22000` file per SSID by
 
 Features ship as plugins hosted by a small daemon, `kestrel-daemon.service`. The daemon is installed and **enabled**, but benign on its own: with no plugins enabled it just runs an event loop and serves a read-only web status page over the management link. Nothing it does touches captures or the network until a plugin is explicitly enabled. It sources `on_handshake` from the capture store and `on_internet_available` from the management link (either BT PAN or Wi-Fi), dispatches hooks off its loop so one slow plugin can't stall the others, and also hosts the learning agent and the device UI. See [`docs/user-guide/user-guides.md`](docs/user-guide/user-guides.md) for step-by-step setup guides.
 
-Nineteen reference plugins ship, **all disabled**: `memtemp` (display stub), `session-stats` (timer + web view), `gps` (position source: tags handshakes and shares the fix), `wpa-sec` (upload hashlines, opt-in), `wigle` (wardriving upload, opt-in; uses `gps` when enabled but doesn't require it — uploads only ever carry a real fix, and without `gps` it runs idle or in geolocate-only display mode; see [`docs/user-guide/wigle-setup.md`](docs/user-guide/wigle-setup.md)), `backup` (opt-in off-device backup of the capture data and the trained learning-agent model to a remote host over rsync/SSH; see [`docs/user-guide/backup-setup.md`](docs/user-guide/backup-setup.md)), `ups-ws` (Waveshare UPS HAT and UPS HAT (B) battery readout, with an optional low-battery auto-shutdown; it confirms the HAT is on the I2C bus before doing anything; see [`docs/user-guide/ups-ws-setup.md`](docs/user-guide/ups-ws-setup.md)), `ups-wsc` and `ups-wsd` (the same for Waveshare's one-cell UPS HAT (C) and (D); not yet tested on hardware; see [`docs/user-guide/ups-wsc-setup.md`](docs/user-guide/ups-wsc-setup.md) and [`docs/user-guide/ups-wsd-setup.md`](docs/user-guide/ups-wsd-setup.md)), `eink-ws27` (an animated "tamagotchi" face on the Waveshare 2.7" e-Paper HAT that reflects live device and learning-agent state, with a roaming/parked indicator, a live web mirror of the panel, and the HAT's four keys: an info screen, stop and start capture, and reboot or shut down after a second press; see [`docs/user-guide/eink-ws27-setup.md`](docs/user-guide/eink-ws27-setup.md)), `eink-ws213` (the same face on the smaller Waveshare 2.13" e-Paper HAT, V2/V3/V4 chosen from a list, with a lean layout and quick partial redraws; not yet tested on hardware; see [`docs/user-guide/eink-ws213-setup.md`](docs/user-guide/eink-ws213-setup.md)), `updates` (alerts on a newer release and applies an app-layer update in place; see [`docs/user-guide/updates.md`](docs/user-guide/updates.md)), `remote-train` (offloads learning-agent training to a desktop host over SSH; see [`docs/user-guide/remote-training.md`](docs/user-guide/remote-training.md)), `downloads` (download your handshake files from the dashboard as a zip or one combined `.hc22000`, only over the encrypted dashboard; see [`docs/user-guide/downloads.md`](docs/user-guide/downloads.md)), `map` (every located captured network on one map over an OpenStreetMap background, with a configurable tile server or none; see [`docs/user-guide/map.md`](docs/user-guide/map.md)), `ntfy` and `telegram` (short alerts to an ntfy topic or a Telegram chat, one plugin per service, for new handshakes, a low battery, an update or capture stopping, counts only by default; see [`docs/user-guide/notifications.md`](docs/user-guide/notifications.md)), `eink` (**deprecated:** the old name of `eink-ws27`, which replaces it; `eink` will be removed in a future release that requires a reflash; see [`docs/user-guide/eink-setup.md`](docs/user-guide/eink-setup.md)), and `ups-hat` (**deprecated:** the old name of `ups-ws`, which replaces it; `ups-hat` will be removed in a future release that requires a reflash; see [`docs/user-guide/ups-hat-setup.md`](docs/user-guide/ups-hat-setup.md)). The uploaders, the backup, `updates`, `remote-train`, `ntfy` and `telegram` transmit data off the device, so enabling one takes the same authorized-use acknowledgment as capture and collects the operator's own settings (nothing is baked in); `ups-ws`, `ups-wsc`, `ups-wsd`, `eink-ws27`, `eink-ws213` and the deprecated `ups-hat` and `eink` read and drive only local hardware, so they need no acknowledgment (starting capture with the e-ink HAT's key still needs the acknowledgment you gave before).
+Nineteen reference plugins ship, **all disabled**. Turn on only what you need. A plugin marked **yes** under *Sends data* sends data off the device, so enabling it takes the same authorized-use acknowledgment as capture and asks for your own settings (nothing is baked in). The others read and drive only the device and its local hardware. Starting capture with the e-ink HAT's key still needs the acknowledgment you gave before.
+
+| Plugin | What it does | Sends data | Guide |
+| --- | --- | :---: | --- |
+| **Location and maps** | | | |
+| `gps` | Position source: tags each handshake with a fix and shares it with the face, the map and `wigle`. | | [GPS](docs/user-guide/gps-setup.md) |
+| `map` | Every located captured network on one map, drawn on the device over an OpenStreetMap background (or none). Recovered networks show green with a lock. | | [Map](docs/user-guide/map.md) |
+| **Captures** | | | |
+| `downloads` | Download your handshake files from the dashboard, as a zip or one combined `.hc22000`, only over the encrypted dashboard. | | [Downloads](docs/user-guide/downloads.md) |
+| `wpa-sec` | Uploads hashlines to wpa-sec and fetches your recovered results. | yes | [wpa-sec](docs/user-guide/wpa-sec-setup.md) |
+| `wigle` | Wardriving upload to WiGLE. Uploads only ever carry a real fix; without `gps` it runs idle or geolocate-only. | yes | [WiGLE](docs/user-guide/wigle-setup.md) |
+| `backup` | Mirrors the capture data and the trained agent model to your own host over rsync/SSH. | yes | [Backup](docs/user-guide/backup-setup.md) |
+| **Alerts** | | | |
+| `ntfy` | Short alerts to an ntfy topic: new handshakes, a low battery, an update, capture stopping. Counts only by default. | yes | [Notifications](docs/user-guide/notifications.md) |
+| `telegram` | The same alerts to a Telegram chat. | yes | [Notifications](docs/user-guide/notifications.md) |
+| **Displays** | | | |
+| `eink-ws27` | The animated "tamagotchi" face on the Waveshare 2.7" e-Paper HAT: live device and agent state, a moving/parked indicator, a live web mirror, and the HAT's four keys (info screen, stop or start capture, reboot or shut down after a second press). | | [2.7" e-ink](docs/user-guide/eink-ws27-setup.md) |
+| `eink-ws213` | The same face on the smaller Waveshare 2.13" e-Paper HAT (V2/V3/V4), with a lean layout and quick partial redraws. *Not yet tested on hardware.* | | [2.13" e-ink](docs/user-guide/eink-ws213-setup.md) |
+| **Power** | | | |
+| `ups-ws` | Battery card for the Waveshare UPS HAT and UPS HAT (B), with an optional low-battery auto-shutdown. Confirms the HAT is on the I2C bus before doing anything. | | [UPS HAT](docs/user-guide/ups-ws-setup.md) |
+| `ups-wsc` | The same for the one-cell UPS HAT (C) (Pi Zero). *Not yet tested on hardware.* | | [UPS HAT (C)](docs/user-guide/ups-wsc-setup.md) |
+| `ups-wsd` | The same for the one-cell UPS HAT (D). *Not yet tested on hardware.* | | [UPS HAT (D)](docs/user-guide/ups-wsd-setup.md) |
+| **Device and agent** | | | |
+| `memtemp` | Memory, CPU load and temperature on the dashboard. | | [memtemp and session-stats](docs/user-guide/memtemp-session-stats.md) |
+| `session-stats` | This session's handshakes, access points, epochs and uptime. | | [memtemp and session-stats](docs/user-guide/memtemp-session-stats.md) |
+| `updates` | Alerts on a newer release and applies an app-layer update in place, no reflash. | yes | [Updates](docs/user-guide/updates.md) |
+| `remote-train` | Offloads learning-agent training to a desktop over SSH. | yes | [Remote training](docs/user-guide/remote-training.md) |
+| **Deprecated** | | | |
+| `eink` | The old name of `eink-ws27`. Switch to `eink-ws27`: `eink` will be removed in a future release that requires a reflash. | | [eink](docs/user-guide/eink-setup.md) |
+| `ups-hat` | The old name of `ups-ws`. Switch to `ups-ws`: `ups-hat` will be removed in a future release that requires a reflash. | | [ups-hat](docs/user-guide/ups-hat-setup.md) |
+
+<p align="center">
+  <img src="docs/images/plugins.png" alt="Plugins on a phone: the UPS HAT battery card with charge, time to shutdown and the auto-shutdown limit; the GPS, memtemp, ntfy, session-stats and updates cards; and the ntfy alerts page with the topic to subscribe to" width="840">
+</p>
+
+The [map](#the-map) and [e-ink face](#the-e-ink-face) screenshots are further up, and the [live e-ink mirror and downloads pages](#more-of-the-interface) are with the rest of the interface.
 
 Manage plugins with the `kestrel plugins` tool rather than editing `config.toml` by hand:
 
