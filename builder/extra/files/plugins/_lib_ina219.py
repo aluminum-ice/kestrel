@@ -22,7 +22,7 @@ method bumps the minor; a changed signature bumps the major. Names with a
 leading underscore are private.
 """
 
-LIB_API = (1, 0)
+LIB_API = (1, 1)
 
 # INA219 registers (see the TI datasheet and Waveshare's demo driver).
 REG_CONFIG = 0x00
@@ -112,6 +112,16 @@ class INA219:
         if value > 32767:
             value -= 65536
         return value * self.cal.power_lsb_w
+
+    def answers(self, address):
+        """True if a device at ``address`` on the same bus acknowledges a
+        one-byte read (what ``i2cdetect -r`` does), else False. For telling
+        boards apart by the other chips they carry; it writes nothing. *(1.1)*"""
+        try:
+            self._bus.read_byte(address)
+        except (OSError, IOError):
+            return False
+        return True
 
     def close(self):
         try:

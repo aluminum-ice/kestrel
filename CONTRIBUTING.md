@@ -67,7 +67,8 @@ could).
 ## Reporting hardware test results
 
 Some plugins drive hardware that hasn't been tested on a real device yet, such
-as `eink-ws213` for the Waveshare 2.13" e-Paper HAT; their guides say so. If you
+as `eink-ws213` for the Waveshare 2.13" e-Paper HAT and `ups-wsc`/`ups-wsd` for
+the Waveshare UPS HAT (C) and (D); their guides say so. If you
 try one, a report helps even without a patch. Email **patches@3ntropy.io** with:
 
 - the plugin and the Kestrel version (`cat /etc/kestrel/version`);
@@ -75,7 +76,9 @@ try one, a report helps even without a patch. Email **patches@3ntropy.io** with:
   the panel) and the options you set (such as `variant`);
 - what worked and what didn't: for an e-ink plugin, whether the face draws the
   right way up, how the quick redraws and the full refreshes look, and whether
-  ghosting builds up over an hour.
+  ghosting builds up over an hour; for a UPS plugin, whether charging and
+  discharging match what the board is doing and the charge percent looks
+  right.
 
 The same rules as for patches apply: **nothing real**. A photo of the panel
 shows the device's addresses, so blur them (and any network names) or turn off

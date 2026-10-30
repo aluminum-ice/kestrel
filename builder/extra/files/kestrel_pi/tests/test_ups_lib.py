@@ -37,6 +37,11 @@ class FakeBus:
             value ^= 0xFFFF
         self.regs[reg] = value
 
+    def read_byte(self, addr):
+        if addr not in getattr(self, "others", ()):
+            raise OSError("no ack")
+        return 0
+
     def close(self):
         self.closed = True
 
@@ -269,8 +274,16 @@ def test_no_threshold_card_says_off_and_has_no_eta():
     assert "mark" not in card["percent"] and "eta" not in card
 
 
+def test_answers_tells_whether_another_device_acks():
+    bus = FakeBus()
+    bus.others = {0x2D}
+    chip = INA.INA219(bus, 0x43, INA.CAL_16V_5A)
+    assert chip.answers(0x2D) is True and chip.answers(0x2E) is False
+    assert bus.writes == []                            # a read only, nothing written
+
+
 def test_the_library_is_provisional():
-    assert UPS.LIB_API[0] == 0 and INA.LIB_API == (1, 0)
+    assert UPS.LIB_API[0] == 0 and INA.LIB_API == (1, 1)
 
 
 # -- ups: one board reader at a time -----------------------------------------------------
