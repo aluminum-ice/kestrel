@@ -96,6 +96,39 @@ FIXTURES = {
         "def handshake(event):\n"
         "    pass\n"
     ),
+    "choices": (
+        "from kestrel_pi import Plugin\n"
+        "class Choices(Plugin):\n"
+        "    __options__ = {'variant': {'type': 'str', 'default': 'v4',\n"
+        "                               'choices': ['v4', 'v3', 'v2']},\n"
+        "                   'rotation': {'type': 'int', 'default': 0, 'choices': (0, 180)}}\n"
+    ),
+    "choices_default": (
+        "from kestrel_pi import Plugin\n"
+        "class ChoicesDefault(Plugin):\n"
+        "    __options__ = {'variant': {'type': 'str', 'default': 'v9',\n"
+        "                               'choices': ['v4', 'v3']}}\n"
+    ),
+    "choices_bool": (
+        "from kestrel_pi import Plugin\n"
+        "class ChoicesBool(Plugin):\n"
+        "    __options__ = {'on': {'type': 'bool', 'choices': [True, False]}}\n"
+    ),
+    "choices_empty": (
+        "from kestrel_pi import Plugin\n"
+        "class ChoicesEmpty(Plugin):\n"
+        "    __options__ = {'variant': {'type': 'str', 'choices': []}}\n"
+    ),
+    "choices_mixed": (
+        "from kestrel_pi import Plugin\n"
+        "class ChoicesMixed(Plugin):\n"
+        "    __options__ = {'rotation': {'type': 'int', 'choices': [0, '90']}}\n"
+    ),
+    "choices_comma": (
+        "from kestrel_pi import Plugin\n"
+        "class ChoicesComma(Plugin):\n"
+        "    __options__ = {'variant': {'type': 'str', 'choices': ['a,b', 'c']}}\n"
+    ),
     "syntax": "class Broken(Plugin:\n",
 }
 
@@ -238,3 +271,21 @@ def test_cli_lists_an_unreadable_plugin_as_invalid_without_running_it(tmp_path):
     assert _run_ctl(tmp_path, "exists", "computed", plugin_paths=paths).returncode == 0
     assert _run_ctl(tmp_path, "info", "plain", plugin_paths=paths).returncode == 0
     assert not list(operator.glob("*.ran"))
+
+
+@pytest.mark.parametrize("name, ok", [
+    ("choices", True), ("choices_default", False), ("choices_bool", False),
+    ("choices_empty", False), ("choices_mixed", False), ("choices_comma", False),
+])
+def test_choices_are_checked_by_both_readers(tmp_path, name, ok):
+    path = tmp_path / (name + ".py")
+    path.write_text(FIXTURES[name])
+    for reader, error in ((declarations.read_declarations, declarations.DeclarationError),
+                          (ctl.read_declarations, ctl.DeclarationError)):
+        if ok:
+            opts = reader(str(path))[name]["options"]
+            assert opts["variant"]["choices"] == ["v4", "v3", "v2"]
+        else:
+            with pytest.raises(error, match="choices"):
+                reader(str(path))
+

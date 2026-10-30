@@ -1132,3 +1132,63 @@ def test_set_stdin_keeps_the_value_verbatim(env, monkeypatch):
     monkeypatch.setattr(ctl.sys, "stdin", io.StringIO('a "quoted" value\r\n'))
     assert ctl.cmd_set_stdin("wpa-sec", "api_key") == 0
     assert _config(env)["plugins"]["wpa-sec"]["api_key"] == 'a "quoted" value'
+
+
+# -- options with choices ------------------------------------------------------
+
+PICKER = (
+    "from kestrel_pi import Plugin\n"
+    "class Picker(Plugin):\n"
+    "    __capabilities__ = ('ui',)\n"
+    "    __options__ = {\n"
+    "        'variant': {'type': 'str', 'default': 'v4', 'choices': ['v4', 'v3', 'v2']},\n"
+    "        'rotation': {'type': 'int', 'default': 0, 'choices': [0, 180]},\n"
+    "        'label': {'type': 'str', 'default': ''},\n"
+    "    }\n"
+)
+
+
+@pytest.fixture
+def picker(env, monkeypatch):
+    extra = env / "operator-plugins"
+    extra.mkdir()
+    (extra / "picker.py").write_text(PICKER)
+    monkeypatch.setattr(ctl, "PLUGIN_PATHS", [PLUGINS_DIR, str(extra)])
+    _auth_on(env)
+    return env
+
+
+def test_the_socket_writes_only_one_of_the_choices(picker):
+    reply = ctl.apply_change({"plugin": "picker", "set": {"variant": "v2", "rotation": 180}})
+    assert reply["ok"] is True
+    table = _config(picker)["plugins"]["picker"]
+    assert table["variant"] == "v2" and table["rotation"] == 180
+    for bad in ({"variant": "V2"}, {"variant": "v9"}, {"rotation": 90}, {"rotation": "180"}):
+        reply = ctl.apply_change({"plugin": "picker", "set": bad})
+        assert reply["ok"] is False, bad
+    assert _config(picker)["plugins"]["picker"] == table             # nothing written
+    reply = ctl.apply_change({"plugin": "picker", "set": {"variant": "v9"}})
+    assert reply["error"] == "variant must be one of: v4, v3, v2"
+
+
+def test_the_terminal_writes_only_one_of_the_choices(picker, capsys):
+    assert ctl.cmd_set("picker", "variant", "v3") == 0
+    assert ctl.cmd_set("picker", "rotation", "180") == 0
+    assert ctl.cmd_set("picker", "variant", "v9") == 2
+    assert "variant must be one of: v4, v3, v2" in capsys.readouterr().err
+    assert ctl.cmd_set("picker", "rotation", "90") == 2
+    assert ctl.cmd_set("picker", "label", "anything") == 0          # no choices: as before
+    table = _config(picker)["plugins"]["picker"]
+    assert table["variant"] == "v3" and table["rotation"] == 180
+
+
+def test_schema_and_info_list_the_choices(picker, capsys):
+    assert ctl.cmd_schema("picker") == 0
+    rows = {line.split("\t")[0]: line.split("\t") for line in
+            capsys.readouterr().out.splitlines()}
+    assert rows["variant"] == ["variant", "str", "0", "0", "0", "choices=v4,v3,v2", "v4"]
+    assert rows["rotation"][5:] == ["choices=0,180", "0"]
+    assert rows["label"][5:] == ["choices=", ""]
+    assert ctl.cmd_info("picker") == 0
+    assert "one of: v4/v3/v2" in capsys.readouterr().out
+

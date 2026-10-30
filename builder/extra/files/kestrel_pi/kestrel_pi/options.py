@@ -44,8 +44,8 @@ def validate_options(schema, table):
 
     Returns ``(values, warnings)``. ``values`` always carries ``enabled``
     through untouched (it is framework config, not a plugin option). Raises
-    :class:`OptionsError` for a missing required option or a declared option of
-    the wrong type.
+    :class:`OptionsError` for a missing required option, a declared option of
+    the wrong type, or a value outside the option's declared ``choices``.
     """
     schema = schema or {}
     table = dict(table or {})
@@ -62,6 +62,12 @@ def validate_options(schema, table):
                 raise OptionsError(
                     "option %r must be of type %s, got %r"
                     % (name, type_name, type(value).__name__)
+                )
+            choices = spec.get("choices")
+            if choices and value not in choices:
+                raise OptionsError(
+                    "option %r must be one of %s, got %r"
+                    % (name, ", ".join(str(c) for c in choices), value)
                 )
             values[name] = value
         elif "default" in spec:

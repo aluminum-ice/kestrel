@@ -33,3 +33,18 @@ def test_bool_is_not_int():
         validate_options({"n": {"type": "int"}}, {"n": True})
     values, _ = validate_options({"flag": {"type": "bool"}}, {"flag": True})
     assert values["flag"] is True
+
+
+def test_a_value_must_be_one_of_the_choices():
+    schema = {"variant": {"type": "str", "default": "v4", "choices": ["v4", "v3", "v2"]},
+              "rotation": {"type": "int", "default": 0, "choices": [0, 180]}}
+    values, _ = validate_options(schema, {"variant": "v2", "rotation": 180})
+    assert values["variant"] == "v2" and values["rotation"] == 180
+    assert validate_options(schema, {})[0]["variant"] == "v4"      # the default
+    with pytest.raises(OptionsError, match="one of v4, v3, v2"):
+        validate_options(schema, {"variant": "V2"})                 # exact match
+    with pytest.raises(OptionsError):
+        validate_options(schema, {"rotation": 90})
+    with pytest.raises(OptionsError):
+        validate_options(schema, {"rotation": True})                # a bool is not an int
+

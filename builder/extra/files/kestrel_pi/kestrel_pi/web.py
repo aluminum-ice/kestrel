@@ -4038,6 +4038,20 @@ def _option_field(opt, spec, table, missing, disabled, plugin=""):
             + _esc(opt) + mark + "</label>" + hint
         )
     label = '<label for="' + _esc(fid) + '">' + _esc(opt) + mark + "</label>"
+    choices = spec.get("choices")
+    if choices and type_name in ("str", "int") and not spec.get("secret"):
+        # One of a fixed set: a dropdown. A stored value outside it (the
+        # daemon refuses the plugin then) is named so the operator picks one.
+        opts = "".join(
+            '<option value="' + _esc(str(choice)) + '"'
+            + (" selected" if choice == current and type(choice) is type(current) else "")
+            + ">" + _esc(str(choice)) + "</option>"
+            for choice in choices)
+        if current is not None and current not in choices:
+            hint += ('<div class="hint">' + _esc(_shown(current))
+                     + " is not one of the choices: pick one.</div>")
+        return (label + '<select id="' + _esc(fid) + '" name="' + _esc(field) + '"'
+                + dis + ">" + opts + "</select>" + hint)
     if type_name in ("int", "float"):
         step = "1" if type_name == "int" else "any"
         value = "" if current is None else str(current)

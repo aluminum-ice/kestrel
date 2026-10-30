@@ -178,6 +178,44 @@ def test_root_only_secret_is_never_shown():
     assert ": set</div>" in html
 
 
+def test_an_option_with_choices_is_a_dropdown():
+    spec = {"type": "str", "default": "v4", "choices": ["v4", "v3", "<v2>"],
+            "help": "The panel revision."}
+    html = web._option_field("variant", spec, {"variant": "v3"}, set(), False)
+    assert '<select id="f-variant" name="opt-variant">' in html
+    assert '<option value="v3" selected>v3</option>' in html
+    assert '<option value="v4">v4</option>' in html
+    assert "&lt;v2&gt;" in html and "<v2>" not in html          # escaped
+    assert "<input" not in html and "The panel revision." in html
+    rot = web._option_field("rotation", {"type": "int", "default": 0, "choices": [0, 180]},
+                            {}, set(), True)
+    assert '<option value="0" selected>0</option>' in rot and " disabled>" in rot
+
+
+def test_a_stored_value_outside_the_choices_asks_for_one():
+    spec = {"type": "str", "default": "v4", "choices": ["v4", "v3"]}
+    html = web._option_field("variant", spec, {"variant": "V3"}, set(), False)
+    assert " selected" not in html
+    assert "V3 is not one of the choices: pick one." in html
+
+
+def test_build_change_sends_an_int_choice_as_a_number():
+    class _Rec:
+        name = "panel"
+
+        class cls:
+            __options__ = {"rotation": {"type": "int", "default": 0, "choices": [0, 180]},
+                           "variant": {"type": "str", "default": "v4",
+                                       "choices": ["v4", "v3"]}}
+
+    class _Daemon:
+        config = {"plugins": {"panel": {"enabled": True}}}
+
+    change = web.build_change(_Daemon(), _Rec(), {"opt-rotation": "180",
+                                                  "opt-variant": "v4"})
+    assert change == {"plugin": "panel", "set": {"rotation": 180}}
+
+
 def test_build_change_never_sends_a_root_only_option():
     class _Rec:
         name = "updates"

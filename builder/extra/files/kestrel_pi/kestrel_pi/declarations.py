@@ -37,6 +37,34 @@ class DeclarationError(ValueError):
     """A plugin file whose declarations can't be read statically."""
 
 
+# The option types that may declare ``choices``: a fixed set of values for the
+# operator to pick from (a dropdown on the Plugins page).
+_CHOICE_TYPES = {"str": str, "int": int}
+
+
+def _check_choices(where, opt, spec):
+    """An option's ``choices``: a non-empty list of values of the option's type
+    (a str choice non-empty, with no comma or tab, which the CLI uses to list
+    them), with the default among them. Raises DeclarationError otherwise."""
+    if "choices" not in spec:
+        return
+    type_name = spec.get("type", "str")
+    kind = _CHOICE_TYPES.get(type_name)
+    if kind is None:
+        raise DeclarationError("%s: option %r: only str and int options take choices"
+                               % (where, opt))
+    choices = spec["choices"]
+    if not isinstance(choices, (list, tuple)) or not choices or not all(
+            isinstance(c, kind) and not isinstance(c, bool)
+            and (kind is not str or (c and not set(c) & set(",\t\r\n")))
+            for c in choices):
+        raise DeclarationError("%s: option %r: choices must be a non-empty list of "
+                               "%s values" % (where, opt, type_name))
+    if "default" in spec and spec["default"] not in choices:
+        raise DeclarationError("%s: option %r: the default is not one of its choices"
+                               % (where, opt))
+
+
 def _base_name(node):
     if isinstance(node, ast.Name):
         return node.id
@@ -63,6 +91,8 @@ def normalize(raw, where):
             if not isinstance(value, dict) or not all(
                     isinstance(spec, dict) or spec is None for spec in value.values()):
                 raise DeclarationError("%s: __options__ is not a dict of option specs" % where)
+            for opt, spec in value.items():
+                _check_choices(where, opt, spec or {})
         decl[key] = value
     return decl
 

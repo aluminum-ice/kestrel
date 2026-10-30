@@ -229,11 +229,15 @@ def _render(value):
 
 def cmd_schema(name):
     """Emit one TSV row per declared option for the interactive enable flow:
-    name<TAB>type<TAB>required(0/1)<TAB>secret(0/1)<TAB>has_value(0/1)<TAB>current
+    name<TAB>type<TAB>required(0/1)<TAB>secret(0/1)<TAB>has_value(0/1)<TAB>
+    choices=<a,b,c><TAB>current
 
     current is the config value or the default, rendered as a string; it is
     always empty for a secret option (a stored secret is never echoed), while
-    has_value still reflects whether one is set."""
+    has_value still reflects whether one is set. The choices field always
+    carries its ``choices=`` prefix, empty after it when the option has none:
+    bash's ``read`` merges empty tab-separated fields, so only the last field
+    (current) may be empty."""
     decl = find_plugin(name)
     if decl is None:
         return 1
@@ -251,8 +255,9 @@ def cmd_schema(name):
             current = _render(spec["default"])
         else:
             current = ""
+        choices = "choices=" + ",".join(str(c) for c in spec.get("choices") or ())
         print("\t".join([opt, spec.get("type", "str"), required, secret,
-                         has_value, current]))
+                         has_value, choices, current]))
     return 0
 
 
@@ -284,6 +289,8 @@ def cmd_info(name):
                 flags.append("terminal only")
             if "default" in spec:
                 flags.append("default=%r" % spec["default"])
+            if spec.get("choices"):
+                flags.append("one of: " + "/".join(str(c) for c in spec["choices"]))
             cur = table.get(opt)
             if cur is not None:
                 flags.append("set")
@@ -338,6 +345,19 @@ def cmd_set(name, key, raw):
     if not re.fullmatch(r"[A-Za-z0-9_-]+", key):
         sys.stderr.write("invalid option key: %s\n" % key)
         return 2
+    # A declared option with choices takes only one of them (the plugin's own
+    # declaration, read statically; an undeclared key is written as given).
+    decl = static_plugins().get(name, (None, None))[0]
+    spec = ((decl or {}).get("options") or {}).get(key) or {}
+    if spec.get("choices"):
+        value = raw
+        if spec.get("type") == "int" and re.fullmatch(r"-?\d+", raw):
+            value = int(raw)
+        try:
+            check_choice(key, spec, value)
+        except ValueError as exc:
+            sys.stderr.write("plugins-ctl: %s\n" % exc)
+            return 2
     cs = config_set_module()
     try:
         cs.set_value(CONFIG, "plugins." + name, key, _toml_value(raw))
@@ -385,6 +405,34 @@ class DeclarationError(ValueError):
     """A plugin file whose declarations can't be read statically."""
 
 
+# The option types that may declare ``choices``: a fixed set of values for the
+# operator to pick from (a dropdown on the Plugins page).
+_CHOICE_TYPES = {"str": str, "int": int}
+
+
+def _check_choices(where, opt, spec):
+    """An option's ``choices``: a non-empty list of values of the option's type
+    (a str choice non-empty, with no comma or tab, which the CLI uses to list
+    them), with the default among them. Raises DeclarationError otherwise."""
+    if "choices" not in spec:
+        return
+    type_name = spec.get("type", "str")
+    kind = _CHOICE_TYPES.get(type_name)
+    if kind is None:
+        raise DeclarationError("%s: option %r: only str and int options take choices"
+                               % (where, opt))
+    choices = spec["choices"]
+    if not isinstance(choices, (list, tuple)) or not choices or not all(
+            isinstance(c, kind) and not isinstance(c, bool)
+            and (kind is not str or (c and not set(c) & set(",\t\r\n")))
+            for c in choices):
+        raise DeclarationError("%s: option %r: choices must be a non-empty list of "
+                               "%s values" % (where, opt, type_name))
+    if "default" in spec and spec["default"] not in choices:
+        raise DeclarationError("%s: option %r: the default is not one of its choices"
+                               % (where, opt))
+
+
 def _base_name(node):
     if isinstance(node, ast.Name):
         return node.id
@@ -411,6 +459,8 @@ def normalize(raw, where):
             if not isinstance(value, dict) or not all(
                     isinstance(spec, dict) or spec is None for spec in value.values()):
                 raise DeclarationError("%s: __options__ is not a dict of option specs" % where)
+            for opt, spec in value.items():
+                _check_choices(where, opt, spec or {})
         decl[key] = value
     return decl
 
@@ -494,10 +544,20 @@ def web_control_ready(config):
     return False
 
 
+def check_choice(opt, spec, value):
+    """Refuse a value outside the option's declared ``choices`` (ValueError)."""
+    choices = (spec or {}).get("choices")
+    if choices and value not in choices:
+        raise ValueError("%s must be one of: %s"
+                         % (opt, ", ".join(str(c) for c in choices)))
+
+
 def web_literal(opt, spec, value):
-    """Check a submitted value against the option's declared type and render
-    it as a TOML literal. Raises ValueError with an operator-facing message."""
+    """Check a submitted value against the option's declared type (and
+    choices) and render it as a TOML literal. Raises ValueError with an
+    operator-facing message."""
     type_name = (spec or {}).get("type", "str")
+    check_choice(opt, spec, value)
     if type_name == "bool":
         if not isinstance(value, bool):
             raise ValueError("%s must be on or off" % opt)
