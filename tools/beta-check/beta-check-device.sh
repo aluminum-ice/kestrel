@@ -45,7 +45,7 @@ LOGIN_USER=${SUDO_USER:-root}
 VENV_PY=$DEV_HOME/.venv/bin/python
 SCRIPTS_DIR=/usr/local/share/kestrel/scripts
 # Shared paths: not every beta's checks use all of them.
-: "$CLI" "$CTL" "$AGENT_DIR" "$VENV_PY" "$SCRIPTS_DIR" "$LEGACY_RUN"
+: "$CLI" "$CTL" "$AGENT_DIR" "$VENV_PY" "$SCRIPTS_DIR" "$LEGACY_RUN" "$RUNDIR"
 
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 work=$(mktemp -d /tmp/kbc.XXXXXX)          # root-only (0700)
@@ -91,19 +91,13 @@ echo "uptime:     $(uptime -p 2>/dev/null)"
 echo "python3:    $(/usr/bin/python3 -V 2>&1)"
 echo "web auth:   $web_auth"
 
-# ================================================================ 1.0.9 checks (#50-#55, #58-#73)
-# Beta 1: HTTPS dashboard and sign-in (#51), the e-ink address row (#50), and
-# four new plugins: downloads (#52), map (#53), notify (#54), hat-buttons (#55).
-# Beta 2: the certificate within Apple's limit (#58), the plugin row buttons
-# (#59) and the report's redaction (#60), as sections 9-11. Beta 3: notify split
-# into ntfy and telegram (#62), the map's OpenStreetMap background (#64) and the
-# Captured networks controls (#65), as sections 12-14; notify's 6.x checks are
-# replaced by section 12. Beta 4: map markers coloured by recovered status (#68),
-# as section 15. Beta 5: the login helper's exit status (#70), the e-ink link
-# icons (#71), the HAT keys moving into eink (#72) and map drag and zoom (#73),
-# as sections 16-19; hat-buttons' 7.x checks are replaced by section 18.
-# Earlier betas' checks stay, so one report serves every 1.0.9 checklist
-# issue. The CHECK ids match them.
+# ================================================================ 1.0.10 checks (#81-#89)
+# Beta 1: plugins made standalone with their own helper files (#81), option
+# choices (#82), the eink-ws213 plugin for the 2.13" HAT (#83), e-ink motion
+# timed by each GPS fix (#84), shared plugin libraries (#85) - alerts (#86),
+# eink_face (#87) and hat_keys (#88) - and eink-ws27 beside a deprecated eink
+# (#89), as sections 2-8. Section 9 repeats the cheap 1.0.9 checks as
+# regressions. The CHECK ids match the checklist issue for 1.0.10-beta.1.
 upd=/var/lib/kestrel/update-run/status.json
 
 # ---------------------------------------------------------------- 1. update to this beta
@@ -162,8 +156,162 @@ else
   check 1.5 SKIP "settings unchanged by the update" "no in-place update recorded"
 fi
 
-# ---------------------------------------------------------------- 2. HTTPS dashboard and sign-in (#51)
-sec "2. HTTPS dashboard and sign-in (#51)"
+# ---------------------------------------------------------------- 2. standalone plugins and shared libraries (#81, #85-#88)
+sec "2. standalone plugins and shared libraries (#81, #85-#88)"
+# Code that served particular plugins left the kestrel_pi package (#81): the
+# HAT keys, the alert code and the vendored e-Paper driver. An in-place update
+# reinstalls the package, so they must be gone from the venv.
+gone=$(as_dev "$VENV_PY" -I -c 'import importlib.util
+names = ("kestrel_pi.hatkeys", "kestrel_pi.alerts", "kestrel_pi.vendor")
+print(" ".join(n for n in names if importlib.util.find_spec(n) is not None) or "none")' 2>&1 | tail -1)
+if [ "$gone" = none ]; then
+  check 2.1 PASS "plugin-only modules are gone from the installed package" "no hatkeys, alerts or vendor"
+else
+  check 2.1 FAIL "plugin-only modules are gone from the installed package" "still there: $(printf '%s' "$gone" | cut -c1-120)"
+fi
+bad=""
+for f in _lib_alerts.py _lib_eink_face.py _lib_hat_keys.py; do
+  st=$(stat -c '%U %a' "$LIBDIR/plugins/$f" 2>/dev/null || echo missing)
+  echo "  $f: $st"
+  [ "$st" = "root 644" ] || bad="$bad $f($st)"
+done
+if [ -z "$bad" ]; then
+  check 2.2 PASS "the three plugin libraries are installed, root-owned 0644" ""
+else
+  check 2.2 FAIL "the three plugin libraries are installed, root-owned 0644" "$bad"
+fi
+# Load each library the way a plugin does, as the device user in the venv.
+# Loading runs no plugin and touches no hardware (drawing and GPIO are lazy).
+apis=$(as_dev "$VENV_PY" -I - "$LIBDIR/plugins" <<'PY' 2>&1 | tail -1
+import os, sys
+from kestrel_pi import load_library
+caller = os.path.join(sys.argv[1], "eink-ws27.py")
+out = []
+for name, api in (("alerts", 1), ("eink_face", 1), ("hat_keys", 0)):
+    try:
+        mod = load_library(caller, name, api=api)
+        out.append("%s=%d.%d" % ((name,) + tuple(mod.LIB_API)))
+    except Exception as exc:
+        out.append("%s=FAIL(%s)" % (name, type(exc).__name__))
+print(" ".join(out))
+PY
+)
+echo "  libraries: $apis"
+case "$apis" in
+  "alerts=1."*" eink_face=1."*" hat_keys=0."*) check 2.3 PASS "each library loads with the API its plugins ask for" "$apis" ;;
+  *) check 2.3 FAIL "each library loads with the API its plugins ask for" "$(printf '%s' "$apis" | cut -c1-160)" ;;
+esac
+# 2.4 (_lib_ files and the name lib never listed as plugins) is in the config tests.
+miss=""
+for f in _eink_epdconfig.py _eink_epd2in7.py _eink_epd2in7_V2.py \
+         _eink-ws27_epdconfig.py _eink-ws27_epd2in7.py _eink-ws27_epd2in7_V2.py \
+         _eink-ws213_epdconfig.py _eink-ws213_epd2in13_V2.py _eink-ws213_epd2in13_V3.py \
+         _eink-ws213_epd2in13_V4.py; do
+  [ -f "$LIBDIR/plugins/$f" ] || miss="$miss $f"
+done
+if [ -z "$miss" ]; then
+  check 2.5 PASS "each e-ink plugin's driver helper files are installed" "eink, eink-ws27, eink-ws213"
+else
+  check 2.5 FAIL "each e-ink plugin's driver helper files are installed" "missing:$miss"
+fi
+liberr=$(journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null \
+  | grep -cE 'library API|plugin library .* not found|has no LIB_API' || true)
+if [ "${liberr:-0}" -eq 0 ]; then
+  check 2.6 PASS "no plugin-library load errors in this boot's daemon journal" ""
+else
+  check 2.6 FAIL "no plugin-library load errors in this boot's daemon journal" "$liberr line(s)"
+fi
+
+# ---------------------------------------------------------------- 3. option choices (#82)
+sec "3. option choices (#82)"
+# 3.1 (declared choices) and 3.2 (a value outside them refused) are in the config tests.
+for id in 3.3 3.4; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
+
+# ---------------------------------------------------------------- 4. ntfy and telegram on the alerts library (#86)
+sec "4. ntfy and telegram on the alerts library (#86)"
+# 4.1 (declarations) is in the config tests below.
+topic=$DEV_HOME/.local/state/kestrel-ntfy/topic
+if as_dev test -f "$topic"; then
+  [ "$(as_dev stat -c '%a' "$topic" 2>/dev/null)" = 600 ] \
+    && check 4.2 PASS "generated ntfy topic file is still private" "0600 (contents not read)" \
+    || check 4.2 FAIL "generated ntfy topic file is still private" "mode $(as_dev stat -c '%a' "$topic" 2>/dev/null)"
+else
+  check 4.2 SKIP "generated ntfy topic file is still private" "no generated topic"
+fi
+# The library keeps each plugin's queue where the plugin's own copy kept it.
+# Only the number of queued alerts is read, never their text.
+queues=$(as_dev /usr/bin/python3 -I - "$DEV_HOME/.local/state" <<'PY' 2>&1
+import json, os, sys
+out = []
+for name in ("ntfy", "telegram"):
+    path = os.path.join(sys.argv[1], "kestrel-" + name, "queue.json")
+    if not os.path.exists(path):
+        continue
+    try:
+        data = json.load(open(path))
+        out.append("%s=%d" % (name, len(data)) if isinstance(data, list) else "%s=BAD" % name)
+    except Exception as exc:
+        out.append("%s=BAD(%s)" % (name, type(exc).__name__))
+print(" ".join(out) or "none")
+PY
+)
+case "$queues" in
+  none) check 4.3 SKIP "the alert queues read back" "no queue file yet" ;;
+  *BAD*) check 4.3 FAIL "the alert queues read back" "$queues" ;;
+  *) check 4.3 PASS "the alert queues read back" "queued: $queues" ;;
+esac
+for id in 4.4 4.5 4.6; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
+
+# ---------------------------------------------------------------- 5. the e-ink face library and motion (#84, #87)
+sec "5. the e-ink face library and motion (#84, #87)"
+# 5.1 (each enabled e-ink plugin loaded, with its Motion card) is in the dashboard section.
+for id in 5.2 5.3 5.4; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
+
+# ---------------------------------------------------------------- 6. the HAT keys library (#88)
+sec "6. the HAT keys library (#88)"
+# 6.1 (the key options) is in the config tests below.
+nokeys=$(journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null | grep -c 'HAT keys unavailable' || true)
+if [ "${nokeys:-0}" -eq 0 ]; then
+  check 6.2 INFO "HAT keys started" "no 'HAT keys unavailable' line this boot"
+else
+  check 6.2 INFO "HAT keys started" "$nokeys 'HAT keys unavailable' line(s): no HAT, keys off, or bad pins"
+  journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null | grep 'HAT keys unavailable' | tail -3 | jscrub
+fi
+for id in 6.3 6.4 6.5 6.6 6.7; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
+
+# ---------------------------------------------------------------- 7. eink-ws27 and the deprecated eink (#89)
+sec "7. eink-ws27 and the deprecated eink (#89)"
+# 7.1 (all sixteen plugins) and 7.3 (the descriptions) are in the config tests;
+# 7.4 (the deprecation on eink's health note) is in the dashboard section.
+diff_helpers=""
+for f in epdconfig epd2in7 epd2in7_V2; do
+  h_old=$(sha256sum "$LIBDIR/plugins/_eink_$f.py" 2>/dev/null | awk '{print $1}')
+  h_new=$(sha256sum "$LIBDIR/plugins/_eink-ws27_$f.py" 2>/dev/null | awk '{print $1}')
+  { [ -n "$h_old" ] && [ "$h_old" = "$h_new" ]; } || diff_helpers="$diff_helpers $f"
+done
+if [ -z "$diff_helpers" ]; then
+  check 7.2 PASS "eink-ws27's driver helpers are the same files as eink's" "sha256 identical"
+else
+  check 7.2 FAIL "eink-ws27's driver helpers are the same files as eink's" "differ or missing:$diff_helpers"
+fi
+for id in 7.5 7.6 7.7; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
+
+# ---------------------------------------------------------------- 8. the diagnostics script (#83)
+sec "8. the e-ink diagnostics script (#83)"
+check 8.1 MANUAL "see the checklist" "by hand (runs on a computer)"
+
+# ---------------------------------------------------------------- 9. regressions from 1.0.9
+sec "9. regressions from 1.0.9"
 tls=$(cfg web.tls on)
 port=$(cfg web.port 8080)
 tport=$(cfg web.tls_port 8443)
@@ -175,22 +323,22 @@ done
 if [ "$(as_dev stat -c '%a' "$WEBSTATE" 2>/dev/null)" = 700 ] \
     && [ "$(as_dev stat -c '%a' "$WEBSTATE/cert.pem" 2>/dev/null)" = 600 ] \
     && [ "$(as_dev stat -c '%a' "$WEBSTATE/key.pem" 2>/dev/null)" = 600 ]; then
-  check 2.1 PASS "certificate made and private" "dir 700, cert.pem and key.pem 600"
+  check 9.1 PASS "certificate made and private" "dir 700, cert.pem and key.pem 600"
 elif [ "$tls" = off ]; then
-  check 2.1 SKIP "certificate made and private" "[web] tls is off"
+  check 9.1 SKIP "certificate made and private" "[web] tls is off"
 else
-  check 2.1 FAIL "certificate made and private" "see the modes above"
+  check 9.1 FAIL "certificate made and private" "see the modes above"
 fi
 # The fingerprint itself never goes in the report: only whether they match.
 fp_cli=$(timeout 20 "$CLI" web fingerprint 2>/dev/null | tail -1)
 fp_log=$(journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null \
   | grep -oE 'HTTPS certificate SHA-256 [0-9A-F:]+' | tail -1 | awk '{print $NF}')
 if [ -n "$fp_cli" ] && [ "$fp_cli" = "$fp_log" ]; then
-  check 2.2 PASS "kestrel web fingerprint matches the daemon's journal" "values not shown"
+  check 9.2 PASS "kestrel web fingerprint matches the daemon's journal" "values not shown"
 elif [ -z "$fp_log" ]; then
-  check 2.2 INFO "kestrel web fingerprint matches the daemon's journal" "no HTTPS line in this boot's daemon journal"
+  check 9.2 INFO "kestrel web fingerprint matches the daemon's journal" "no HTTPS line in this boot's daemon journal"
 else
-  check 2.2 FAIL "kestrel web fingerprint matches the daemon's journal" "they differ (values not shown)"
+  check 9.2 FAIL "kestrel web fingerprint matches the daemon's journal" "they differ (values not shown)"
 fi
 # Listening sockets only (read-only, no request): HTTPS and the forwarder on each
 # management address, plain HTTP on loopback. Addresses are counted, not shown.
@@ -200,194 +348,42 @@ http_ext=$(printf '%s\n' "$lst" | grep -E ":$port\$" | grep -vcE '^(127\.|\[::1\
 http_lo=$(printf '%s\n' "$lst" | grep -cE "^127\.[0-9.]+:$port\$" || true)
 echo "  listeners: $tport off-loopback=$https_ext  $port off-loopback=$http_ext  $port loopback=$http_lo"
 if [ "$tls" = off ]; then
-  check 2.3 SKIP "HTTPS and the forwarder listen on each management address" "[web] tls is off"
+  check 9.3 SKIP "HTTPS and the forwarder listen on each management address" "[web] tls is off"
 elif [ "${https_ext:-0}" -ge 1 ] && [ "$https_ext" = "$http_ext" ] && [ "${http_lo:-0}" -ge 1 ]; then
-  check 2.3 PASS "HTTPS and the forwarder listen on each management address" "$https_ext address(es); loopback plain HTTP too"
+  check 9.3 PASS "HTTPS and the forwarder listen on each management address" "$https_ext address(es); loopback plain HTTP too"
 else
-  check 2.3 FAIL "HTTPS and the forwarder listen on each management address" "see the listener counts above"
+  check 9.3 FAIL "HTTPS and the forwarder listen on each management address" "see the listener counts above"
 fi
-# 2.4 (loopback Basic) and 2.5 (nosniff) come from the dashboard section below.
+# 9.4 (loopback Basic) and 9.5 (nosniff) come from the dashboard section below.
 cat_ok=$(as_dev "$VENV_PY" -I -c 'from kestrel_pi import config_catalog as c
 a, b = c.find("web", "tls"), c.find("web", "tls_port")
 print(bool(a) and bool(b) and a.get("editable") is False and b.get("editable") is False)' 2>&1)
 if [ "$cat_ok" = True ]; then
-  check 2.6 PASS "Advanced settings lists web.tls and web.tls_port read-only" ""
+  check 9.6 PASS "Advanced settings lists web.tls and web.tls_port read-only" ""
 else
-  check 2.6 FAIL "Advanced settings lists web.tls and web.tls_port read-only" "$(printf '%s' "$cat_ok" | tr '\n' ' ' | cut -c1-120)"
+  check 9.6 FAIL "Advanced settings lists web.tls and web.tls_port read-only" "$(printf '%s' "$cat_ok" | tr '\n' ' ' | cut -c1-120)"
 fi
-# 2.7 (web.tls refused through the settings channel) is in the config tests below.
-for id in 2.8 2.9 2.10 2.11 2.12 2.13 2.14 2.15 2.16 2.17 2.18; do
-  check "$id" MANUAL "see the checklist" "by hand"
-done
-
-# ---------------------------------------------------------------- 3-7. the plugins (#50, #52-#55)
-sec "3-7. plugins (#50, #52-#55)"
-# 3.1, 4.1, 5.1, 8.1, 12.1, 13.1 and 18.1 read the plugin declarations
-# statically in the config tests below.
-n=$(as_dev sh -c 'ls "$1" 2>/dev/null | grep -c "^export-.*\.zip$"' _ "$DEV_HOME/.local/state/kestrel-downloads" || true)
-if as_dev test -d "$DEV_HOME/.local/state/kestrel-downloads"; then
-  [ "${n:-0}" -eq 0 ] && check 4.2 PASS "no leftover export zips" "" \
-    || check 4.2 FAIL "no leftover export zips" "$n left"
-else
-  check 4.2 SKIP "no leftover export zips" "downloads hasn't been used yet"
-fi
-loc=$(as_dev "$VENV_PY" -I -c 'from kestrel_pi.geo import GeoStore
-print(callable(getattr(GeoStore, "locations", None)))' 2>&1)
-[ "$loc" = True ] && check 5.2 PASS "installed package provides GeoStore.locations()" "" \
-  || check 5.2 FAIL "installed package provides GeoStore.locations()" "$(printf '%s' "$loc" | tr '\n' ' ' | cut -c1-120)"
-# 6.x (notify) is replaced by section 12 (ntfy and telegram) in beta 3, and
-# 7.x (hat-buttons) by section 18 (the keys in eink) in beta 5.
-for id in 3.2 3.3 3.4 4.3 4.4 4.5 4.6 4.7 4.8 5.3 5.4 5.5 5.6 5.7 5.8 5.9; do
-  check "$id" MANUAL "see the checklist" "by hand"
-done
-
-# ---------------------------------------------------------------- 9-11. beta 2 fixes (#58-#60)
-sec "9. certificate within Apple's 825-day limit (#58)"
-# The span is read from the public certificate as the device user; the
-# certificate and its fingerprint never go in the report.
-span=$(as_dev "$VENV_PY" -I - "$WEBSTATE/cert.pem" <<'PY' 2>&1
-import sys
-from cryptography import x509
-with open(sys.argv[1], "rb") as handle:
-    cert = x509.load_pem_x509_certificate(handle.read())
-start = getattr(cert, "not_valid_before_utc", None) or cert.not_valid_before
-end = getattr(cert, "not_valid_after_utc", None) or cert.not_valid_after
-print((end - start).days)
-PY
-)
-echo "  certificate validity span: $span days"
-if [ "$tls" = off ]; then
-  check 9.1 SKIP "certificate valid for no more than 825 days" "[web] tls is off"
-elif printf '%s' "$span" | grep -qxE '[0-9]+' && [ "$span" -le 825 ]; then
-  check 9.1 PASS "certificate valid for no more than 825 days" "$span days"
-else
-  check 9.1 FAIL "certificate valid for no more than 825 days" "$(printf '%s' "$span" | tr '\n' ' ' | cut -c1-120)"
-fi
-started=$(printf '%s\n' "$updinfo" | sed -n 's/^started_at: //p' | cut -d. -f1)
-made=$(as_dev stat -c '%Y' "$WEBSTATE/cert.pem" 2>/dev/null)
-if [ "$tls" = off ] || [ -z "$made" ]; then
-  check 9.2 SKIP "the beta 1 certificate was replaced after the update" "no certificate"
-elif [ -z "$started" ]; then
-  check 9.2 SKIP "the beta 1 certificate was replaced after the update" "no in-place update recorded"
-elif [ "$made" -ge "$started" ]; then
-  check 9.2 PASS "the beta 1 certificate was replaced after the update" "made after the update started"
-else
-  check 9.2 INFO "the beta 1 certificate was replaced after the update" "made before this update (a fresh flash, or already compliant)"
-fi
-for id in 9.3 9.4 9.5; do
-  check "$id" MANUAL "see the checklist" "by hand"
-done
-
-sec "10. plugin row buttons (#59)"
-# Reads the installed plugins' __actions__ declarations (plugin source only, no
-# capture content) and runs them through the daemon's own normalizer.
-btn=$(as_dev "$VENV_PY" -I - "$LIBDIR/plugins" <<'PY' 2>&1
-import ast, glob, os, sys
-from kestrel_pi.plugins import normalize_actions
-dropped, labels = [], {}
-for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.py"))):
-    name = os.path.basename(path)[:-3]
-    with open(path, encoding="utf-8") as handle:
-        tree = ast.parse(handle.read())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == "__actions__" for t in node.targets):
-            try:
-                declared = ast.literal_eval(node.value)
-            except ValueError:
-                dropped.append(name + " (not a literal)")
-                continue
-            kept = normalize_actions(declared)
-            labels[name] = [a["label"] for a in kept]
-            if len(kept) != len(declared):
-                dropped.append(name)
-want = {"downloads": "Download", "map": "Map", "ntfy": "Status", "telegram": "Status"}
-missing = sorted(n for n, label in want.items() if label not in labels.get(n, []))
-print("PASS" if not dropped and not missing else "FAIL",
-      "dropped=%s missing=%s" % (sorted(dropped), missing))
-PY
-)
-case "$btn" in
-  PASS*) check 10.1 PASS "every installed plugin's row buttons are kept" "${btn#PASS }" ;;
-  *)     check 10.1 FAIL "every installed plugin's row buttons are kept" "$(printf '%s' "${btn#FAIL }" | tr '\n' ' ' | cut -c1-160)" ;;
-esac
-# 10.2 (the buttons in the running daemon's /status.json) is in the dashboard section.
-check 10.3 MANUAL "see the checklist" "by hand"
-
-sec "11. report redaction (#60)"
-check 11.1 MANUAL "see the checklist" "by hand"
-
-sec "12. ntfy and telegram (#62)"
-# 12.1 (declarations) is in the config tests below.
-if [ -e "$LIBDIR/plugins/notify.py" ]; then
-  check 12.2 FAIL "the old notify plugin is gone" "notify.py is still installed"
-else
-  check 12.2 PASS "the old notify plugin is gone" "the update removed notify.py"
-fi
-topic=$DEV_HOME/.local/state/kestrel-ntfy/topic
-if as_dev test -f "$topic"; then
-  [ "$(as_dev stat -c '%a' "$topic" 2>/dev/null)" = 600 ] \
-    && check 12.3 PASS "generated ntfy topic file is private" "0600 (contents not read)" \
-    || check 12.3 FAIL "generated ntfy topic file is private" "mode $(as_dev stat -c '%a' "$topic" 2>/dev/null)"
-else
-  check 12.3 SKIP "generated ntfy topic file is private" "no generated topic yet"
-fi
-for id in 12.4 12.5 12.6 12.7; do
-  check "$id" MANUAL "see the checklist" "by hand"
-done
-
-sec "13. map background (#64)"
-# 13.1 (tile_url declared) is in the config tests; 13.2 (the page) is in the
-# dashboard section.
-for id in 13.3 13.4 13.5 13.6 13.7 13.8; do
-  check "$id" MANUAL "see the checklist" "by hand"
-done
-
-sec "14. Captured networks controls (#65)"
-# 14.1 (the page) is in the dashboard section.
-for id in 14.2 14.3; do
-  check "$id" MANUAL "see the checklist" "by hand"
-done
-
-sec "15. map markers by recovered status (#68)"
-# 15.1 and 15.2 (the map page) are in the dashboard section.
-for id in 15.3 15.4 15.5 15.6; do
-  check "$id" MANUAL "see the checklist" "by hand"
-done
-
-sec "16. login helper exit status (#70)"
+# 9.7 (web.tls refused through the settings channel) is in the config tests below.
 # The helper run directly with a malformed request: it answers without reading
 # any password (a bad request never reaches the check) and writes nothing. It
 # must now exit 0 once it has answered, so a refused request leaves no failed
 # kestrel-web-auth@ unit.
 auth_out=$(printf '{}' | timeout 10 /usr/bin/python3 -I "$CTL" checkauth 2>/dev/null); auth_rc=$?
 if [ "$auth_rc" -eq 0 ] && printf '%s' "$auth_out" | grep -q '"ok": false'; then
-  check 16.1 PASS "the login helper exits 0 after answering a refused request" "rc=0, refused"
+  check 9.8 PASS "the login helper exits 0 after answering a refused request" "rc=0, refused"
 else
-  check 16.1 FAIL "the login helper exits 0 after answering a refused request" \
+  check 9.8 FAIL "the login helper exits 0 after answering a refused request" \
     "rc=$auth_rc reply=$(printf '%s' "$auth_out" | tr -cd '[:alnum:] :{}",_' | cut -c1-80)"
 fi
-check 16.2 MANUAL "see the checklist" "by hand"
-
-sec "17. e-ink link icons (#71)"
-check 17.1 MANUAL "see the checklist" "by hand"
-
-sec "18. HAT keys in eink (#72)"
-# 18.1 (eink's key options) is in the config tests below.
-if [ -e "$LIBDIR/plugins/hat-buttons.py" ]; then
-  check 18.2 FAIL "the old hat-buttons plugin is gone" "hat-buttons.py is still installed"
+for old in notify hat-buttons; do
+  [ -e "$LIBDIR/plugins/$old.py" ] && gone_old="${gone_old:-} $old"
+done
+if [ -z "${gone_old:-}" ]; then
+  check 9.9 PASS "the replaced notify and hat-buttons plugins are gone" ""
 else
-  check 18.2 PASS "the old hat-buttons plugin is gone" "the update removed hat-buttons.py"
+  check 9.9 FAIL "the replaced notify and hat-buttons plugins are gone" "still installed:$gone_old"
 fi
-for id in 18.3 18.4 18.5 18.6 18.7 18.8 18.9; do
-  check "$id" MANUAL "see the checklist" "by hand"
-done
-
-sec "19. map drag and zoom (#73)"
-# 19.1 (the map page) is in the dashboard section.
-for id in 19.2 19.3 19.4; do
-  check "$id" MANUAL "see the checklist" "by hand"
-done
+# 9.4, 9.5 and 9.10-9.12 come from the dashboard section below.
 
 # ---------------------------------------------------------------- config tests (throwaway copy)
 sec "config tests (throwaway copy of config.toml; commands blocked)"
@@ -416,10 +412,10 @@ def check(cid, ok, what, detail=""): print("CHECK %-5s %-6s %s :: %s" % (cid, "P
 def apply(ch):
     try: return ctl.apply_change(ch)
     except Exception as e: return {"ok": False, "error": "exc %s" % type(e).__name__}
-# 2.7: HTTPS can only be switched from a terminal, never through the settings socket.
+# 9.7: HTTPS can only be switched from a terminal, never through the settings socket.
 before = read("web.tls")
 r = apply({"target": "config-set", "table": "web", "key": "tls", "value": "off"})
-check("2.7", not r.get("ok") and read("web.tls") == before,
+check("9.7", not r.get("ok") and read("web.tls") == before,
       "web.tls is refused through the settings channel (CLI only)", "error=%s" % r.get("error"))
 # Plugin declarations, read statically (nothing imported or run).
 plugs = ctl.static_plugins()
@@ -427,47 +423,63 @@ def decl(name):
     found = plugs.get(name)
     return (found[0] or {}) if found else {}
 def caps(name): return set(decl(name).get("capabilities") or ())
+def opts(name): return decl(name).get("options") or {}
 def state(name): return "enabled" if read("plugins.%s.enabled" % name) is True else "disabled"
-opts = decl("eink").get("options") or {}
-check("3.1", (opts.get("show_ip") or {}).get("default") is True
-      and (opts.get("show_fingerprint_minutes") or {}).get("default") == 10,
-      "eink declares show_ip (on) and show_fingerprint_minutes (10)", "")
-check("4.1", caps("downloads") == {"capture-read", "web"},
-      "downloads: capture-read + web, no network", state("downloads"))
-check("5.1", caps("map") == {"capture-read", "location", "web"},
-      "map: capture-read + location + web, no network", state("map"))
+# 2.4: library and helper files are never plugins, and no plugin is called lib.
+check("2.4", not any(n.startswith("_") for n in plugs) and "lib" not in plugs,
+      "no _lib_/_<plugin>_ file or plugin named lib is listed as a plugin",
+      "%d plugins listed" % len(plugs))
+# 3.1: choices where a plugin declares a fixed set; none on eink (stored values stay valid).
+c213 = (opts("eink-ws213").get("variant") or {}).get("choices")
+c27v = (opts("eink-ws27").get("variant") or {}).get("choices")
+c27r = (opts("eink-ws27").get("rotation") or {}).get("choices")
+check("3.1", c213 == ["v4", "v3", "v2"] and c27v == ["auto", "v2", "v1"]
+      and c27r == [0, 90, 180, 270] and "choices" not in (opts("eink").get("variant") or {}),
+      "eink-ws213 and eink-ws27 declare their choices; eink none",
+      "ws213 %s, ws27 %s" % (state("eink-ws213"), state("eink-ws27")))
+# 3.2: a value outside the choices is refused through the settings channel and
+# the (throwaway) config is left as it was.
+table_before = read("plugins.eink-ws213")
+r = apply({"plugin": "eink-ws213", "set": {"variant": "V4"}})
+check("3.2", not r.get("ok") and read("plugins.eink-ws213") == table_before
+      and "one of" in str(r.get("error", "")),
+      "a variant outside the choices is refused through the settings channel",
+      "error=%s" % str(r.get("error", ""))[:80])
+# 4.1: one plugin per service, each with only its own secret options.
+def secrets(name):
+    return {k for k, v in opts(name).items() if (v or {}).get("secret")}
+check("4.1", "network" in caps("ntfy") and "network" in caps("telegram")
+      and secrets("ntfy") == {"topic", "token"} and secrets("telegram") == {"bot_token", "chat_id"},
+      "ntfy and telegram still declare network and only their own secrets",
+      "ntfy %s, telegram %s" % (state("ntfy"), state("telegram")))
+# 6.1: the HAT key options, on eink-ws27 and the deprecated eink alike.
+def keyopts(name):
+    o = opts(name)
+    return ((o.get("buttons") or {}).get("default") is True
+            and (o.get("pins") or {}).get("default") == "5,6,13,19"
+            and (o.get("hold_seconds") or {}).get("default") == 3
+            and (o.get("allow_capture") or {}).get("default") is True
+            and (o.get("allow_power") or {}).get("default") is True
+            and "network" not in caps(name))
+check("6.1", keyopts("eink-ws27") and keyopts("eink"),
+      "eink-ws27 and eink declare the HAT key options, local only",
+      "buttons %s" % ("off" if read("plugins.eink-ws27.buttons") is False
+                      or read("plugins.eink.buttons") is False else "on"))
+# 7.1: every shipped plugin is there and readable.
 expected = {"memtemp", "session-stats", "gps", "wpa-sec", "wigle", "backup", "ups-hat", "eink",
-            "updates", "remote-train", "downloads", "map", "ntfy", "telegram"}
+            "eink-ws213", "eink-ws27", "updates", "remote-train", "downloads", "map", "ntfy",
+            "telegram"}
 invalid = sorted(n for n, v in plugs.items() if v[0] is None)
 missing = sorted(expected - set(plugs))
-check("8.1", not invalid and not missing, "all fourteen shipped plugins present and readable",
+check("7.1", not invalid and not missing, "all sixteen shipped plugins present and readable",
       "missing=%s invalid=%s" % (missing, invalid))
-# 18.1: the HAT keys are eink's now: its key options, no hat-buttons plugin.
-eopts = decl("eink").get("options") or {}
-check("18.1", (eopts.get("buttons") or {}).get("default") is True
-      and (eopts.get("pins") or {}).get("default") == "5,6,13,19"
-      and (eopts.get("allow_capture") or {}).get("default") is True
-      and "network" not in caps("eink") and "hat-buttons" not in plugs,
-      "eink declares the HAT key options; no hat-buttons plugin",
-      "eink %s, buttons %s" % (state("eink"),
-                               "off" if read("plugins.eink.buttons") is False else "on"))
-if read("plugins.hat-buttons") is not None:
-    print("note: config.toml still has an unused [plugins.hat-buttons] table")
-# 12.1: one plugin per service, each with only its own secret options.
-def secrets(name):
-    return {k for k, v in (decl(name).get("options") or {}).items() if (v or {}).get("secret")}
-check("12.1", "network" in caps("ntfy") and "network" in caps("telegram")
-      and secrets("ntfy") == {"topic", "token"} and secrets("telegram") == {"bot_token", "chat_id"}
-      and "notify" not in plugs,
-      "ntfy and telegram declare network and only their own secrets; no notify",
-      "ntfy %s, telegram %s" % (state("ntfy"), state("telegram")))
-if read("plugins.notify") is not None:
-    print("note: config.toml still has an unused [plugins.notify] table")
-# 13.1: the map's background is OpenStreetMap by default, over https.
-tile = (decl("map").get("options") or {}).get("tile_url") or {}
-check("13.1", tile.get("default") == "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-      "map declares tile_url, OpenStreetMap by default",
-      "tile_url %s" % ("set" if read("plugins.map.tile_url") is not None else "default"))
+# 7.3: eink says it is deprecated and slated for removal; eink-ws27 doesn't.
+d_eink = str(decl("eink").get("description") or "")
+d_27 = str(decl("eink-ws27").get("description") or "")
+check("7.3", d_eink.startswith("Deprecated: replaced by eink-ws27") and "reflash" in d_eink
+      and not d_27.startswith("Deprecated"),
+      "eink's description marks it deprecated; eink-ws27's doesn't",
+      "eink %s, eink-ws27 %s" % (state("eink"), state("eink-ws27")))
 PY
 [ "$(sha256sum "$CONFIG" | awk '{print $1}')" = "$cfg_sum_before" ] \
   && check 0.1 PASS "real config.toml untouched by the tests" "checksum identical" \
@@ -488,17 +500,28 @@ mode = str(web.get("auth", "system")).lower()
 port = int(web.get("port", 8080))
 def chk(cid, result, what, detail=""):
     print("CHECK %-5s %-6s %s :: %s" % (cid, result, what, detail))
-# 2.5: every response carries nosniff, the sign-in refusal included (no password needed).
+# 9.5: every response carries nosniff, the sign-in refusal included (no password needed).
 try:
     hdrs = urllib.request.urlopen("http://127.0.0.1:%d/status.json" % port, timeout=15).headers
 except urllib.error.HTTPError as exc:
     hdrs = exc.headers
 except Exception as exc:
     hdrs = None
-    chk("2.5", "INFO", "responses carry X-Content-Type-Options: nosniff", "no answer: %s" % type(exc).__name__)
+    chk("9.5", "INFO", "responses carry X-Content-Type-Options: nosniff", "no answer: %s" % type(exc).__name__)
 if hdrs is not None:
-    chk("2.5", "PASS" if hdrs.get("X-Content-Type-Options") == "nosniff" else "FAIL",
+    chk("9.5", "PASS" if hdrs.get("X-Content-Type-Options") == "nosniff" else "FAIL",
         "responses carry X-Content-Type-Options: nosniff", "")
+# The checks below need the dashboard's answer; without it each says why.
+DASH = [("5.1", "each enabled e-ink plugin is loaded, with its Motion card"),
+        ("7.4", "an enabled eink shows its deprecation on the Plugins page"),
+        ("9.10", "the running daemon offers the row buttons"),
+        ("9.11", "the map page: background, recovered colours, drag and zoom"),
+        ("9.12", "Captured networks has its controls at the top")]
+def skip_all(why, basic=True):
+    if basic:
+        chk("9.4", "SKIP", "loopback /status.json with Basic credentials", why)
+    for cid, what in DASH:
+        chk(cid, "SKIP", what, why)
 req = urllib.request.Request("http://127.0.0.1:%d/status.json" % port)
 if mode == "token":
     req.add_header("Authorization", "Bearer %s" % web.get("token", ""))
@@ -512,12 +535,7 @@ elif mode in ("basic", "system"):
             capture_output=True, text=True).stdout.strip())
     if not pw:
         print("(skipped: no password given)")
-        chk("2.4", "SKIP", "loopback /status.json with Basic credentials", "no password given")
-        chk("10.2", "SKIP", "the running daemon offers the row buttons", "no password given")
-        chk("13.2", "SKIP", "the map page draws the attributed background", "no password given")
-        chk("14.1", "SKIP", "Captured networks has its controls at the top", "no password given")
-        chk("15.1", "SKIP", "the map explains its recovered colours", "no password given")
-        chk("19.1", "SKIP", "the map page carries the drag and zoom script", "no password given")
+        skip_all("no password given")
         sys.exit(0)
     req.add_header("Authorization", "Basic " + base64.b64encode(
         ("%s:%s" % (user, pw)).encode()).decode())
@@ -525,16 +543,12 @@ try:
     s = json.load(urllib.request.urlopen(req, timeout=15))
 except Exception as exc:
     print("(not available: %s)" % type(exc).__name__)
-    chk("2.4", "FAIL" if mode in ("basic", "system") else "INFO",
+    chk("9.4", "FAIL" if mode in ("basic", "system") else "INFO",
         "loopback /status.json with Basic credentials", type(exc).__name__)
-    chk("10.2", "SKIP", "the running daemon offers the row buttons", "no /status.json")
-    chk("13.2", "SKIP", "the map page draws the attributed background", "no /status.json")
-    chk("14.1", "SKIP", "Captured networks has its controls at the top", "no /status.json")
-    chk("15.1", "SKIP", "the map explains its recovered colours", "no /status.json")
-    chk("19.1", "SKIP", "the map page carries the drag and zoom script", "no /status.json")
+    skip_all("no /status.json", basic=False)
     sys.exit(0)
 if mode in ("basic", "system"):
-    chk("2.4", "PASS", "loopback /status.json with Basic credentials", "plain HTTP on 127.0.0.1")
+    chk("9.4", "PASS", "loopback /status.json with Basic credentials", "plain HTTP on 127.0.0.1")
 print("version:", s.get("version"))
 cap = s.get("capture", {}) or {}
 print("capture:", {k: cap.get(k) for k in ("state", "enabled", "hashline_files", "located_aps")})
@@ -547,19 +561,43 @@ for p in s.get("plugins", []):
     keep = {k: p.get(k) for k in ("state", "reason", "last_error", "warnings", "overruns",
                                    "capability_violations") if p.get(k) not in (None, "", [], 0)}
     print("plugin %-13s %s" % (p.get("name"), keep))
-# 10.2: an enabled, loaded downloads/map/ntfy/telegram offers its main-page button.
+plugins = {p.get("name"): p for p in s.get("plugins", []) if isinstance(p, dict)}
+w = s.get("widgets", {}) or {}
+def widget(name):
+    els = w.get(name) or []
+    if isinstance(els, dict):
+        els = list(els.values())
+    return {e.get("name"): e.get("value") for e in els if isinstance(e, dict)}
+# 5.1: each enabled e-ink plugin loaded and showing its Motion card.
+eplugs = [n for n in ("eink-ws27", "eink", "eink-ws213")
+          if (plugins.get(n) or {}).get("state") not in (None, "disabled")]
+if not eplugs:
+    chk("5.1", "SKIP", DASH[0][1], "no e-ink plugin enabled")
+else:
+    bad = [n for n in eplugs if plugins[n].get("state") != "loaded" or "mobility" not in widget(n)]
+    chk("5.1", "FAIL" if bad else "PASS", DASH[0][1],
+        ("not loaded or no Motion card: %s" % ", ".join(bad)) if bad else
+        ", ".join("%s motion=%s" % (n, widget(n).get("mobility")) for n in eplugs))
+# 7.4: the deprecated eink says so on its health note while it is enabled.
+e = plugins.get("eink") or {}
+if e.get("state") in (None, "disabled"):
+    chk("7.4", "SKIP", DASH[1][1], "eink not enabled")
+else:
+    note = str(e.get("note") or "")
+    chk("7.4", "PASS" if note.startswith("deprecated: replaced by eink-ws27") else "FAIL",
+        DASH[1][1], "note starts %r" % note[:40])
+# 9.10: an enabled, loaded downloads/map/ntfy/telegram offers its main-page button.
 offered = {p.get("name"): [a.get("label") for a in (p.get("actions") or []) if isinstance(a, dict)]
            for p in s.get("plugins", []) if p.get("state") == "loaded"}
 want = {"downloads": "Download", "map": "Map", "ntfy": "Status", "telegram": "Status"}
 on = sorted(n for n in want if n in offered)
 if not on:
-    chk("10.2", "SKIP", "the running daemon offers the row buttons",
-        "none of downloads, map, ntfy, telegram loaded")
+    chk("9.10", "SKIP", DASH[2][1], "none of downloads, map, ntfy, telegram loaded")
 else:
     bad = [n for n in on if want[n] not in offered[n]]
-    chk("10.2", "FAIL" if bad else "PASS", "the running daemon offers the row buttons",
+    chk("9.10", "FAIL" if bad else "PASS", DASH[2][1],
         ("missing: %s" % ", ".join(bad)) if bad else "checked: %s" % ", ".join(on))
-# 13.2 and 14.1: pages read over loopback with the same credentials. Only
+# 9.11 and 9.12: pages read over loopback with the same credentials. Only
 # markers are checked; nothing from a page (locations, network names) is printed.
 def page(path):
     r = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path))
@@ -573,71 +611,39 @@ def page(path):
     except Exception as exc:
         return None, None, type(exc).__name__
 if "map" not in offered:
-    chk("13.2", "SKIP", "the map page draws the attributed background", "map not loaded")
-    chk("15.1", "SKIP", "the map explains its recovered colours", "map not loaded")
-    chk("19.1", "SKIP", "the map page carries the drag and zoom script", "map not loaded")
+    chk("9.11", "SKIP", DASH[3][1], "map not loaded")
 else:
     code, hdrs, body = page("/plugins/map/")
     policy = (hdrs or {}).get("Referrer-Policy") if hdrs else None
     if code != 200:
-        chk("13.2", "FAIL", "the map page draws the attributed background", "HTTP %s" % code)
-    elif "OpenStreetMap</a> contributors" in body:
-        ok = 'referrerpolicy="origin"' in body and policy == "no-referrer"
-        chk("13.2", "PASS" if ok else "FAIL", "the map page draws the attributed background",
-            "tiles send the origin only; page Referrer-Policy %s" % policy)
+        chk("9.11", "FAIL", DASH[3][1], "HTTP %s" % code)
+    elif "No captured network matching" in body:
+        chk("9.11", "SKIP", DASH[3][1], "no located networks")
     else:
-        chk("13.2", "INFO", "the map page draws the attributed background",
-            "no background drawn (no located networks, or tile_url empty)")
-    # 15.1/15.2: the legend proves the new markers; the counts are tooltips
-    # only (never a name, location or passphrase).
-    if code == 200 and "Green with a" in body and "not recovered" in body:
-        chk("15.1", "PASS", "the map explains its recovered colours", "legend present")
-        import re
-        titles = re.findall(r"<title>([^<]*)</title>",
-                            body.split('class="narrow-only"', 1)[0])
-        pins = [t for t in titles if t.endswith("recovered")]
-        squares = [int(m.group(1)) for m in
-                   (re.search(r"; (\d+) recovered\)", t) for t in titles) if m]
-        print("CHECK %-5s %-6s %s :: markers %d recovered / %d not; squares %d with "
-              "a recovered network / %d without" % (
-                  "15.2", "INFO", "map markers by recovered status (this view)",
-                  sum(1 for t in pins if t.endswith("passphrase recovered")),
-                  sum(1 for t in pins if t.endswith("not recovered")),
-                  sum(1 for n in squares if n), sum(1 for n in squares if not n)))
-    elif code == 200 and "No captured network matching" in body:
-        chk("15.1", "SKIP", "the map explains its recovered colours", "no located networks")
-    else:
-        chk("15.1", "FAIL", "the map explains its recovered colours", "legend missing")
-    # 19.1: each map rendering carries its projection for the gesture script.
-    if code == 200 and "No captured network matching" in body:
-        chk("19.1", "SKIP", "the map page carries the drag and zoom script", "no located networks")
-    elif code == 200:
-        ok = (body.count('class="kmap"') == 2 and body.count('class="kmap-layer"') == 2
-              and body.count("data-scale=") == 2 and "bboxFor" in body
-              and "touch-action:none" in body)
-        chk("19.1", "PASS" if ok else "FAIL", "the map page carries the drag and zoom script",
-            "both renderings" if ok else "markers missing")
-    else:
-        chk("19.1", "FAIL", "the map page carries the drag and zoom script", "HTTP %s" % code)
+        background = ("OpenStreetMap</a> contributors" not in body
+                      or ('referrerpolicy="origin"' in body and policy == "no-referrer"))
+        legend = "Green with a" in body and "not recovered" in body
+        gestures = (body.count('class="kmap"') == 2 and body.count('class="kmap-layer"') == 2
+                    and body.count("data-scale=") == 2 and "bboxFor" in body
+                    and "touch-action:none" in body)
+        ok = background and legend and gestures
+        chk("9.11", "PASS" if ok else "FAIL", DASH[3][1],
+            "background %s, legend %s, gestures %s" % (background, legend, gestures))
 code, hdrs, body = page("/networks")
 if code != 200:
-    chk("14.1", "FAIL", "Captured networks has its controls at the top", "HTTP %s" % code)
+    chk("9.12", "FAIL", DASH[4][1], "HTTP %s" % code)
 else:
     top = body.split("<h1>", 1)[0]
     # With the web login off the import control is hidden on purpose.
     ok = ('class="nethead"' in top and 'class="countbar"' in body
           and ("Import results" in top or mode == "none"))
-    chk("14.1", "PASS" if ok else "FAIL", "Captured networks has its controls at the top",
+    chk("9.12", "PASS" if ok else "FAIL", DASH[4][1],
         ("Import results above the heading" if mode != "none" else "web login off: no import")
         if ok else "markers missing")
-w = s.get("widgets", {}) or {}
 for name in ("wpa-sec", "wigle", "backup", "remote-train", "updates", "ntfy", "telegram",
-             "eink"):
+             "eink-ws27", "eink", "eink-ws213"):
     if name in w:
-        els = w[name]
-        if isinstance(els, dict):
-            els = list(els.values())
-        vals = ["%s=%s" % (e.get("label"), e.get("value")) for e in els if isinstance(e, dict)]
+        vals = ["%s=%s" % (k, v) for k, v in widget(name).items()]
         print("widget %-13s %s" % (name, ", ".join(vals)))
 PY
 } >>"$raw" 2>&1
@@ -648,49 +654,30 @@ cat >>"$raw" <<'EOF'
 ===== by hand (the script can't see these) =====
 1.6  with the updates plugin's beta OFF this beta is NOT offered; with beta ON it
      is offered and applies in place
-2.x  kestrel web status shows https:// and "HTTPS: on"; first visit on iPhone and
-     Android (warning, fingerprint matches, proceed); an old :8080 bookmark lands
-     on the same page over HTTPS; sign in / wrong password / back to the page;
-     still signed in after a settings save; Sign out; the wait after wrong
-     passwords; logout-all; tls off then on keeps the fingerprint; e-ink shows
-     "HTTPS key" for ten minutes after boot
-3.x  the e-ink address row matches kestrel web status; one link up shows one
-     address; show_ip = false hides the row
-4.x  enabling downloads asks for no acknowledgment; each download from a phone
-     over HTTPS; hashcat accepts the combined file; "new since last"; no
-     cracked/ or archive/ in a zip; refused with the web login off
-5.x  map markers, zoom and Show all, row links, filters, phone and dark mode,
-     hidden with show_locations off, works with the device offline
-7.x  each key on the "Last key press" card (confirms the pins); info screen;
-     confirm prompt (also in the first ten minutes after boot) and cancel;
-     shutdown; reboot; KEY2 stops capture; Pi 5 and Zero 2 W, V1 and V2 HATs
-9.x  Brave or Chrome on a Mac no longer calls the certificate "not standards
-     compliant"; iPhone Safari lets you proceed; a browser that trusted the
-     beta 1 certificate asks once more, and the new fingerprint matches
-10.x Download, Map, Status and Send test show on the Plugins page for the
-     enabled plugins, and each opens its page
-11.x this report reads "kestrel web fingerprint", not "<hostname> web ..."
-12.x enabling ntfy or telegram asks for the acknowledgment; ntfy Status shows a
-     topic and Send test arrives; a digest (counts only); on battery; capture
-     stopped vs switched off; offline queue; telegram Send test reaches your chat
-13.x the map shows streets under the pins and they line up; the attribution;
-     a square at one spot lists its networks; Reset view; back links; phone
-     and dark mode; tile_url empty shows the grid
-14.x Import results at the top opens the upload form in place; the arrows
-     beside the count turn the page; the phone layout
-15.x a recovered network's pin is green with a lock, others gray; a square is
-     green with a lock badge if any network in it is recovered; the one-spot
-     list leads with a lock for recovered networks and 📍 or ≈○, no words;
-     the passphrase never shows on the map
-16.x after a wrong dashboard password, no failed kestrel-web-auth@ unit
-17.x at first boot the e-ink link icons match the addresses below them
-18.x the HAT keys work with only eink on: KEY1 info screen; a long KEY2 stops
-     capture, and when it is off asks "Press KEY2 again to start capture",
-     which starts it; without the acknowledgment it points to the dashboard;
-     "Starting/Stopping capture..." clears once it has; KEY3/KEY4 power;
-     the "Last key press" card on the eink row; buttons = false turns them off
-19.x on a phone, drag moves the map and pinch zooms, then it redraws for the
-     new area; a tap on a pin still opens it; mouse drag and wheel on a desktop
+3.x  variant and rotation show as dropdowns on the Plugins page for eink-ws27
+     and eink-ws213 (eink keeps a text field); kestrel plugins enable eink-ws27
+     offers them as a menu (whiptail), and a value from it is saved
+4.x  Send test from each enabled alert plugin arrives; alerts queued before the
+     update are sent; the ntfy topic is the one you subscribed to; a handshake
+     digest (counts only), on battery, capture stopped
+5.x  the e-ink face looks as before on the HAT and in View (eink-ws27, or eink);
+     with GPS, walking shows the person and driving the car within about half a
+     minute, and the Motion card agrees; eink-ws213 enabled with no 2.13" HAT:
+     View shows the 2.13" layout and the card says not detected
+6.x  each key's prompt on the panel and the "Last key press" card; a long
+     KEY3/KEY4 then a second press reboots / shuts down; waiting 5 s cancels;
+     NEW: pressing another key cancels a pending "Press KEY3 again"; KEY1 opens
+     and closes the info screen; a long KEY2 stops capture, starts it after a
+     second press, and without the acknowledgment points to the dashboard;
+     "Starting/Stopping capture..." clears once it has
+7.x  with eink enabled before the update, the face still works and the Plugins
+     page shows the deprecation; the switch in eink-setup.md (enable eink-ws27
+     with the same settings, disable eink) works; eink-ws27 shows the same face
+     and keys on the same HAT
+8.x  from a computer: pull-eink-diagnostics.sh --plugin eink-ws27 (and
+     --plugin eink-ws213) makes a report that names that plugin and its helpers
+9.x  first visit over HTTPS still shows the warning and the fingerprint matches;
+     sign in / sign out
 EOF
 
 # ---------------------------------------------------------------- redact and save
