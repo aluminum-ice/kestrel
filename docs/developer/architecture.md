@@ -103,8 +103,9 @@ responsibility:
 - **`loader.py`** — discovers plugins from the shipped directory
   (`/usr/local/lib/kestrel/plugins/`), with operator overrides from
   `/etc/kestrel/plugins/` taking precedence.
-- **`plugins.py`** + **`__init__.py`** — the plugin registry and the
-  legacy-compatible `Plugin` base class / `on_*` hook surface.
+- **`plugins.py`** + **`__init__.py`** — the plugin registry, the
+  legacy-compatible `Plugin` base class / `on_*` hook surface, and
+  `load_helper`, which loads a plugin's own helper files.
 - **`dispatch.py`** — runs hooks **off the main loop** on a small worker pool
   (`hook_workers`), with a per-hook time budget (`max_hook_seconds`) after which a
   slow hook is logged as an overrun. A hook that overruns but then finishes is
@@ -128,6 +129,18 @@ responsibility:
   below).
 - **`web.py`** / **`userguide.py`** — the web subsystem and the on-device guide
   content.
+
+Besides these, the package holds the learning agent (`agent/`, its own process),
+the services the daemon offers (`geo.py`, `recovered.py`, `webtls.py`) and
+`httpsafe.py`, the request policy every credential-sending plugin follows.
+
+**Core stays lean.** `kestrel_pi` holds only what the daemon, the agent and the
+shipped scripts run, plus those general services; it never holds code that
+exists for particular plugins, and it never imports a plugin. A feature lives in
+its plugin, even when two plugins then carry a copy each (`ntfy` and `telegram`
+each hold their own alert code; `eink` holds its HAT's keys, with Waveshare's
+driver as its own helper files). `tests/test_core_lean.py` fails on a module only
+plugins use. See [Keep plugins standalone](plugin-development.md#keep-plugins-standalone).
 
 ### Epoch loop
 
@@ -159,6 +172,10 @@ design overview.
   hook contract. Bump it only on a breaking hook-signature change.
 - **Dispatch is non-blocking** (see `dispatch.py` above), so a plugin doing I/O
   does not block the loop.
+- **Standalone**: a plugin is one file plus, if it needs them, its own
+  `_<plugin>_*.py` helper files (loaded with `load_helper`; the loader skips
+  them). Plugins never share code through core, and never through each other's
+  helpers.
 
 ### How plugins reach the UI
 

@@ -13,8 +13,11 @@ capture-and-learning device. It bundles three cooperating pieces:
   `kestrel-agent-train`): an optional on-device policy that tunes the capture
   scan posture, with offline training kept out of the always-on daemon.
 
-It also carries the shared UI state model and a vendored e-ink panel driver
-that plugins use without pulling hardware imports into the daemon.
+It also carries the shared UI state model and a few general services any
+plugin may use (the `Plugin` base class, `load_helper` for a plugin's own helper
+files, `httpsafe` for sending credentials). It holds nothing that serves one
+particular plugin: features live in their plugins, which stay standalone (see
+`docs/developer/plugin-development.md`).
 
 The package is installed into the `pi` user's virtualenv (`/home/pi/.venv`) by
 the Kestrel image build. The reference plugins ship separately under

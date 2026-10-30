@@ -13,6 +13,12 @@ to test. Changes that help target other people's networks, hide the device,
 evade detection, or get around the authorized-use acknowledgment won't be
 accepted.
 
+Plugins are standalone and the core stays lean: a feature lives in its plugin
+(its own file and its own `_<plugin>_*.py` helper files), even if that means
+copying code from another plugin. A patch that moves plugin code into the
+`kestrel_pi` package won't be accepted; see
+[Keep plugins standalone](docs/developer/plugin-development.md#keep-plugins-standalone).
+
 The repository is public, so **nothing real goes in a patch**: no passwords,
 keys or tokens, no real network names, MAC addresses, locations or captures,
 and no personal details. Use placeholders such as `My Network`,
