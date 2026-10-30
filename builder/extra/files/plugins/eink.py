@@ -383,7 +383,7 @@ class EinkFace(Plugin):
             attempts = ((self._VARIANTS[variant], self._FORCED_TIMEOUT),)
         else:
             attempts = tuple((m, self._PROBE_TIMEOUT) for m in self._AUTO_ORDER)
-        reason = "no e-Paper HAT detected"
+        failures = []
         for module, timeout in attempts:
             epd, err = self._try_panel(module, timeout)
             if epd is not None:
@@ -391,10 +391,13 @@ class EinkFace(Plugin):
                 self._absent = False
                 self.log.info("%s: %s panel ready", NAME, module)
                 return self._epd
-            reason = err
+            failures.append(err)
         self._absent = True
         self._note("no e-Paper HAT detected")
-        self.log.info("%s: no panel (%s); rendering to the web mirror only", NAME, reason)
+        # Every attempt, not just the last: with variant=auto the V2 probe's
+        # reason would otherwise be lost behind the V1 one.
+        self.log.info("%s: no panel (%s); rendering to the web mirror only",
+                      NAME, "; ".join(failures) or "no driver tried")
         return None
 
     def _try_panel(self, module, timeout):
@@ -450,6 +453,11 @@ class EinkFace(Plugin):
                 epdconfig.module_exit()   # close SPI; keep GPIO for next attempt
             except Exception:             # noqa: BLE001
                 pass
+            if isinstance(exc, TimeoutError) and not saw_busy_driven:
+                # The driver waited for a busy signal that never came: nothing
+                # drives the BUSY line, so no panel is wired - not the wrong
+                # revision (with a panel of the other revision BUSY reads 1).
+                return None, "%s: BUSY line never driven (no panel wired)" % module
             return None, "%s did not initialise (%s)" % (module, exc)
         finally:
             epdconfig.digital_read = orig_read

@@ -49,9 +49,12 @@ shareable `.tar.gz`; `gps-check.sh` is an interactive live check instead.
   username, password or token, and never dumps `config.toml` wholesale.
 - `pull-eink-diagnostics.sh [--plugin NAME]` — triage a blank / not-updating
   Waveshare e-Paper panel for an e-ink plugin (`eink` by default, the
-  deprecated name of `eink-ws27`; or `eink-ws27`, `eink-ws213`): its state, its `[plugins.NAME]` table only, SPI
-  nodes/module/config, venv imports including its driver helper files, and the
-  daemon's e-ink journal lines. Pulls no other config table and no credential.
+  deprecated name of `eink-ws27`; or `eink-ws27`, `eink-ws213`): its state, its
+  `[plugins.NAME]` table only, SPI nodes/module/config, venv imports including
+  its driver helper files (or a note that the running daemon holds the pins),
+  and only the e-ink plugins' journal lines. Pulls no other config table and no
+  credential; redacts addresses, coordinates and a custom hostname on the
+  device; saves one text file, `NAME-diagnostics-<time>.txt`, not an archive.
 - `gps-check.sh` — interactive GPS check (not a bundle): serial node, `pi` in
   `dialout`, the daemon's live fix, and an optional `--sample` that briefly
   reads raw NMEA off the receiver to classify FIX / STREAMING / SILENT with the

@@ -88,7 +88,9 @@ FORBIDDEN_SUFFIXES = (
 FORBIDDEN_NAMES = ("capture-seen.json", "capture-status.json",
                    "id_rsa", "id_ecdsa", "id_ed25519", "id_dsa")
 FORBIDDEN_NAME_RES = (re.compile(r"^model-.*\.zip$"),
-                      re.compile(r"^kestrel-beta-check-\d"))   # beta check reports
+                      re.compile(r"^kestrel-beta-check-\d"),   # beta check reports
+                      # a scripts/pull-*.sh report or bundle saved as one file
+                      re.compile(r"^[a-z0-9-]+-diagnostics-\d{8}T\d{6}Z(\.txt|\.tar\.gz)?$"))
 # Bundles the scripts/pull-*.sh tools write into the current directory.
 BUNDLE_DIR_RE = re.compile(r"(?:-diagnostics-|^capture-health-|^kestrel-beta-check-)\d")
 

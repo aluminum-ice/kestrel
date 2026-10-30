@@ -203,6 +203,8 @@ id_ed25519
 id_dsa
 # Bundles the scripts/pull-*.sh tools write into the current directory
 *-diagnostics-*/
+*-diagnostics-*.tar.gz
+*-diagnostics-*.txt
 capture-health-*/
 # Beta check reports (tools/beta-check), and the old .tar.gz form
 kestrel-beta-check-*

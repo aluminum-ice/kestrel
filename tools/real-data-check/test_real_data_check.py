@@ -87,7 +87,9 @@ def test_forbidden_names():
                  "device-diagnostics-20261027T101500Z/journal.txt",
                  "capture-health-20261027T101500Z/status.txt", "store/capture-seen.json",
                  "kestrel-beta-check-20261027T101500Z.txt",
-                 "kestrel-beta-check-20261027T101500Z/report.txt"):
+                 "kestrel-beta-check-20261027T101500Z/report.txt",
+                 "eink-ws27-diagnostics-20261027T101500Z.txt",
+                 "eink-diagnostics-20261027T101500Z.tar.gz"):
         assert rdc.check_name(path), path
     for path in ("builder/extra/files/scripts/pull-device-diagnostics.sh",
                  "tools/beta-check/pull-beta-check.sh", "tools/beta-check/beta-check-device.sh",
