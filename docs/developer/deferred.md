@@ -196,19 +196,23 @@ How to use this file:
 
 ### Rename `eink` to name the HAT it drives
 
-- **What:** rename the plugin `eink` to `eink-waveshare-2in7`, so plugins for
-  other e-ink HATs (each standalone, starting from a copy of it) can sit beside
-  it under clear names. That renames `plugins/eink.py`, its helper files
-  (`_eink_*.py` become `_eink-waveshare-2in7_*.py`), the `[plugins.eink]` table
+- **What:** rename the plugin `eink` to `eink-ws27`, matching `eink-ws213` (the
+  2.13" HAT's plugin), so e-ink plugins are named `eink-ws<size>` and fit a
+  phone's Plugins row. That renames `plugins/eink.py`, its helper files
+  (`_eink_*.py` become `_eink-ws27_*.py`), the `[plugins.eink]` table
   with its `faces`/`voices` sub-tables, and the plugin's mentions in the docs,
   `GUIDE_MD`, the tests, `tools/beta-check/`, `tools/ghost-guide/` and
-  `scripts/pull-eink-diagnostics.sh`.
+  `scripts/pull-eink-diagnostics.sh` (its `--plugin` default).
+  At the same time, give `variant` (`auto`/`v2`/`v1`) and `rotation`
+  (0/90/180/270) `choices`, like `eink-ws213`'s.
 - **Why deferred:** the plugin name is its config table, so the rename changes
   the shipped `config.toml`, which makes the release reflash-class: the update
   engine leaves operator config alone, so an updated device would keep the old
-  table and the face would stop.
+  table and the face would stop. `choices` waits for the same release: a
+  stored value outside them (such as `variant = "V2"`, accepted today) would
+  disable the plugin on a device updated in place.
 - **What to do:** make the rename in a release that is reflash-class for
-  another reason, say in its notes to enable `eink-waveshare-2in7` again after
+  another reason, say in its notes to enable `eink-ws27` again after
   reflashing, and keep the Ghost guide fixture working with both names until the
   rename is in a stable release (it renders the latest stable release's code).
 - **Pick up when:** a release has to be reflash-class anyway.

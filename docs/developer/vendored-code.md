@@ -42,3 +42,22 @@ importing the plugin (as the test suite does) never touches the hardware.
 `_eink_` names, update the version and date above, and run the e-ink tests
 (`test_eink.py`). A driver for another panel goes beside the plugin that drives
 it, with that plugin's prefix.
+
+## Waveshare e-Paper driver (`eink-ws213` plugin)
+
+Waveshare's drivers for the 2.13" e-Paper HAT, copied from the same library
+with the file contents unchanged, pinned to upstream commit
+`d28b3c4cfc78eef1c6cd6e6e3013654e449d2864`
+(`RaspberryPi_JetsonNano/python/lib/waveshare_epd/`):
+
+| File (in `builder/extra/files/plugins/`) | Upstream file | Version | Purpose |
+| --- | --- | --- | --- |
+| `_eink-ws213_epd2in13_V4.py` | `epd2in13_V4.py` | V1.0 (2023-06-25) | V4 panel, the current one (250×122) |
+| `_eink-ws213_epd2in13_V3.py` | `epd2in13_V3.py` | V1.2 (2022-08-09) | V3 panel |
+| `_eink-ws213_epd2in13_V2.py` | `epd2in13_V2.py` | V4.0 (2019-06-20) | V2 panel (`init(FULL_UPDATE/PART_UPDATE)`) |
+| `_eink-ws213_epdconfig.py` | `epdconfig.py` | V1.2 (2022-10-29) | Shared GPIO/SPI backend |
+
+`_eink-ws213_epdconfig.py` is the same file as `_eink_epdconfig.py`: each
+plugin carries its own copy, so neither depends on the other. Same licence
+(MIT, header kept), same import-time note, and the same way of updating, with
+`test_eink_ws213.py`.

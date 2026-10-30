@@ -62,6 +62,26 @@ with `git send-email --to=patches@3ntropy.io origin/main`. In the email, say
 what the change does and why, and how you tested it (on a device, if you
 could).
 
+## Reporting hardware test results
+
+Some plugins drive hardware that hasn't been tested on a real device yet, such
+as `eink-ws213` for the Waveshare 2.13" e-Paper HAT; their guides say so. If you
+try one, a report helps even without a patch. Email **patches@3ntropy.io** with:
+
+- the plugin and the Kestrel version (`cat /etc/kestrel/version`);
+- the hardware and its revision (for an e-Paper HAT, the sticker on the back of
+  the panel) and the options you set (such as `variant`);
+- what worked and what didn't: for an e-ink plugin, whether the face draws the
+  right way up, how the quick redraws and the full refreshes look, and whether
+  ghosting builds up over an hour.
+
+The same rules as for patches apply: **nothing real**. A photo of the panel
+shows the device's addresses, so blur them (and any network names) or turn off
+`show_ip` first. The bundle `scripts/pull-eink-diagnostics.sh` makes is meant to
+be shared (it pulls no credential, no capture data and no other config), but
+read it before you send it. Your name and email stay out of the repository;
+results are recorded under the project's identity.
+
 ## What happens next
 
 A maintainer reviews the patch, applies it on a branch and opens a pull request
