@@ -32,6 +32,7 @@ the scripted baseline fallback), arbitrated by an explicit priority ladder in
 :func:`decide_mood`.
 """
 
+import calendar
 import fcntl
 import functools
 import io
@@ -335,6 +336,22 @@ def _classify_speed(speed):
     return None
 
 
+def _fix_seconds(fix):
+    """When a GPS fix was taken, in epoch seconds: the provider's ``ts`` if it
+    gives one, else its ``fix_time`` (UTC, whole seconds, as the ``gps`` plugin
+    reports it), else None."""
+    ts = _as_float(fix.get("ts"))
+    if ts is not None:
+        return ts
+    stamp = fix.get("fix_time")
+    if isinstance(stamp, str):
+        try:
+            return float(calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")))
+        except ValueError:
+            pass
+    return None
+
+
 class EinkFace(Plugin):
     __author__ = "kestrel"
     __version__ = "0.2.0"
@@ -532,7 +549,7 @@ class EinkFace(Plugin):
                        and _as_float(battery.get("percent")) is not None
                        and _as_float(battery.get("percent")) <= low_pct)
 
-        mobility = self._mobility_state(state.position if state is not None else None)
+        mobility = self._mobility_state(self._live_position(state))
         idle = self._idle_epochs(state)
 
         inp = MoodInputs(
@@ -589,23 +606,31 @@ class EinkFace(Plugin):
     def _mobility_state(self, fix):
         """Parked / walking / driving / unknown, estimated from successive GPS
         fixes (a provider speed is used if present, else derived from the fix
-        delta), with a per-state sustain count so it does not flicker."""
+        delta), with a per-state sustain count so it does not flicker.
+
+        Speed is measured between *fixes*, timed by when each was taken
+        (``_fix_seconds``), not by when the face read it: the face redraws more
+        often than a fix may change, and reading the same fix again is not a
+        stop. A fix with no timestamp at all is timed by the clock, and only
+        when its position changed."""
         if not fix or _as_float(fix.get("lat")) is None:
             self._prev_fix = None
             self._mobility_counts = {}
             self._mobility = "unknown"
             return "unknown"
-        ts = _as_float(fix.get("ts"))
-        if ts is None:
-            ts = time.time()
         here = (fix["lat"], fix["lon"])
         prev = self._prev_fix
+        ts = _fix_seconds(fix)
+        if ts is None:
+            if prev is not None and here == (prev[1], prev[2]):
+                return self._mobility               # the same fix, read again
+            ts = time.time()
+        if prev is not None and ts <= prev[0]:
+            return self._mobility                   # the same fix, read again
         self._prev_fix = (ts, here[0], here[1])
         if prev is None:
             return self._mobility
         dt = ts - prev[0]
-        if dt <= 0:
-            return self._mobility
         speed = _as_float(fix.get("speed"))
         if speed is None or speed < 0:
             speed = _haversine_m((prev[1], prev[2]), here) / dt
@@ -620,6 +645,16 @@ class EinkFace(Plugin):
         if counts[candidate] >= _MOBILITY_SUSTAIN:
             self._mobility = candidate
         return self._mobility
+
+    def _live_position(self, state):
+        """The freshest GPS fix for the motion estimate: the position service
+        now, else the snapshot in ``state``. The snapshot is refreshed once per
+        daemon epoch (60 s by default), the face every ``refresh_seconds``, so
+        reading the service makes motion follow the GPS, not the epoch."""
+        live = self.context.services.get("position")
+        if live:
+            return live
+        return state.position if state is not None else None
 
     def _face_glyph(self, mood):
         overrides = self.context.options.get("faces")
