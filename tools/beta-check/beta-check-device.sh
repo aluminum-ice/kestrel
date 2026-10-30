@@ -91,14 +91,15 @@ echo "uptime:     $(uptime -p 2>/dev/null)"
 echo "python3:    $(/usr/bin/python3 -V 2>&1)"
 echo "web auth:   $web_auth"
 
-# ================================================================ 1.0.9 checks (#50-#55, #58-#65)
+# ================================================================ 1.0.9 checks (#50-#55, #58-#68)
 # Beta 1: HTTPS dashboard and sign-in (#51), the e-ink address row (#50), and
 # four new plugins: downloads (#52), map (#53), notify (#54), hat-buttons (#55).
 # Beta 2: the certificate within Apple's limit (#58), the plugin row buttons
 # (#59) and the report's redaction (#60), as sections 9-11. Beta 3: notify split
 # into ntfy and telegram (#62), the map's OpenStreetMap background (#64) and the
 # Captured networks controls (#65), as sections 12-14; notify's 6.x checks are
-# replaced by section 12. Earlier betas' checks stay, so one report serves every
+# replaced by section 12. Beta 4: map markers coloured by recovered status (#68),
+# as section 15. Earlier betas' checks stay, so one report serves every
 # 1.0.9 checklist issue. The CHECK ids match them.
 upd=/var/lib/kestrel/update-run/status.json
 
@@ -345,6 +346,12 @@ for id in 14.2 14.3; do
   check "$id" MANUAL "see the checklist" "by hand"
 done
 
+sec "15. map markers by recovered status (#68)"
+# 15.1 and 15.2 (the map page) are in the dashboard section.
+for id in 15.3 15.4 15.5 15.6; do
+  check "$id" MANUAL "see the checklist" "by hand"
+done
+
 # ---------------------------------------------------------------- config tests (throwaway copy)
 sec "config tests (throwaway copy of config.toml; commands blocked)"
 cfg_sum_before=$(sha256sum "$CONFIG" | awk '{print $1}')
@@ -463,6 +470,7 @@ elif mode in ("basic", "system"):
         chk("10.2", "SKIP", "the running daemon offers the row buttons", "no password given")
         chk("13.2", "SKIP", "the map page draws the attributed background", "no password given")
         chk("14.1", "SKIP", "Captured networks has its controls at the top", "no password given")
+        chk("15.1", "SKIP", "the map explains its recovered colours", "no password given")
         sys.exit(0)
     req.add_header("Authorization", "Basic " + base64.b64encode(
         ("%s:%s" % (user, pw)).encode()).decode())
@@ -475,6 +483,7 @@ except Exception as exc:
     chk("10.2", "SKIP", "the running daemon offers the row buttons", "no /status.json")
     chk("13.2", "SKIP", "the map page draws the attributed background", "no /status.json")
     chk("14.1", "SKIP", "Captured networks has its controls at the top", "no /status.json")
+    chk("15.1", "SKIP", "the map explains its recovered colours", "no /status.json")
     sys.exit(0)
 if mode in ("basic", "system"):
     chk("2.4", "PASS", "loopback /status.json with Basic credentials", "plain HTTP on 127.0.0.1")
@@ -517,6 +526,7 @@ def page(path):
         return None, None, type(exc).__name__
 if "map" not in offered:
     chk("13.2", "SKIP", "the map page draws the attributed background", "map not loaded")
+    chk("15.1", "SKIP", "the map explains its recovered colours", "map not loaded")
 else:
     code, hdrs, body = page("/plugins/map/")
     policy = (hdrs or {}).get("Referrer-Policy") if hdrs else None
@@ -529,6 +539,26 @@ else:
     else:
         chk("13.2", "INFO", "the map page draws the attributed background",
             "no background drawn (no located networks, or tile_url empty)")
+    # 15.1/15.2: the legend proves the new markers; the counts are tooltips
+    # only (never a name, location or passphrase).
+    if code == 200 and "Green with a" in body and "not recovered" in body:
+        chk("15.1", "PASS", "the map explains its recovered colours", "legend present")
+        import re
+        titles = re.findall(r"<title>([^<]*)</title>",
+                            body.split('class="narrow-only"', 1)[0])
+        pins = [t for t in titles if t.endswith("recovered")]
+        squares = [int(m.group(1)) for m in
+                   (re.search(r"; (\d+) recovered\)", t) for t in titles) if m]
+        print("CHECK %-5s %-6s %s :: markers %d recovered / %d not; squares %d with "
+              "a recovered network / %d without" % (
+                  "15.2", "INFO", "map markers by recovered status (this view)",
+                  sum(1 for t in pins if t.endswith("passphrase recovered")),
+                  sum(1 for t in pins if t.endswith("not recovered")),
+                  sum(1 for n in squares if n), sum(1 for n in squares if not n)))
+    elif code == 200 and "No captured network matching" in body:
+        chk("15.1", "SKIP", "the map explains its recovered colours", "no located networks")
+    else:
+        chk("15.1", "FAIL", "the map explains its recovered colours", "legend missing")
 code, hdrs, body = page("/networks")
 if code != 200:
     chk("14.1", "FAIL", "Captured networks has its controls at the top", "HTTP %s" % code)
@@ -588,6 +618,10 @@ cat >>"$raw" <<'EOF'
      and dark mode; tile_url empty shows the grid
 14.x Import results at the top opens the upload form in place; the arrows
      beside the count turn the page; the phone layout
+15.x a recovered network's pin is green with a lock, others gray; a square is
+     green with a lock badge if any network in it is recovered; the one-spot
+     list leads with a lock for recovered networks and 📍 or ≈○, no words;
+     the passphrase never shows on the map
 EOF
 
 # ---------------------------------------------------------------- redact and save
