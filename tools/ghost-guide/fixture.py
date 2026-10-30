@@ -37,12 +37,29 @@ WHITELIST = ["My Network", "My Network 5G", "00:00:5E:00:53:F0"]
 UPTIME_S = 2 * 3600 + 14 * 60
 EPOCH = 268
 
-ENABLED_PLUGINS = ("eink", "gps", "memtemp", "session-stats", "ups-hat", "updates")
+ENABLED_PLUGINS = ("eink", "gps", "map", "memtemp", "session-stats", "ups-hat", "updates")
 
 POSITION = {"lat": 12.34567, "lon": -45.67890, "alt": 18.0, "fix": 3, "sats": 11,
             "cn0": 41.0, "strong": 9}
 BATTERY = {"percent": 82.0, "voltage": 3.92, "current_ma": -480.0, "power_w": 1.88,
            "status": "discharging"}
+
+# Invented map positions in one city centre, so the map shot has streets under
+# it; none is a capture. Recorded (GPS) fixes by network, as bssid suffix and
+# lat/lon (Cafe Guest's two radios share one fix, to show the one-spot list),
+# then estimated (WiGLE-style) ones, then the networks whose passphrase is
+# "recovered" (green on the map).
+RECORDED_FIXES = {
+    "Cafe Guest": [(0x31, 38.71395, -9.13940), (0x32, 38.71395, -9.13940)],
+    "Riverside Diner": [(0x81, 38.70610, -9.14420)],
+    "Harbor Hotel": [(0x51, 38.70790, -9.13610), (0x52, 38.70815, -9.13560)],
+    "Corner Bookshop": [(0x41, 38.71060, -9.14230)],
+    "Airport Free": [(0x11, 38.71650, -9.13150), (0x12, 38.71690, -9.13090)],
+}
+ESTIMATED_FIXES = [(0x61, 38.71180, -9.13790), (0x21, 38.71840, -9.13520),
+                   (0x71, 38.71520, -9.14620), (0x72, 38.71560, -9.14580)]
+RECOVERED = [(0x31, "Cafe Guest"), (0x41, "Corner Bookshop"), (0x51, "Harbor Hotel"),
+             (0x61, "Library WiFi"), (0x81, "Riverside Diner")]
 
 
 def mac(suffix):
@@ -86,6 +103,25 @@ def _write_store(store, now):
     with open(os.path.join(store, "capture-status.json"), "w", encoding="utf-8") as handle:
         json.dump({"scanning": True, "updated_at": now, "data_ts": now - 30,
                    "radios_recent": 23, "window_s": 300}, handle)
+
+    # Locations: the gps plugin's per-capture sidecars and a wigle-style cache.
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 3600))
+    for essid, fixes in RECORDED_FIXES.items():
+        with open(os.path.join(store, essid + ".hc22000.gps.json"), "w",
+                  encoding="utf-8") as handle:
+            json.dump({mac(s): {"lat": lat, "lon": lon, "alt": 12.0, "fix_time": stamp,
+                                "source": "gpsd"} for s, lat, lon in fixes}, handle)
+    os.makedirs(os.path.join(store, "geo"), exist_ok=True)
+    with open(os.path.join(store, "geo", "wigle-cache.json"), "w", encoding="utf-8") as handle:
+        json.dump({mac(s): {"bssid": mac(s), "lat": lat, "lon": lon,
+                            "source": "wigle-search", "query_time": stamp}
+                   for s, lat, lon in ESTIMATED_FIXES}, handle)
+    # Recovered passphrases, in the wpa-sec potfile layout (made up).
+    os.makedirs(os.path.join(store, "cracked"), exist_ok=True)
+    with open(os.path.join(store, "cracked", "demo.potfile"), "w", encoding="utf-8") as handle:
+        for suffix, essid in RECOVERED:
+            handle.write("%s:00005e0053f9:%s:demo-passphrase-%d\n"
+                         % (mac(suffix).replace(":", "").lower(), essid, suffix))
 
 
 def _merge(base, extra):
@@ -194,6 +230,12 @@ class Demo:
         if failed:
             raise RuntimeError("bundled plugins failed under the demo (check the tool's "
                                "requirements): %s" % "; ".join(failed))
+        # map's on_loaded only sets up where it reads [web] show_locations; point
+        # that at the demo's (absent) config so the default (shown) applies.
+        if "map" in d.loader.records:
+            demo_map = d.loader.records["map"].instance
+            demo_map.on_loaded()
+            demo_map._config_path = os.path.join(workdir, "config.toml")
         self._previous_tag = previous_tag
         self._release_url = release_url
         self._fill_widgets()
