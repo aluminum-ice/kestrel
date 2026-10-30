@@ -46,8 +46,9 @@ _RESERVED_SUFFIXES = (".example", ".invalid", ".test", ".localhost", ".local",
 # Local parts that name a service, not a person (the ssh clone user, noreply).
 _SERVICE_LOCAL_PARTS = ("git", "noreply")
 # Real addresses the project publishes on purpose: the role-based security
-# reporting alias in SECURITY.md. Never a personal address.
-ALLOWED_EMAILS = ("security@3ntropy.io",)
+# reporting alias in SECURITY.md and the patches alias in CONTRIBUTING.md.
+# Never a personal address.
+ALLOWED_EMAILS = ("security@3ntropy.io", "patches@3ntropy.io")
 
 # The documented default `pi` / `raspberry` hash in builder/config.yml.
 ALLOWED_HASHES = (
