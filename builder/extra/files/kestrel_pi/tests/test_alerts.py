@@ -1,8 +1,9 @@
-"""The ntfy and telegram plugins: digests, battery/capture/update alerts, the
-offline queue and each service's request, with no real network (requests.post
-is faked) and the state directory in tmp_path. Each plugin carries its own copy
-of the alert code (plugins are standalone), so the shared behaviour is tested
-against both. Tokens and topics here are made up at test time; names are
+"""The alerts plugin library (``_lib_alerts.py``) and the ntfy and telegram
+plugins that use it: digests, battery/capture/update alerts, the offline queue
+and each service's request, with no real network (requests.post is faked) and
+the state directory in tmp_path. The library's pure functions are tested once;
+behaviour through a plugin is tested with both, since each wires its own hooks
+and request to it. Tokens and topics here are made up at test time; names are
 placeholders."""
 
 import importlib.util
@@ -15,6 +16,7 @@ import pytest
 
 requests = pytest.importorskip("requests")
 
+from kestrel_pi import load_library  # noqa: E402
 from kestrel_pi.capture import CaptureInterface  # noqa: E402
 from kestrel_pi.context import PluginContext, ServiceRegistry  # noqa: E402
 from kestrel_pi.plugins import PluginPage, PluginRedirect  # noqa: E402
@@ -33,6 +35,9 @@ def _mod(name):
 
 NTFY = _mod("ntfy")
 TELEGRAM = _mod("telegram")
+# The library module both plugins share (load_library returns the same module
+# for every caller of the same file). Patch library globals here, not on a plugin.
+LIB = load_library(os.path.join(PLUGIN_DIR, "ntfy.py"), "alerts", api=1)
 SHARED = {"events": "handshakes,battery,update,capture", "digest_minutes": 30, "include_names": False,
           "battery_percent": 20, "max_per_hour": 6, "quiet_hours": "", "timeout": 5}
 SERVICES = {
@@ -67,11 +72,11 @@ def posts(monkeypatch):
 
 def _plugin(tmp_path, monkeypatch, service="ntfy", options=None, online=True, authed=True,
             worker=False):
-    mod, cls, defaults = SERVICES[service]
-    monkeypatch.setattr(mod, "state_dir", lambda name: str(tmp_path / "state"))
+    _, cls, defaults = SERVICES[service]
+    monkeypatch.setattr(LIB, "state_dir", lambda name: str(tmp_path / "state"))
     if not worker:
         # No background worker: these tests drive every step by hand.
-        monkeypatch.setattr(mod.Alerts, "start", lambda self: None)
+        monkeypatch.setattr(LIB.Alerts, "start", lambda self: None)
     p = cls()
     p.options = {**SHARED, **defaults, **(options or {})}
     p.context = PluginContext(
@@ -90,29 +95,28 @@ def _hs(essid, bssid="00:00:5E:00:53:01"):
 
 
 both = pytest.mark.parametrize("service", sorted(SERVICES))
-each_module = pytest.mark.parametrize("A", [NTFY, TELEGRAM], ids=["ntfy", "telegram"])
 
 
 # -- messages ---------------------------------------------------------------------
 
-@each_module
-def test_digest_is_counts_only_by_default(A):
+def test_digest_is_counts_only_by_default():
+    A = LIB
     msg = A.handshake_digest(12, {"My Network", "Cafe Guest", "Library WiFi"}, 30, False)
     assert msg["title"] == "Kestrel: 12 new handshakes"
     assert "12 new handshakes from 3 networks in the last 30 minutes." == msg["body"]
     assert "My Network" not in msg["body"]
 
 
-@each_module
-def test_digest_names_only_when_asked_and_cleaned(A):
+def test_digest_names_only_when_asked_and_cleaned():
+    A = LIB
     names = {"My Network", "Cafe\x07 Guest", ""} | {"Net %d" % i for i in range(6)}
     body = A.handshake_digest(9, names, 30, True)["body"]
     assert "Networks: " in body and "(+4 more)" in body
     assert "\x07" not in body
 
 
-@each_module
-def test_quiet_hours(A):
+def test_quiet_hours():
+    A = LIB
     assert A.in_quiet_hours("22-07", 23) and A.in_quiet_hours("22-07", 3)
     assert not A.in_quiet_hours("22-07", 12)
     assert A.in_quiet_hours("09-17", 10) and not A.in_quiet_hours("09-17", 18)
@@ -203,7 +207,7 @@ def test_online_alert_is_opt_in(tmp_path, monkeypatch, service):
 
 @both
 def test_offline_alerts_wait_and_survive_a_restart(tmp_path, monkeypatch, posts, service):
-    A = SERVICES[service][0]
+    A = LIB
     p = _plugin(tmp_path, monkeypatch, service, online=False)
     p.alerts.enqueue(A.message("test", "T", "B"))
     p.alerts.drain()
@@ -216,7 +220,7 @@ def test_offline_alerts_wait_and_survive_a_restart(tmp_path, monkeypatch, posts,
 
 @both
 def test_failures_keep_the_alert_and_back_off(tmp_path, monkeypatch, service):
-    A = SERVICES[service][0]
+    A = LIB
     monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp(500))
     a = _plugin(tmp_path, monkeypatch, service).alerts
     a.enqueue(A.message("test", "T", "B"))
@@ -226,7 +230,7 @@ def test_failures_keep_the_alert_and_back_off(tmp_path, monkeypatch, service):
 
 
 def test_rate_limit_and_quiet_hours_but_urgent_gets_through(tmp_path, monkeypatch, posts):
-    A = NTFY
+    A = LIB
     a = _plugin(tmp_path, monkeypatch, options={"max_per_hour": 2,
                                                 "quiet_hours": "0-23"}).alerts
     monkeypatch.setattr(A, "in_quiet_hours", lambda spec, hour: False)
@@ -245,7 +249,7 @@ def test_rate_limit_and_quiet_hours_but_urgent_gets_through(tmp_path, monkeypatc
 
 @both
 def test_the_worker_sends_in_the_background_and_stops(tmp_path, monkeypatch, posts, service):
-    A = SERVICES[service][0]
+    A = LIB
     import time
 
     p = _plugin(tmp_path, monkeypatch, service, worker=True)
@@ -261,7 +265,7 @@ def test_the_worker_sends_in_the_background_and_stops(tmp_path, monkeypatch, pos
 # -- ntfy -------------------------------------------------------------------------
 
 def test_ntfy_needs_https_and_sends_the_token(tmp_path, monkeypatch, posts):
-    A = NTFY
+    A = LIB
     p = _plugin(tmp_path, monkeypatch, options={"server": "http://ntfy.example.com"})
     with pytest.raises(Exception):
         p.alerts.send(A.message("test", "T", "B"))
@@ -297,7 +301,7 @@ def test_ntfy_status_page_shows_only_a_generated_topic_and_only_signed_in(tmp_pa
 # -- telegram ---------------------------------------------------------------------
 
 def test_telegram_request_shape(tmp_path, monkeypatch, posts):
-    A = TELEGRAM
+    A = LIB
     p = _plugin(tmp_path, monkeypatch, "telegram")
     p.alerts.send(A.message("test", "Kestrel test", "It works."))
     url, kw = posts[0]
@@ -307,7 +311,7 @@ def test_telegram_request_shape(tmp_path, monkeypatch, posts):
 
 
 def test_telegram_needs_both_settings(tmp_path, monkeypatch, posts):
-    A = TELEGRAM
+    A = LIB
     p = _plugin(tmp_path, monkeypatch, "telegram", options={"chat_id": ""})
     with pytest.raises(Exception) as err:
         p.alerts.send(A.message("test", "T", "B"))
@@ -315,7 +319,7 @@ def test_telegram_needs_both_settings(tmp_path, monkeypatch, posts):
 
 
 def test_telegram_errors_never_carry_the_token(tmp_path, monkeypatch):
-    A = TELEGRAM
+    A = LIB
     token = "123456:made-up-" + "x" * 20
 
     def boom(url, **kw):
@@ -360,7 +364,7 @@ def test_status_page_links_back_with_the_token(tmp_path, monkeypatch, service):
 
 @both
 def test_dashboard_card(tmp_path, monkeypatch, service):
-    A = SERVICES[service][0]
+    A = LIB
     p = _plugin(tmp_path, monkeypatch, service)
     ui = StubUI().for_plugin(service)
     p.on_ui_setup(ui)
@@ -384,9 +388,68 @@ def test_declarations_need_the_acknowledgment_and_carry_only_their_service(servi
 
 
 @pytest.mark.parametrize("service", sorted(SERVICES))
-def test_each_plugin_carries_its_own_alerts(service):
-    # Standalone: neither plugin imports alert code from the package or the other.
+def test_each_plugin_uses_the_shared_alerts_library(service):
+    # The alert code lives once, in the plugin library beside the plugins -
+    # never in core and never as a copy in a plugin.
+    mod = SERVICES[service][0]
+    assert mod.alerts is LIB
     src = open(os.path.join(PLUGIN_DIR, service + ".py"), encoding="utf-8").read()
-    assert "kestrel_pi.alerts" not in src
+    assert 'load_library(__file__, "alerts", api=1)' in src
+    assert "class Alerts" not in src and "def handshake_digest" not in src
     assert not os.path.exists(os.path.join(PLUGIN_DIR, "..", "kestrel_pi", "kestrel_pi",
                                            "alerts.py"))
+
+
+@both
+def test_state_written_before_the_library_still_loads(tmp_path, monkeypatch, service):
+    # An updated device keeps its queued alerts and what it has already
+    # announced: the files and their format are those the per-plugin copies wrote.
+    state = tmp_path / "state"
+    state.mkdir()
+    queued = {"kind": "battery", "title": "Kestrel battery low", "body": "The battery is at 9%.",
+              "urgent": True, "ts": 1700000000}
+    (state / "queue.json").write_text(json.dumps([queued]))
+    (state / "seen.json").write_text(json.dumps({"update": "1.2.3"}))
+    a = _plugin(tmp_path, monkeypatch, service).alerts
+    assert a.queue == [queued]
+    (tmp_path / "update-state.json").write_text(json.dumps(
+        {"update_available": True, "latest": "1.2.3"}))
+    a.check_update()
+    assert a.queue == [queued]                       # 1.2.3 was already announced
+
+
+def test_the_documented_example_plugin_works(tmp_path, monkeypatch, posts):
+    # docs/developer/plugin-libraries.md shows a minimal plugin on the alerts
+    # library; it must load through the real loader and send.
+    import logging
+    import re
+
+    from kestrel_pi.connectivity import ConnectivityState
+    from kestrel_pi.loader import Loader
+
+    doc = os.path.join(PLUGIN_DIR, "..", "..", "..", "..", "docs", "developer",
+                       "plugin-libraries.md")
+    text = open(doc, encoding="utf-8").read().split("## `alerts`", 1)[1]
+    code = re.search(r"### A minimal plugin\n\n```python\n(.*?)```", text, re.S).group(1)
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    (plugins / "webhook.py").write_text(code)
+    # As for an operator's plugin: no copy beside it, so it gets the shipped
+    # library - the same module as LIB, so the patches below apply.
+    from kestrel_pi import plugins as plugin_api
+    monkeypatch.setattr(plugin_api, "SHIPPED_PLUGINS_DIR", PLUGIN_DIR)
+    monkeypatch.setattr(LIB, "state_dir", lambda name: str(tmp_path / "state"))
+    monkeypatch.setattr(LIB.Alerts, "start", lambda self: None)
+    loader = Loader(config={"plugins": {"webhook": {"enabled": True,
+                                                    "url": "https://hooks.example.com/x"}}},
+                    capture=CaptureInterface(str(tmp_path)), connectivity=ConnectivityState(),
+                    services=ServiceRegistry(), search_paths=[str(plugins)],
+                    logger=logging.getLogger("test.alerts.doc"))
+    loader.load_all()
+    record = loader.records["webhook"]
+    assert record.state == "loaded", getattr(record, "reason", "")
+    assert record.instance.alerts.dir == str(tmp_path / "state")
+    reply = record.instance.on_webhook("test", types.SimpleNamespace(method="POST", args={}))
+    assert isinstance(reply, PluginRedirect) and not reply.error, reply.message
+    assert posts[0][0] == "https://hooks.example.com/x"
+    assert posts[0][1]["json"]["title"] == "Kestrel test"
