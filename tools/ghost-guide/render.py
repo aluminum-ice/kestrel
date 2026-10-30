@@ -16,15 +16,16 @@ import re
 from markdown_it import MarkdownIt
 
 # Ghost generates heading ids from the heading text, lower-cased with runs of
-# anything but letters and digits turned into "-", quotes dropped, and a
-# repeated id suffixed -1, -2, ... in document order. Matching it keeps the
-# contents list and GUIDE_MD's own #anchor links working on the page.
-_QUOTES = re.compile(r"['‘’\"“”]")
+# anything but letters and digits turned into "-", quotes and dots dropped
+# (so "2.13" becomes "213"), and a repeated id suffixed -1, -2, ... in document
+# order. Matching it keeps the contents list and GUIDE_MD's own #anchor links
+# working on the page.
+_DROPPED = re.compile(r"['‘’\"“”.]")
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 
 def slugify(text):
-    text = _QUOTES.sub("", text.lower())
+    text = _DROPPED.sub("", text.lower())
     return _NON_ALNUM.sub("-", text).strip("-")
 
 
