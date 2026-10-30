@@ -37,6 +37,14 @@ example ``smart`` shows only when a *learned* policy is actually driving, not
 the scripted baseline fallback), arbitrated by an explicit priority ladder in
 :func:`decide_mood`. Keep that rule in any change here.
 
+**One e-Paper panel at a time** (*1.1*): the e-ink HATs share the SPI bus and
+GPIO pins (and the 2.7" HAT's keys), so only one e-ink plugin may drive a
+panel. Each registers with :func:`claim_panel` in ``on_loaded``; once every
+plugin has loaded (``on_ready``), :func:`panel_owner` names the one that drives
+it - the first registered that doesn't yield, a deprecated plugin yielding to
+any other - and the others stand down: they keep their web mirror, never touch
+the pins and say which plugin has the panel.
+
 PIL is imported only inside the functions that draw or measure, so loading this
 library (off a Pi, in the tests, on the build host) touches no display and needs
 no PIL.
@@ -54,12 +62,14 @@ import math
 import re
 import socket
 import struct
+import threading
 import time
+import weakref
 from dataclasses import dataclass
 
 from kestrel_pi.connectivity import MANAGEMENT_INTERFACES
 
-LIB_API = (1, 0)
+LIB_API = (1, 1)
 
 # --- faces -----------------------------------------------------------------
 # The 26 classic pwnagotchi faces (kept for their charm), plus a few Phase 5
@@ -553,6 +563,39 @@ def addresses(interfaces=MANAGEMENT_INTERFACES):
         if ip:
             out.append((iface, ip))
     return out
+
+
+# --- one e-Paper panel at a time (1.1) -------------------------------------
+_claims = []            # [(weakref to the plugin, name, yields)], in claim order
+_claims_lock = threading.Lock()
+
+
+def claim_panel(plugin, name, yields=False):
+    """Register ``plugin`` (named ``name``) as wanting the e-Paper panel; call
+    it from ``on_loaded``. ``yields=True`` (a deprecated plugin) gives way to
+    any other e-ink plugin. Only a weak reference is kept, so a plugin that is
+    gone never holds the panel."""
+    with _claims_lock:
+        _claims[:] = [c for c in _claims if c[0]() not in (None, plugin)]
+        _claims.append((weakref.ref(plugin), name, bool(yields)))
+
+
+def release_panel(plugin):
+    """Drop ``plugin``'s claim; call it from ``on_unload``."""
+    with _claims_lock:
+        _claims[:] = [c for c in _claims if c[0]() not in (None, plugin)]
+
+
+def panel_owner():
+    """The name of the e-ink plugin that drives the panel - the first claim
+    that doesn't yield, else the first - or None when no plugin claimed it.
+    Settled once every plugin has loaded (``on_ready``)."""
+    with _claims_lock:
+        live = [(name, yields) for ref, name, yields in _claims if ref() is not None]
+    for name, yields in live:
+        if not yields:
+            return name
+    return live[0][0] if live else None
 
 
 # --- text, glyphs and the address lookup ----------------------------------

@@ -54,7 +54,7 @@ shareable `.tar.gz`; `gps-check.sh` is an interactive live check instead.
   its driver helper files (or a note that the running daemon holds the pins),
   and only the e-ink plugins' journal lines. Pulls no other config table and no
   credential; redacts addresses, coordinates and a custom hostname on the
-  device; saves one text file, `NAME-diagnostics-<time>.txt`, not an archive.
+  device, and shows the SSH login only when it is the default `pi`; saves one text file, `NAME-diagnostics-<time>.txt`, not an archive.
 - `gps-check.sh` — interactive GPS check (not a bundle): serial node, `pi` in
   `dialout`, the daemon's live fix, and an optional `--sample` that briefly
   reads raw NMEA off the receiver to classify FIX / STREAMING / SILENT with the

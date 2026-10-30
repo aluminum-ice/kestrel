@@ -141,18 +141,42 @@ class EinkWs27(Plugin):
     # The mirror has no cadence of its own: the page reloads at refresh_seconds
     # and re-reads this one frame store, so the panel and the mirror can't drift.
     _MIN_REFRESH = 10
+    # How long the render worker waits for on_ready before going on anyway.
+    _READY_WAIT = 60
 
     # -- lifecycle -------------------------------------------------------
     def on_loaded(self):
         self._setup()
+        # One e-ink plugin drives the panel (the HATs share its pins and the
+        # keys); which one is settled in on_ready, once every plugin has loaded.
+        face.claim_panel(self, NAME, yields=bool(DEPRECATED))
         if DEPRECATED:
             self.log.warning("%s: %s", NAME, DEPRECATED)
             self._note("")
-        if self.context.options.get("buttons", True):
-            self._start_keys()
         self._worker = threading.Thread(
             target=self._run, name=NAME + "-face", daemon=True)
         self._worker.start()
+
+    def on_ready(self):
+        """Every plugin has loaded, so the panel's owner is settled: start the
+        keys only when this plugin drives the panel, then let the worker bring
+        the panel up (or stand down)."""
+        owner = face.panel_owner()
+        if owner not in (None, NAME):
+            self._stand_down(owner)
+        elif self.context.options.get("buttons", True):
+            self._start_keys()
+        self._ready.set()
+
+    def _stand_down(self, owner):
+        """Another e-ink plugin drives the panel: never touch the pins or the
+        keys, keep the web mirror, and say which plugin has the panel."""
+        self._standing_down = owner
+        self._absent = True
+        self._epd_tried = True
+        text = "%s drives the e-Paper panel (one e-ink plugin at a time)" % owner
+        self._note("standing down: " + text)
+        self.log.info("%s: standing down: %s", NAME, text)
 
     def _start_keys(self):
         """The HAT's four keys through the hat_keys library. A bad ``pins``
@@ -189,6 +213,8 @@ class EinkWs27(Plugin):
         self._epd = None
         self._epd_tried = False
         self._absent = True             # no panel until a probe succeeds
+        self._ready = threading.Event()  # set in on_ready: the panel's owner is settled
+        self._standing_down = None      # the e-ink plugin that drives the panel instead
         self._fault = False
         self._frame_png = None          # last composed frame (PNG bytes)
         self._frame_seq = 0             # increments on every frame change
@@ -221,6 +247,7 @@ class EinkWs27(Plugin):
         if self._keys is not None:
             self._keys.stop()
         self._stop.set()
+        self._ready.set()
         worker = getattr(self, "_worker", None)
         if worker is not None and worker.is_alive():
             worker.join(timeout=self._FORCED_TIMEOUT)
@@ -231,6 +258,7 @@ class EinkWs27(Plugin):
                 epd.sleep()
             except Exception as exc:  # noqa: BLE001 - best effort on the way out
                 self.log.debug("%s: shutdown render failed: %s", NAME, exc)
+        face.release_panel(self)
 
     # -- web dashboard data (the shared model's other view) --------------
     def on_ui_setup(self, ui):
@@ -256,7 +284,8 @@ class EinkWs27(Plugin):
         ui.set("mood", mood or "awake")
         ui.set("voice", voice or "")
         ui.set("mobility", face.MOBILITY_LABEL.get(self._motion.state, "gps?"))
-        ui.set("panel", "not detected" if self._absent else "detected")
+        ui.set("panel", ("used by %s" % self._standing_down) if self._standing_down
+               else "not detected" if self._absent else "detected")
         if self._keys is not None:
             self._keys.set_capturing(bool(getattr(state, "capture_active", False)))
             ui.set("keys", self._keys.last)
@@ -297,6 +326,9 @@ class EinkWs27(Plugin):
 
     # -- rendering + panel ----------------------------------------------
     def _run(self):
+        # Wait for on_ready (every plugin loaded, the panel's owner settled);
+        # the bound keeps the face going should it never come.
+        self._ready.wait(timeout=self._READY_WAIT)
         while not self._stop.is_set():
             try:
                 self._tick()
@@ -375,6 +407,10 @@ class EinkWs27(Plugin):
         HAT-less device / build host degrades cleanly to the web mirror)."""
         if self._epd is not None or self._epd_tried:
             return self._epd
+        owner = face.panel_owner()
+        if owner not in (None, NAME):
+            self._stand_down(owner)
+            return None
         self._epd_tried = True
         variant = str(self.context.options.get("variant", "auto") or "auto").lower()
         if variant in self._VARIANTS:
@@ -765,8 +801,12 @@ class EinkWs27(Plugin):
     def _mirror_page(self):
         esc = self.context.esc
         every = self._refresh_seconds()
-        note = (" (no HAT attached - this is the frame it would show)"
-                if self._absent else "")
+        if self._standing_down:
+            note = (" (%s drives the panel - this is the frame this plugin would "
+                    "show)" % self._standing_down)
+        else:
+            note = (" (no HAT attached - this is the frame it would show)"
+                    if self._absent else "")
         body = (
             '<p><a href="/plugins">&larr; Plugins</a></p>'
             "<h1>E-ink display</h1>"

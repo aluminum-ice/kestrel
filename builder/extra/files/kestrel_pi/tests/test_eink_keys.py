@@ -62,6 +62,7 @@ def _plugin(tmp_path, monkeypatch, options=None, applied=None, reply=None):
         connectivity=types.SimpleNamespace(online=False, paths={}), services=ServiceRegistry(),
         capabilities=("ui", "web"), apply=apply, logger=logging.getLogger("test.eink.keys"))
     p.on_loaded()
+    p.on_ready()                              # the keys start once the panel's owner is settled
     return p, made, applied
 
 

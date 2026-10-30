@@ -20,3 +20,16 @@ def _private_web_state(tmp_path, monkeypatch):
     from kestrel_pi import webtls
 
     monkeypatch.setattr(webtls, "state_dir", lambda: str(tmp_path / "kestrel-web"))
+
+
+@pytest.fixture(autouse=True)
+def _no_leftover_panel_claims():
+    """The eink_face library keeps which e-ink plugin drives the panel in a
+    module-level list (one panel at a time). A test that loads an e-ink plugin
+    without unloading it would leave its claim behind, so clear them after each
+    test."""
+    yield
+    for name, mod in list(sys.modules.items()):
+        if name.startswith("kestrel_plugin_libs.eink_face_"):
+            with mod._claims_lock:
+                mod._claims[:] = []

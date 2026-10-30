@@ -68,8 +68,13 @@ fi
 
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 report="$plugin-diagnostics-$stamp.txt"
-# The device's address or name stays out of a report meant for sharing.
-case "$target" in *@*) shown="${target%%@*}@<host>" ;; *) shown="<host>" ;; esac
+# The device's address or name stays out of a report meant for sharing, and so
+# does the login name unless it is the image's documented default account.
+case "$target" in
+  pi@*) shown="pi@<host>" ;;
+  *@*) shown="<user>@<host>" ;;
+  *) shown="<host>" ;;
+esac
 {
   echo "$plugin e-ink diagnostics"
   echo "collected: $stamp"
