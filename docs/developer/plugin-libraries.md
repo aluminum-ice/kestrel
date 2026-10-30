@@ -115,8 +115,8 @@ its `LIB_API`; a test (`tests/test_load_library.py`) keeps the two in step.
 | `alerts` | `_lib_alerts.py` | 1.0 | stable | `ntfy`, `telegram` |
 | `eink_face` | `_lib_eink_face.py` | 1.0 | stable | `eink-ws27`, `eink-ws213`, `eink` (deprecated) |
 | `hat_keys` | `_lib_hat_keys.py` | 0.1 | provisional | `eink-ws27`, `eink` (deprecated) |
-| `ina219` | `_lib_ina219.py` | 1.0 | stable | `ups-ws`, `ups-hat` (deprecated) |
-| `ups` | `_lib_ups.py` | 0.2 | provisional | `ups-ws`, `ups-hat` (deprecated) |
+| `ina219` | `_lib_ina219.py` | 1.1 | stable | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-hat` (deprecated) |
+| `ups` | `_lib_ups.py` | 0.2 | provisional | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-hat` (deprecated) |
 
 Each library has its own section below: what it is for, a minimal plugin using
 it, its public functions and classes, the rules it enforces and what stays in
@@ -542,7 +542,12 @@ because each board's shunt and range differ.
   requires a bus voltage between `MIN_PLAUSIBLE_V` and `MAX_PLAUSIBLE_V`
   (3-20 V). Probe with it before trusting any reading.
 - **`bus_voltage()`** (volts on the load side), **`current_ma()`** (negative while
-  the battery discharges on Waveshare's wiring), **`power_w()`**, **`close()`**.
+  the battery discharges on Waveshare's wiring - the UPS HAT (D)'s is the other
+  way round, so `ups-wsd` negates it), **`power_w()`**, **`close()`**.
+- **`answers(address)`** *(1.1)*: whether another device on the same bus
+  acknowledges a one-byte read (as `i2cdetect -r` does; nothing is written), for
+  telling boards apart by the other chips they carry. `ups-wsc` and `ups-wsd`
+  use it to tell the (C) from the (D), whose controller answers at `0x2D`.
 - **Calibrations**, named after the functions in Waveshare's `INA219.py` demos:
   `CAL_16V_5A` (cal 26868, 0.1524 mA and 3.048 mW per bit, 16 V range, 80 mV
   shunt range; the (C) and (D) demos) and `CAL_32V_2A` (cal 4096, 0.1 mA and
