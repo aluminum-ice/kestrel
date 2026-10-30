@@ -23,7 +23,7 @@ the voice changes with the mood. On the smaller panel it shows, top to bottom:
 - **Top icon strip:** the Bluetooth and Wi-Fi link symbols (slashed when a link
   is down), the GPS satellite with signal bars when a receiver is present, a
   walking person or a car while you're moving, and the battery with its percent
-  (with `ups-hat`).
+  (with `ups-ws`).
 - **The face and its voice**, two lines at most. For the first ten minutes after
   start-up the voice shows the start of the dashboard's HTTPS certificate
   fingerprint instead (`HTTPS AB:CD:EF:12` / `34:56:78:9A`), to compare with
@@ -108,7 +108,7 @@ every redraw a full refresh (it flashes each time), and please report it.
 | `show_brand_glyph` | `true` | Draw the Kestrel mark in the corner. |
 | `show_fingerprint_minutes` | `10` | Minutes after start-up that the voice shows the start of the HTTPS fingerprint; `0` never. |
 | `show_ip` | `true` | Draw the address row. Turn it off if the panel is visible to people who shouldn't see the addresses. |
-| `battery_low_percent` | `10` | Show the tired face at or below this charge while on battery (needs `ups-hat`). |
+| `battery_low_percent` | `10` | Show the tired face at or below this charge while on battery (needs `ups-ws`). |
 | `bored_epochs` | `15` | Idle epochs before the face looks bored. |
 | `sad_epochs` | `25` | Idle epochs before the face looks sad. |
 

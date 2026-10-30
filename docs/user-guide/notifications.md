@@ -17,7 +17,7 @@ is usually enough.
 | Alert | When | On by default |
 | --- | --- | --- |
 | `handshakes` | A digest of new handshakes every `digest_minutes` (default 30): "12 new handshakes from 3 networks in the last 30 minutes." | yes |
-| `battery` | The battery falls to `battery_percent` (default 20), or the device switches to battery power. Needs the `ups-hat` plugin. | yes |
+| `battery` | The battery falls to `battery_percent` (default 20), or the device switches to battery power. Needs the `ups-ws` plugin. | yes |
 | `update` | A newer Kestrel release is available (needs the `updates` plugin). | yes |
 | `capture` | Capture stopped while it's still switched on. | yes |
 | `online` | The device is online after start-up. | no |

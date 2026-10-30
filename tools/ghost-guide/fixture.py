@@ -37,10 +37,13 @@ WHITELIST = ["My Network", "My Network 5G", "00:00:5E:00:53:F0"]
 UPTIME_S = 2 * 3600 + 14 * 60
 EPOCH = 268
 
-ENABLED_PLUGINS = ("gps", "map", "memtemp", "session-stats", "ups-hat", "updates")
+ENABLED_PLUGINS = ("gps", "map", "memtemp", "session-stats", "updates")
 # The 2.7" HAT's e-ink plugin: eink-ws27 in the releases that ship it (eink is
 # then deprecated), eink before that. This renders the latest stable release.
 EINK_NAMES = ("eink-ws27", "eink")
+# The UPS HAT's plugin: ups-ws in the releases that ship it (ups-hat is then
+# deprecated), ups-hat before that.
+UPS_NAMES = ("ups-ws", "ups-hat")
 
 POSITION = {"lat": 12.34567, "lon": -45.67890, "alt": 18.0, "fix": 3, "sats": 11,
             "cn0": 41.0, "strong": 9}
@@ -143,7 +146,9 @@ class Demo:
     def __init__(self, files_dir, workdir, tag, previous_tag, release_url):
         self.eink_name = next(n for n in EINK_NAMES
                               if os.path.exists(os.path.join(files_dir, "plugins", n + ".py")))
-        self.enabled = (self.eink_name,) + ENABLED_PLUGINS
+        self.ups_name = next(n for n in UPS_NAMES
+                             if os.path.exists(os.path.join(files_dir, "plugins", n + ".py")))
+        self.enabled = (self.eink_name,) + ENABLED_PLUGINS[:4] + (self.ups_name,) + ENABLED_PLUGINS[4:]
         sys.path.insert(0, os.path.join(files_dir, "kestrel_pi"))
         try:
             import tomllib
@@ -289,7 +294,7 @@ class Demo:
         self._set("session-stats", {"handshakes": str(SESSION_HANDSHAKES),
                                     "aps": str(len(SESSION_BSSIDS)),
                                     "epochs": str(EPOCH), "uptime": uptime(UPTIME_S)})
-        ups = self._instance("ups-hat")
+        ups = self._instance(self.ups_name)
         # The status labels: in the ups plugin library from the release that
         # added it, in the plugin module before (this renders the latest stable).
         plugin_globals = type(ups).on_ui_update.__globals__
@@ -300,9 +305,9 @@ class Demo:
                   "voltage": "%.2f V" % BATTERY["voltage"],
                   "current": "%+.0f mA" % BATTERY["current_ma"],
                   "power": "%.2f W" % BATTERY["power_w"]}
-        if self.daemon.ui.for_plugin("ups-hat").get("eta", None) is not None:
+        if self.daemon.ui.for_plugin(self.ups_name).get("eta", None) is not None:
             values["eta"] = "3h 10m"
-        self._set("ups-hat", values)
+        self._set(self.ups_name, values)
         self.set_update_available(False)
 
         # A few stationary fixes first, so the face's motion tracker settles on

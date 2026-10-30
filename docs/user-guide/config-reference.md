@@ -171,7 +171,8 @@ guide. Secret options (API keys/tokens) are collected at enable time and masked.
 | `wpa-sec` | `endpoint`, `download_results`, `results_interval_seconds` | [wpa-sec](wpa-sec-setup.md) |
 | `wigle` | `endpoint`, `geolocate` | [WiGLE](wigle-setup.md) |
 | `backup` | `host`, `user`, `path`, `port`, `tool` (`rsync`/`scp`), `agent_dir`, `interval_seconds`, `timeout` | [Remote backup](backup-setup.md) |
-| `ups-hat` | `i2c_bus`, `address`, `shutdown_percent` (`0` = monitor only), `poll_seconds` | [UPS HAT](ups-hat-setup.md) |
+| `ups-ws` | `i2c_bus`, `address`, `shutdown_percent` (`0` = monitor only), `poll_seconds` | [UPS HAT](ups-ws-setup.md) |
+| `ups-hat` (**deprecated:** replaced by `ups-ws`; `ups-hat` will be removed in a future release that requires a reflash) | `i2c_bus`, `address`, `shutdown_percent` (`0` = monitor only), `poll_seconds` | [UPS HAT](ups-hat-setup.md) |
 | `eink-ws27` | `variant` (`auto`/`v2`/`v1`, from a list), `rotation` (from a list), `refresh_seconds`, `show_mascot`, `show_brand_glyph`, `battery_low_percent`, `bored_epochs`, `sad_epochs` | [e-ink face](eink-setup.md) |
 | `eink` (**deprecated:** replaced by `eink-ws27`; `eink` will be removed in a future release that requires a reflash) | `variant` (`auto`/`v2`/`v1`), `rotation`, `refresh_seconds`, `show_mascot`, `show_brand_glyph`, `battery_low_percent`, `bored_epochs`, `sad_epochs` | [e-ink face](eink-setup.md) |
 | `eink-ws213` | `variant` (`v4`/`v3`/`v2`), `rotation`, `refresh_seconds`, `partials_per_full`, `show_mascot`, `show_brand_glyph`, `show_fingerprint_minutes`, `show_ip`, `battery_low_percent`, `bored_epochs`, `sad_epochs` | [e-ink face for the 2.13" HAT](eink-ws213-setup.md) |

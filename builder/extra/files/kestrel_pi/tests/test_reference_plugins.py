@@ -1560,7 +1560,7 @@ def test_ups_hat_finds_the_hat_by_a_register_roundtrip(tmp_path, monkeypatch):
     plugin, mod = _make_ups(tmp_path)
     # ~7.0V: raw bus-voltage register = (7.0/0.004) << 3.
     ok, buses = _probe_with(monkeypatch, plugin, mod, regs={0x02: (1750 << 3)})
-    assert ok is True and plugin.context.health_note == ""
+    assert ok is True and plugin.context.health_note == mod.DEPRECATED   # the notice only
     other, _ = _make_ups(tmp_path)
     ok, buses = _probe_with(monkeypatch, other, mod, roundtrip=False)
     assert ok is False and buses[0].closed       # an impostor: closed again
