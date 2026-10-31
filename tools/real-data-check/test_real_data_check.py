@@ -89,9 +89,10 @@ def test_forbidden_names():
                  "kestrel-beta-check-20261027T101500Z.txt",
                  "kestrel-beta-check-20261027T101500Z/report.txt",
                  "eink-ws27-diagnostics-20261027T101500Z.txt",
-                 "eink-diagnostics-20261027T101500Z.tar.gz"):
+                 "eink-diagnostics-20261027T101500Z.tar.gz",
+                 "kestrel-health-20261027T101500Z.txt"):
         assert rdc.check_name(path), path
-    for path in ("builder/extra/files/scripts/pull-device-diagnostics.sh",
+    for path in ("builder/extra/files/scripts/pull-health.sh",
                  "tools/beta-check/pull-beta-check.sh", "tools/beta-check/beta-check-device.sh",
                  "docs/images/web-ui.png", "assets/branding/kestrel.svg",
                  "home/.ssh/id_ed25519.pub", "builder/extra/files/config.toml"):

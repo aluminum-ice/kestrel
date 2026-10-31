@@ -206,5 +206,6 @@ id_dsa
 *-diagnostics-*.tar.gz
 *-diagnostics-*.txt
 capture-health-*/
+kestrel-health-*.txt
 # Beta check reports (tools/beta-check), and the old .tar.gz form
 kestrel-beta-check-*
