@@ -372,3 +372,162 @@ def test_udp_transport_bind_to_a_missing_interface_fails_clearly():
     import pytest
     with pytest.raises(dht.TetherBindError):
         dht.UdpTransport(bind_device="kcensus-none0")
+
+
+# -- step 5: node pool, bootstrap, persistence --------------------------------------
+
+def _test_net(ip):
+    """The pool's address rule for tests: the RFC 5737 documentation ranges."""
+    return ip.startswith(("192.0.2.", "198.51.100.", "203.0.113."))
+
+
+def test_public_ipv4_keeps_only_public_unicast():
+    for ip in ("10.0.0.1", "192.168.1.1", "172.20.10.2", "127.0.0.1", "169.254.0.1",
+               "224.0.0.1", "0.0.0.0", "255.255.255.255", "192.0.2.1", "100.64.0.1",
+               "not an ip", "2001:db8::1"):
+        assert not dht.public_ipv4(ip), ip
+    # A public address, found at run time rather than written here.
+    import ipaddress
+    public = next(str(ipaddress.IPv4Address(n << 24 | 1)) for n in range(1, 224)
+                  if ipaddress.IPv4Address(n << 24 | 1).is_global)
+    assert dht.public_ipv4(public)
+
+
+def test_parse_nodes_reads_compact_info():
+    import random
+    rng = random.Random(5)
+    nid = dht.bep42_make_id("192.0.2.10", rng)
+    blob = dht.compact_node(nid, "192.0.2.10", 6881) + dht.compact_node(bytes(20), "192.0.2.11", 0)
+    assert dht.parse_nodes(blob + b"xx") == [(nid, "192.0.2.10", 6881)]   # port 0 skipped
+    assert dht.parse_nodes(None) == []
+
+
+def test_node_pool_rules():
+    import random
+    rng = random.Random(9)
+    clock = FakeClock()
+    pool = dht.NodePool(capacity=4, accept=_test_net, clock=clock)
+    good = dht.bep42_make_id("192.0.2.1", rng)
+    pool.add(good, "192.0.2.1", 6881)
+    pool.add(bytes(20), "10.0.0.5", 6881)           # not accepted
+    pool.add(b"short", "192.0.2.2", 6881)          # bad ID
+    pool.add(dht.bep42_make_id("192.0.2.3", rng), "192.0.2.3", 0)   # bad port
+    assert list(pool.nodes) == [good] and pool.nodes[good][2] is True
+    # Hearsay doesn't move a node; the node itself answering does.
+    pool.add(good, "192.0.2.99", 1)
+    assert pool.nodes[good][:2] == ["192.0.2.1", 6881]
+    pool.add(good, "192.0.2.99", 1, ok=True)
+    assert pool.nodes[good][:2] == ["192.0.2.99", 1] and pool.nodes[good][2] is False
+    assert pool.responsive() == 1
+    # Over capacity, nodes that never answered go first.
+    for i in range(10, 16):
+        pool.add(dht.bep42_make_id("192.0.2.%d" % i, rng), "192.0.2.%d" % i, 6881)
+    assert len(pool.nodes) == 4 and good in pool.nodes
+    pool.forget(good)
+    assert good not in pool.nodes
+
+
+def test_node_pool_closest_and_bep42_filter():
+    import random
+    rng = random.Random(3)
+    pool = dht.NodePool(accept=_test_net)
+    valid = [dht.bep42_make_id("192.0.2.%d" % i, rng) for i in range(1, 6)]
+    for i, nid in enumerate(valid, 1):
+        pool.add(nid, "192.0.2.%d" % i, 6881)
+    invalid = bytes(20)
+    pool.add(invalid, "198.51.100.1", 6881)
+    target = bytes(20)
+    assert pool.closest(target, 1)[0][0] == invalid          # distance 0
+    assert invalid not in [n for n, _a in pool.closest(target, 10, only_bep42=True)]
+    ranked = [n for n, _a in pool.closest(target, 10, only_bep42=True)]
+    assert ranked == sorted(valid, key=lambda n: dht.distance(n, target))
+
+
+def test_node_pool_saves_privately_and_reloads(tmp_path):
+    import random
+    import stat
+    rng = random.Random(4)
+    clock = FakeClock()
+    pool = dht.NodePool(accept=_test_net, clock=clock)
+    nid = dht.bep42_make_id("192.0.2.7", rng)
+    pool.add(nid, "192.0.2.7", 6881, ok=True)
+    path = str(tmp_path / "routing.json")
+    pool.save(path)
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    again = dht.NodePool(accept=_test_net)
+    again.load(path)
+    assert again.nodes[nid] == ["192.0.2.7", 6881, True, clock.now]
+    for junk in ("not json", "[]", '{"nodes": 5}',
+                 '{"nodes": [["zz", "192.0.2.1", 1, 0], [], ["00", 5, 1, 0]]}'):
+        (tmp_path / "bad.json").write_text(junk)
+        empty = dht.NodePool(accept=_test_net)
+        empty.load(str(tmp_path / "bad.json"))
+        assert empty.nodes == {}
+    empty.load(str(tmp_path / "missing.json"))
+
+
+def _router_responder(nodes, lose_first=0):
+    """A bootstrap router at 203.0.113.1 handing out ``nodes``; it drops the
+    first ``lose_first`` queries it gets."""
+    seen = []
+
+    def responder(packet, addr):
+        seen.append(addr)
+        if addr[0] != "203.0.113.1" or len(seen) <= lose_first:
+            return []
+        blob = b"".join(dht.compact_node(n, ip, port) for n, ip, port in nodes)
+        return [_reply(packet, {b"id": bytes(20), b"nodes": blob}, addr)]
+    return responder
+
+
+def test_bootstrap_joins_and_skips_a_dead_router():
+    import random
+    rng = random.Random(6)
+    nodes = [(dht.bep42_make_id("192.0.2.%d" % i, rng), "192.0.2.%d" % i, 6881)
+             for i in range(1, 9)]
+    clock = FakeClock()
+    client = dht.KrpcClient(FakeTransport(_router_responder(nodes)),
+                            clock=clock, sleep=clock.sleep)
+    pool = dht.NodePool(accept=_test_net)
+    resolve = {"live.example.net": ("203.0.113.1", 6881),
+               "dead.example.net": ("203.0.113.2", 6881)}.get
+    waits = []
+    answered = dht.bootstrap(client, pool, [("nxdomain.example.net", 1),
+                                            ("dead.example.net", 6881),
+                                            ("live.example.net", 6881)],
+                             resolve=lambda h, p: resolve(h),
+                             wait=lambda s: waits.append(s) or False)
+    assert answered == 1 and len(pool.nodes) == 8 and waits == []
+
+
+def test_bootstrap_retries_when_the_first_round_is_lost():
+    import random
+    rng = random.Random(7)
+    nodes = [(dht.bep42_make_id("192.0.2.%d" % i, rng), "192.0.2.%d" % i, 6881)
+             for i in range(1, 5)]
+    clock = FakeClock()
+    client = dht.KrpcClient(FakeTransport(_router_responder(nodes, lose_first=2)),
+                            clock=clock, sleep=clock.sleep)
+    pool = dht.NodePool(accept=_test_net)
+    waits = []
+    answered = dht.bootstrap(client, pool, [("live.example.net", 6881)],
+                             resolve=lambda h, p: ("203.0.113.1", p),
+                             wait=lambda s: waits.append(s) or False)
+    assert answered == 1 and len(pool.nodes) == 4
+    assert waits == [10, 20]                     # rounds at 0, 10 and 30 s
+
+
+def test_bootstrap_gives_up_after_its_rounds_or_when_stopped():
+    clock = FakeClock()
+    client = dht.KrpcClient(FakeTransport(lambda p, a: []), clock=clock, sleep=clock.sleep)
+    pool = dht.NodePool(accept=_test_net)
+    waits = []
+    assert dht.bootstrap(client, pool, [("live.example.net", 6881)],
+                         resolve=lambda h, p: ("203.0.113.1", p),
+                         wait=lambda s: waits.append(s) or False) == 0
+    assert waits == [10, 20, 60]
+    stopped = []
+    assert dht.bootstrap(client, pool, [("live.example.net", 6881)],
+                         resolve=lambda h, p: ("203.0.113.1", p),
+                         wait=lambda s: stopped.append(s) or True) == 0
+    assert stopped == [10]

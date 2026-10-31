@@ -11,6 +11,8 @@ census report loads it the same way. Stdlib + ``cryptography``.
 """
 
 import errno
+import ipaddress
+import json
 import os
 import select
 import socket
@@ -369,3 +371,150 @@ class KrpcClient:
             self._allowance = min(self.rate, self._allowance + (now - self._last) * self.rate)
             self._last = now
         self._allowance -= 1.0
+
+
+# -- nodes -------------------------------------------------------------------------
+
+def public_ipv4(ip):
+    """Whether ``ip`` is a public unicast IPv4 address. Nodes advertised at any
+    other address (private, loopback, link-local, multicast, reserved) are
+    never kept, so a reply can't point the device at hosts on its own network."""
+    try:
+        addr = ipaddress.IPv4Address(ip)
+    except ValueError:
+        return False
+    return addr.is_global and not addr.is_multicast
+
+
+def parse_nodes(compact):
+    """``[(node_id, ip, port)]`` from BEP 5 compact node info (26 bytes each)."""
+    out = []
+    if not isinstance(compact, bytes):
+        return out
+    for i in range(0, len(compact) - len(compact) % 26, 26):
+        port = int.from_bytes(compact[i + 24:i + 26], "big")
+        if port:
+            out.append((compact[i:i + 20], socket.inet_ntoa(compact[i + 20:i + 24]), port))
+    return out
+
+
+def compact_node(node_id, ip, port):
+    return node_id + socket.inet_aton(ip) + port.to_bytes(2, "big")
+
+
+def distance(a, b):
+    return int.from_bytes(a, "big") ^ int.from_bytes(b, "big")
+
+
+class NodePool:
+    """The DHT nodes this device knows: ``{node_id: [ip, port, bep42, last_ok]}``,
+    with ``last_ok`` the time it last answered (0 if never). Over ``capacity``,
+    nodes that never answered go first, then the longest silent."""
+
+    def __init__(self, capacity=300, accept=public_ipv4, clock=time.time):
+        self.capacity = capacity
+        self.accept = accept
+        self.clock = clock
+        self.nodes = {}
+
+    def add(self, node_id, ip, port, ok=False):
+        if (not isinstance(node_id, bytes) or len(node_id) != 20
+                or not 0 < port < 65536 or not self.accept(ip)):
+            return
+        entry = self.nodes.get(node_id)
+        if entry is None:
+            self.nodes[node_id] = [ip, port, bep42_valid(node_id, ip),
+                                   self.clock() if ok else 0.0]
+        elif ok:
+            # Only the node itself, answering, moves it to a new address.
+            entry[0], entry[1], entry[2] = ip, port, bep42_valid(node_id, ip)
+            entry[3] = self.clock()
+        if len(self.nodes) > self.capacity:
+            self._evict()
+
+    def forget(self, node_id):
+        self.nodes.pop(node_id, None)
+
+    def _evict(self):
+        extra = len(self.nodes) - self.capacity
+        for node_id in sorted(self.nodes, key=lambda n: self.nodes[n][3])[:extra]:
+            del self.nodes[node_id]
+
+    def closest(self, target, count, only_bep42=False):
+        """``[(node_id, (ip, port))]``: the ``count`` known nodes nearest
+        ``target``, BEP 42-valid ones only if asked."""
+        items = [(n, e) for n, e in self.nodes.items() if e[2] or not only_bep42]
+        items.sort(key=lambda item: distance(item[0], target))
+        return [(n, (e[0], e[1])) for n, e in items[:count]]
+
+    def responsive(self):
+        return sum(1 for e in self.nodes.values() if e[3])
+
+    def save(self, path):
+        """Write the pool atomically, readable by its owner only."""
+        rows = [[n.hex(), e[0], e[1], e[3]] for n, e in self.nodes.items()]
+        tmp = path + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"nodes": rows}, handle)
+        os.replace(tmp, path)
+
+    def load(self, path):
+        """Add the nodes saved at ``path``; a missing or malformed file adds
+        nothing."""
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                rows = json.load(handle).get("nodes")
+        except (OSError, ValueError, AttributeError):
+            return
+        for row in rows if isinstance(rows, list) else []:
+            try:
+                node_id, ip, port, last_ok = bytes.fromhex(row[0]), row[1], int(row[2]), float(row[3])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if isinstance(ip, str):
+                self.add(node_id, ip, port)
+                if node_id in self.nodes:
+                    self.nodes[node_id][3] = max(0.0, last_ok)
+
+
+# Bootstrap rounds, in seconds from the first: a phone hotspot waking from idle
+# can drop the first burst of packets.
+BOOTSTRAP_BACKOFF = (0, 10, 30, 90)
+
+
+def _resolve(host, port):
+    try:
+        return socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_DGRAM)[0][4][:2]
+    except (OSError, IndexError, UnicodeError):
+        return None
+
+
+def bootstrap(client, pool, routers, resolve=_resolve, wait=None,
+              backoff=BOOTSTRAP_BACKOFF):
+    """Ask the bootstrap ``routers`` (``[(host, port)]``) for nodes near this
+    client's ID, in rounds at the ``backoff`` offsets, until one answers. Names
+    are resolved again each round. ``wait(seconds)`` sleeps between rounds and
+    returns True to give up early (the plugin is stopping). Returns how many
+    routers answered in the round that worked, 0 if none did."""
+    wait = wait or (lambda seconds: time.sleep(seconds) or False)
+    elapsed = 0
+    for at in backoff:
+        if at > elapsed:
+            if wait(at - elapsed):
+                return 0
+            elapsed = at
+        addrs = [addr for addr in (resolve(host, port) for host, port in routers) if addr]
+        if not addrs:
+            continue
+        replies = client.query([(addr, b"find_node", {b"target": client.node_id})
+                                for addr in addrs])
+        answered = 0
+        for reply, _err in replies:
+            if reply:
+                answered += 1
+                for node_id, ip, port in parse_nodes(reply.get(b"nodes")):
+                    pool.add(node_id, ip, port)
+        if answered:
+            return answered
+    return 0
