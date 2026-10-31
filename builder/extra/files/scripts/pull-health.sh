@@ -172,23 +172,28 @@ fi
 
 echo "dashboard Environment reading (capture-status.json; counts and ages only):"
 db_age=""; [ -n "$newest_db" ] && db_age=$(age_of "$newest_db")
-python3 -I - "$STORE/capture-status.json" "$(cfg capture.environment.max_age_s 900)" "$db_age" <<'PY' >"$work/env.txt" 2>&1
+python3 -I - "$STORE/capture-status.json" "$(cfg capture.environment.max_age_s 900)" "$db_age" "$cap_on" <<'PY' >"$work/env.txt" 2>&1
 import json, sys, time
 path, max_age = sys.argv[1], int(sys.argv[2] or 900)
 now = time.time()
 try:
     d = json.load(open(path))
 except FileNotFoundError:
-    print("  (no status file)"); print("VERDICT WARN no Environment status file yet"); sys.exit()
+    print("  (no status file)")
+    print("VERDICT %s no Environment status file yet" % ("WARN" if sys.argv[4:5] == ["true"] else "INFO"))
+    sys.exit()
 except Exception as exc:
     print("  unreadable:", type(exc).__name__); print("VERDICT FAIL Environment status file unreadable"); sys.exit()
 written = int(now - float(d.get("updated_at") or 0))
 data_age = int(now - float(d["data_ts"])) if "data_ts" in d else None
 db_age = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+capturing = len(sys.argv) > 4 and sys.argv[4] == "true"
 print("  scanning: %s   written %ss ago   newest data %s   radios in window: %s   window: %ss"
       % (d.get("scanning"), written, ("%ss old" % data_age) if data_age is not None else "none",
          d.get("radios_recent"), d.get("window_s")))
-if written > 180:
+if not capturing:
+    print("VERDICT INFO Environment card: capture is off, so there is no current reading")
+elif written > 180:
     print("VERDICT FAIL Environment card: the collector last wrote %ss ago (it should every few seconds)" % written)
 elif data_age is None:
     print("VERDICT WARN Environment card: no reading yet, so it shows 'Scanning the area...'")
@@ -234,12 +239,15 @@ for name in ("status.json", "scan-override.json"):
             print("  unreadable:", type(exc).__name__)
 PY
 
-sec "journal this boot: errors and tracebacks per unit (counts)"
+sec "journal this boot: errors, warnings and tracebacks per unit (counts)"
 for u in kestrel-daemon kestrel-capture kestrel-agent kestrel-capture-housekeeping; do
-  j=$(journalctl -b -q --no-pager -u "$u" 2>/dev/null)
-  e=$(printf '%s\n' "$j" | grep -ciE ' (error|critical)[ :]|failed' || true)
-  t=$(printf '%s\n' "$j" | grep -c 'Traceback' || true)
-  printf '  %-32s errors: %-4s tracebacks: %s\n' "$u" "$e" "$t"
+  # By log priority, not by words in the message: an info line that mentions
+  # "failed" is not an error.
+  e=$(journalctl -b -q --no-pager -p err -u "$u" 2>/dev/null | grep -c . || true)
+  w=$(journalctl -b -q --no-pager -p warning -u "$u" 2>/dev/null | grep -c . || true)
+  t=$(journalctl -b -q --no-pager -u "$u" 2>/dev/null | grep -c 'Traceback' || true)
+  printf '  %-32s errors: %-4s warnings and above: %-4s tracebacks: %s\n' "$u" "$e" "$w" "$t"
+  [ "${e:-0}" -gt 0 ] && say WARN "$u logged $e error line(s) this boot"
   [ "${t:-0}" -gt 0 ] && say WARN "$u logged $t traceback(s) this boot"
 done
 # The capture unit's text can carry network names: counts only, never its lines.
