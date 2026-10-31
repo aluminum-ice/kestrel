@@ -175,7 +175,6 @@ guide. Secret options (API keys/tokens) are collected at enable time and masked.
 | `ups-wsc` | `i2c_bus`, `address`, `shutdown_percent` (`0` = monitor only), `poll_seconds` | [UPS HAT (C)](ups-wsc-setup.md) |
 | `ups-wsd` | `i2c_bus`, `address`, `shutdown_percent` (`0` = monitor only), `poll_seconds` | [UPS HAT (D)](ups-wsd-setup.md) |
 | `ups-wse` | `i2c_bus`, `address`, `shutdown_percent` (`0` = monitor only), `poll_seconds`, `power_on_when_charged` | [UPS HAT (E)](ups-wse-setup.md) |
-| `ups-hat` (**deprecated:** replaced by `ups-ws`; `ups-hat` will be removed in a future release that requires a reflash) | `i2c_bus`, `address`, `shutdown_percent` (`0` = monitor only), `poll_seconds` | [UPS HAT](ups-hat-setup.md) |
 | `eink-ws27` | `variant` (`auto`/`v2`/`v1`, from a list), `rotation` (from a list), `refresh_seconds`, `show_mascot`, `show_brand_glyph`, `battery_low_percent`, `bored_epochs`, `sad_epochs` | [2.7" e-ink face](eink-ws27-setup.md) |
 | `eink-ws213` | `variant` (`v4`/`v3`/`v2`), `rotation`, `refresh_seconds`, `partials_per_full`, `show_mascot`, `show_brand_glyph`, `show_fingerprint_minutes`, `show_ip`, `battery_low_percent`, `bored_epochs`, `sad_epochs` | [e-ink face for the 2.13" HAT](eink-ws213-setup.md) |
 | `updates` | `repo`, `check_interval_seconds`, `timeout` | [Keeping the device updated](updates.md) |

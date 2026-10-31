@@ -298,7 +298,7 @@ ssh_key = "/home/pi/.ssh/id_ed25519"   # the pi account's key used for copying
 interval_seconds = 3600     # at most this often; also runs at start and on reconnect
 timeout = 1800              # abort a single transfer after this many seconds
 
-[plugins.ups-hat]
+[plugins.ups-ws]
 enabled = false             # Waveshare UPS HAT battery readout + low-battery auto-shutdown
 # Reads the HAT's INA219 fuel gauge over I2C and shows a battery card (charge
 # percent, charging/discharging, voltage, current, power). It confirms the HAT

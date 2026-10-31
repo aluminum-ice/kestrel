@@ -42,7 +42,6 @@ for the person using the device.
 - [UPS HAT (C)](ups-wsc-setup.md) — the same for the one-cell UPS HAT (C) under a Pi Zero (`ups-wsc`); not yet tested on hardware.
 - [UPS HAT (D)](ups-wsd-setup.md) — the same for the UPS HAT (D) with 21700 cells in parallel (`ups-wsd`); not yet tested on hardware.
 - [UPS HAT (E)](ups-wse-setup.md) — the same for the four-cell UPS HAT (E), with cell voltages, a low-cell rule and optional power-on when charged (`ups-wse`); not yet tested on hardware.
-- [UPS HAT, the old name](ups-hat-setup.md) — **deprecated:** `ups-hat` is replaced by `ups-ws` and will be removed in a future release that requires a reflash; how to switch.
 - [e-ink face for the 2.7" HAT](eink-ws27-setup.md) — animated tamagotchi face on the Waveshare 2.7" e-Paper HAT, with a live web mirror and the HAT's four keys (`eink-ws27`).
 - [e-ink face for the 2.13" HAT](eink-ws213-setup.md) — the same face on the smaller Waveshare 2.13" e-Paper HAT (V2/V3/V4), with a lean layout; not yet tested on hardware.
 - [memtemp and session-stats](memtemp-session-stats.md) — built-in local readout cards.

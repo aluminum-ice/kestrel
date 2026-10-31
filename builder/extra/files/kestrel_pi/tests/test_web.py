@@ -1326,7 +1326,7 @@ def test_dashboard_healthy_plugins_have_no_stopped_badge():
 
 
 def test_gauge_element_draws_a_threshold_marker():
-    status = dict(_status([]), widgets={"ups-hat": [
+    status = dict(_status([]), widgets={"ups-ws": [
         {"name": "charge", "label": "Charge", "value": "42%", "kind": "gauge",
          "mark": 5}]})
     html = web._render_status(status)

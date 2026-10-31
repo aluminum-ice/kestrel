@@ -48,7 +48,7 @@ FULL_CONFIG = {
         "wpa-sec": {"enabled": True, "api_key": "testkey"},
         "wigle": {"enabled": True, "api_name": "n", "api_token": "t"},
         "backup": {"enabled": True, "host": "h", "user": "u", "path": "/remote"},
-        "ups-hat": {"enabled": True},
+        "ups-ws": {"enabled": True},
         "updates": {"enabled": True},
         "remote-train": {"enabled": True, "train_host": "h", "train_user": "u",
                          "train_path": "/remote"},
@@ -81,7 +81,7 @@ def test_all_reference_plugins_load(tmp_path):
     try:
         names = {r.name for r in loaded}
         assert names == {"memtemp", "session-stats", "gps", "wpa-sec", "wigle",
-                         "backup", "ups-hat", "updates", "remote-train",
+                         "backup", "ups-ws", "updates", "remote-train",
                          "downloads", "map", "ntfy", "telegram"}
         # gps provides position; wigle optionally requires it, so when gps is
         # enabled the loader still orders it ahead.
@@ -1478,7 +1478,7 @@ def test_backup_health_note_clears_once_ready(tmp_path):
         plugin.on_unload()
 
 
-# -- ups-hat plugin (Waveshare UPS HAT battery) ------------------------------
+# -- ups-ws plugin (Waveshare UPS HAT battery) -------------------------------
 # The battery logic is the ups library and the chip the ina219 library, both
 # tested in test_ups_lib.py; these test the plugin's wiring.
 class _FakeBus:
@@ -1505,17 +1505,17 @@ class _FakeBus:
         self.closed = True
 
 
-_REAL_OPEN_CHIP = _load_module("ups-hat.py", "ups_hat_for_open_chip").ina219.open_chip
+_REAL_OPEN_CHIP = _load_module("ups-ws.py", "ups_ws_for_open_chip").ina219.open_chip
 
 
 def _make_ups(tmp_path, applied=None, **opts):
-    mod = _load_module("ups-hat.py", "ups_hat_under_test")
-    plugin = mod.UpsHat()
+    mod = _load_module("ups-ws.py", "ups_ws_under_test")
+    plugin = mod.UpsWs()
     options = {"i2c_bus": 1, "address": 0x42, "shutdown_percent": 5,
                "poll_seconds": 20}
     options.update(opts)
     plugin.options = options
-    plugin.context = _ctx(tmp_path, ("ui",), options=options, name="ups-hat")
+    plugin.context = _ctx(tmp_path, ("ui",), options=options, name="ups-ws")
     if applied is not None:
         plugin.context._apply = lambda change: applied.append(change) or {"ok": True}
     plugin._setup()                    # init state without starting the poll thread
@@ -1548,32 +1548,32 @@ def _probe_with(monkeypatch, plugin, mod, **fake):
     return plugin.monitor.ensure_device(), buses
 
 
-def test_ups_hat_declares_only_ui_and_provides_battery(tmp_path):
+def test_ups_ws_declares_only_ui_and_provides_battery(tmp_path):
     plugin, mod = _make_ups(tmp_path)
     assert plugin.__capabilities__ == ("ui",)      # local read, no ack needed
     assert plugin.__provides__ == ("battery",)
     assert mod.PACK.cells == 2 and mod.CALIBRATION is mod.ina219.CAL_16V_5A
-    assert mod.NAME == "ups-hat"
+    assert mod.NAME == "ups-ws"
 
 
-def test_ups_hat_finds_the_hat_by_a_register_roundtrip(tmp_path, monkeypatch):
+def test_ups_ws_finds_the_hat_by_a_register_roundtrip(tmp_path, monkeypatch):
     plugin, mod = _make_ups(tmp_path)
     # ~7.0V: raw bus-voltage register = (7.0/0.004) << 3.
     ok, buses = _probe_with(monkeypatch, plugin, mod, regs={0x02: (1750 << 3)})
-    assert ok is True and plugin.context.health_note == mod.DEPRECATED   # the notice only
+    assert ok is True and plugin.context.health_note == ""
     other, _ = _make_ups(tmp_path)
     ok, buses = _probe_with(monkeypatch, other, mod, roundtrip=False)
     assert ok is False and buses[0].closed       # an impostor: closed again
     assert "not detected on I2C bus 1 at 0x42" in other.context.health_note
 
 
-def test_ups_hat_card_absent_without_hardware(tmp_path, monkeypatch):
+def test_ups_ws_card_absent_without_hardware(tmp_path, monkeypatch):
     # On the build/test host there is no smbus, so the HAT can't be confirmed:
     # the card reads "no UPS HAT" and the /plugins health note explains it.
     plugin, mod = _make_ups(tmp_path)
     monkeypatch.setattr(mod.ina219, "open_chip", lambda bus, address, cal: None)
     assert plugin.monitor.ensure_device() is False
-    card = _card(plugin, "ups-hat")
+    card = _card(plugin, "ups-ws")
     assert card["percent"]["value"] == "-"
     assert "UPS HAT" in card["status"]["value"]
     assert "smbus" in plugin.context.health_note   # the /plugins page says why
@@ -1582,7 +1582,7 @@ def test_ups_hat_card_absent_without_hardware(tmp_path, monkeypatch):
     assert ok is False and "cannot open I2C bus 1" in bad.context.health_note
 
 
-def test_ups_hat_card_shows_battery_readout(tmp_path, monkeypatch):
+def test_ups_ws_card_shows_battery_readout(tmp_path, monkeypatch):
     plugin, mod = _make_ups(tmp_path)
     # ~7.0V, discharging ~ -200mA, ~1.4W.
     regs = {0x02: (1750 << 3), 0x04: (65536 - 1312), 0x03: 459}
@@ -1592,7 +1592,7 @@ def test_ups_hat_card_shows_battery_readout(tmp_path, monkeypatch):
     assert round(reading["percent"]) == 42
     plugin.monitor.evaluate(reading)
     assert plugin.provide_battery() == reading
-    card = _card(plugin, "ups-hat")
+    card = _card(plugin, "ups-ws")
     assert card["percent"]["kind"] == "gauge"       # draws a gauge bar
     assert card["percent"]["value"] == "42%"
     assert card["status"]["value"] == "Discharging"
@@ -1601,7 +1601,7 @@ def test_ups_hat_card_shows_battery_readout(tmp_path, monkeypatch):
     assert card["shutdown"]["value"] == "5%" and card["percent"]["mark"] == 5
 
 
-def test_ups_hat_auto_shutdown_goes_through_the_plugins_context(tmp_path):
+def test_ups_ws_auto_shutdown_goes_through_the_plugins_context(tmp_path):
     applied = []
     plugin, _ = _make_ups(tmp_path, applied=applied, shutdown_percent=5)
     low = {"percent": 4.0, "status": "discharging", "voltage": 6.1,
@@ -1609,13 +1609,13 @@ def test_ups_hat_auto_shutdown_goes_through_the_plugins_context(tmp_path):
     for _ in range(3):
         plugin.monitor.evaluate(low)
     assert applied == [{"target": "power", "action": "shutdown"}]
-    assert "Shutting down" in _card(plugin, "ups-hat")["status"]["value"]
-    src = open(os.path.join(PLUGIN_DIR, "ups-hat.py"), encoding="utf-8").read()
+    assert "Shutting down" in _card(plugin, "ups-ws")["status"]["value"]
+    src = open(os.path.join(PLUGIN_DIR, "ups-ws.py"), encoding="utf-8").read()
     assert "kestrel_pi import web" not in src and "from kestrel_pi.web" not in src
 
 
-def test_ups_hat_uses_the_shared_libraries_and_keeps_no_copy():
-    src = open(os.path.join(PLUGIN_DIR, "ups-hat.py"), encoding="utf-8").read()
+def test_ups_ws_uses_the_shared_libraries_and_keeps_no_copy():
+    src = open(os.path.join(PLUGIN_DIR, "ups-ws.py"), encoding="utf-8").read()
     assert 'load_library(__file__, "ups", api=0)' in src
     assert 'load_library(__file__, "ina219", api=1)' in src
     for name in ("class _INA219", "def _evaluate", "def _estimate_eta", "_SHUTDOWN_DEBOUNCE"):

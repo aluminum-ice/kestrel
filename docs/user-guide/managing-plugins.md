@@ -5,10 +5,8 @@ and serves the device web dashboard. The daemon ships **enabled** but does
 nothing on its own — it just runs its event loop and the status page until you
 enable a plugin. Every bundled plugin ships **disabled**.
 
-The nineteen reference plugins are: `memtemp`, `session-stats`, `gps`,
-`wpa-sec`, `wigle`, `backup`, `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-wse`, `ups-hat` (**deprecated:** replaced by
-`ups-ws`; `ups-hat` will be removed in a future release that requires a
-reflash), `eink-ws27`, `eink-ws213`, `updates`, `remote-train`, `downloads`, `map`, `ntfy`, and
+The eighteen reference plugins are: `memtemp`, `session-stats`, `gps`,
+`wpa-sec`, `wigle`, `backup`, `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-wse`, `eink-ws27`, `eink-ws213`, `updates`, `remote-train`, `downloads`, `map`, `ntfy`, and
 `telegram`.
 Each has its
 own setup guide where it needs one (see the [index](user-guides.md)).
@@ -58,7 +56,7 @@ A plugin that sends data off the device — anything with the `network` capabili
 explicit authorized-use acknowledgment as capture before it turns on. In a
 terminal you'll be prompted; for scripts, add `--yes` to acknowledge
 non-interactively. Local-only plugins (`memtemp`, `session-stats`, `ups-ws`,
-`ups-wsc`, `ups-wsd`, `ups-wse`, `eink-ws27`, `eink-ws213`, the deprecated `ups-hat`, and `gps`
+`ups-wsc`, `ups-wsd`, `ups-wse`, `eink-ws27`, `eink-ws213`, and `gps`
 reading a local receiver) don't need it.
 
 ## Disabling a plugin

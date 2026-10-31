@@ -230,7 +230,7 @@ Captures land in `/var/lib/kestrel/capture/` — one `.hc22000` file per SSID by
 
 Features ship as plugins hosted by a small daemon, `kestrel-daemon.service`. The daemon is installed and **enabled**, but benign on its own: with no plugins enabled it just runs an event loop and serves a read-only web status page over the management link. Nothing it does touches captures or the network until a plugin is explicitly enabled. It sources `on_handshake` from the capture store and `on_internet_available` from the management link (either BT PAN or Wi-Fi), dispatches hooks off its loop so one slow plugin can't stall the others, and also hosts the learning agent and the device UI. See [`docs/user-guide/user-guides.md`](docs/user-guide/user-guides.md) for step-by-step setup guides.
 
-Nineteen reference plugins ship, **all disabled**. Turn on only what you need. A plugin marked **yes** under *Sends data* sends data off the device, so enabling it takes the same authorized-use acknowledgment as capture and asks for your own settings (nothing is baked in). The others read and drive only the device and its local hardware. Starting capture with the e-ink HAT's key still needs the acknowledgment you gave before.
+Eighteen reference plugins ship, **all disabled**. Turn on only what you need. A plugin marked **yes** under *Sends data* sends data off the device, so enabling it takes the same authorized-use acknowledgment as capture and asks for your own settings (nothing is baked in). The others read and drive only the device and its local hardware. Starting capture with the e-ink HAT's key still needs the acknowledgment you gave before.
 
 | Plugin | What it does | Sends data | Guide |
 | --- | --- | :---: | --- |
@@ -259,7 +259,6 @@ Nineteen reference plugins ship, **all disabled**. Turn on only what you need. A
 | `updates` | Alerts on a newer release and applies an app-layer update in place, no reflash. | yes | [Updates](docs/user-guide/updates.md) |
 | `remote-train` | Offloads learning-agent training to a desktop over SSH. | yes | [Remote training](docs/user-guide/remote-training.md) |
 | **Deprecated** | | | |
-| `ups-hat` | The old name of `ups-ws`. Switch to `ups-ws`: `ups-hat` will be removed in a future release that requires a reflash. | | [ups-hat](docs/user-guide/ups-hat-setup.md) |
 
 <p align="center">
   <img src="docs/images/plugins.png" alt="Plugins on a phone: the UPS HAT battery card with charge, time to shutdown and the auto-shutdown limit; the GPS, memtemp, ntfy, session-stats and updates cards; and the ntfy alerts page with the topic to subscribe to" width="840">

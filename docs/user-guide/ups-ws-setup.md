@@ -5,10 +5,10 @@ Operator guide for the `ups-ws` reference plugin, which reads the
 cleanly shut the device down before the pack runs flat. Like every reference
 plugin it ships **disabled**.
 
-`ups-ws` is the plugin that used to be called `ups-hat`, under a name that says
-which board it drives (`ups-ws` plus Waveshare's model letter; the plain "UPS
-HAT" has none): the same readout, auto-shutdown and options. `ups-hat` still
-works but is deprecated; see [Switching from `ups-hat`](#switching-from-ups-hat).
+`ups-ws` replaced the plugin called `ups-hat`, under a name that says which
+board it drives (`ups-ws` plus Waveshare's model letter; the plain "UPS HAT" has
+none): the same readout, auto-shutdown and options. `ups-hat` was removed in
+1.0.11; see [Coming from `ups-hat`](#coming-from-ups-hat).
 
 ## What it does
 
@@ -94,22 +94,13 @@ the vendor's reading.
 **One UPS plugin at a time.** Two UPS plugins enabled together never both read
 the board: the second stands down (its card names the one that reads the
 battery) and passes that one's readings on, so the dashboard and the e-ink face
-keep their battery readout. The deprecated `ups-hat` always gives way to
-`ups-ws`.
+keep their battery readout.
 
-## Switching from `ups-hat`
+## Coming from `ups-hat`
 
-Before this release the plugin was called `ups-hat`. It still ships and still
-works, but it is **deprecated** and will be removed in a future release that
-requires reflashing the SD card. `ups-ws` is the same plugin for the same HAT
-with the same options, so switching takes a minute:
-
-1. Note the settings you changed for `ups-hat`: `sudo kestrel plugins info ups-hat`
-   lists them (typically `shutdown_percent`).
-2. Enable `ups-ws` with the same settings: on the dashboard's Plugins page, or
-   `sudo kestrel plugins enable ups-ws --set shutdown_percent=5`.
-3. Disable `ups-hat`: `sudo kestrel plugins disable ups-hat`.
-
-If you forget step 3, nothing breaks: `ups-hat` stands down while `ups-ws` is
-enabled, and says so on its card.
-
+Up to 1.0.10 this plugin was also shipped under its old name, `ups-hat`.
+`ups-hat` was removed in 1.0.11, a release that needs reflashing the SD card, so
+after reflashing enable `ups-ws` with the settings you had for `ups-hat`
+(typically `shutdown_percent`): on the dashboard's Plugins page, or
+`sudo kestrel plugins enable ups-ws --set shutdown_percent=5`. It has the same
+options.

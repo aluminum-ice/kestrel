@@ -56,7 +56,7 @@ def _config(bus_range, gain):
 
 
 # Waveshare's set_calibration_16V_5A (0.01 ohm shunt, 16 V / 5 A): the UPS HAT
-# (C) demo's setting, and what the ups-hat plugin has always programmed.
+# (C) demo's setting, and what ups-ws (formerly ups-hat) has always programmed.
 CAL_16V_5A = Calibration("16V_5A", 26868, 0.1524, 0.003048, _config(0x00, 0x01))
 # Waveshare's set_calibration_32V_2A (0.1 ohm shunt, 32 V / 2 A): the UPS HAT and
 # UPS HAT (B) demos' setting.

@@ -218,31 +218,11 @@ How to use this file:
   `LIB_API = (1, 0)` and mark it stable in `plugin-libraries.md`.
 - **Pick up when:** a plugin for a second HAT with keys is written.
 
-## UPS HATs (`ups-ws`, the deprecated `ups-hat`, the `ups` and `ina219` libraries)
-
-### Remove the deprecated `ups-hat` plugin
-
-- **What:** delete `plugins/ups-hat.py`, `tests/test_ups_ws.py`'s same-code
-  check (move the `ups-hat` tests in `test_reference_plugins.py` onto `ups-ws`)
-  and `docs/user-guide/ups-hat-setup.md` (or reduce it to a pointer); in the
-  shipped `config.toml`, swap the `[plugins.ups-hat]` table and its comment for
-  `[plugins.ups-ws]`. Then drop `ups-hat` from the docs, `GUIDE_MD`, the plugin
-  lists and counts, `test_plugins_apply.py` and `tools/beta-check/`. Keep the
-  ghost-guide fixture's `UPS_NAMES` fallback until a stable release without
-  `ups-hat` is the latest.
-- **Why deferred:** as for `eink` (removed in 1.0.11): `ups-ws` replaced it in an app-layer release,
-  with `ups-hat` deprecated (and standing down when both are enabled). Removing
-  it now would stop the battery readout and the auto-shutdown on any device
-  updated in place that still has `ups-hat` enabled, with no message, and the
-  `config.toml` change makes a release reflash-class.
-- **What to do:** in a release that is reflash-class for another reason, and
-  after at least one release carrying the deprecation, make the change above
-  and say in that release's notes to enable `ups-ws` after reflashing.
-- **Pick up when:** a release has to be reflash-class anyway.
+## UPS HATs (`ups-ws`, the `ups` and `ina219` libraries)
 
 ### Confirm the UPS HAT's INA219 calibration on hardware
 
-- **What:** `ups-ws` (and `ups-hat`) set the INA219 up with `CAL_16V_5A` (a 0.01 ohm shunt,
+- **What:** `ups-ws` sets the INA219 up with `CAL_16V_5A` (a 0.01 ohm shunt,
   16 V / 5 A, 80 mV shunt range), while Waveshare's own demo for the UPS HAT and
   UPS HAT (B) uses `CAL_32V_2A` (a 0.1 ohm shunt, 32 V / 2 A, 320 mV). If the
   board's shunt is 0.1 ohm, the card's current and power read about ten times
