@@ -107,9 +107,9 @@
       # Pi Zero 2 W, 4 and 5 all run this arm64 image, so they share the
       # statically linked aarch64 musl build (no glibc version dependency).
       angryoxide:
-        version:  "v0.9.3"
+        version:  "v0.9.4"
         archive:  "angryoxide-linux-aarch64-musl.tar.gz"
-        checksum: "sha256:63b6eac74d175d03ba6e20976c8b7fd85ede28151b96702c936a270ba77ead88"
+        checksum: "sha256:b2e2e0f0b8351c0e1547c163aa45b45116517acd92054cd8969b81dd3181c83d"
         url:      "https://git.3ntropy.io/aluminum-ice/AngryOxide/releases/download"
     pip:
       bootstrap:

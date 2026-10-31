@@ -102,7 +102,7 @@ The HAT's four keys work too: KEY1 opens an info screen, a long KEY2 press stops
 
 ### Software
 
-- **[AngryOxide](https://git.3ntropy.io/aluminum-ice/AngryOxide) v0.9.3** at `/usr/bin/angryoxide`, with bash completion. The statically linked `aarch64-musl` release build runs on every supported board. AngryOxide captures only on an external USB WiFi adapter, not the built-in chip (see WiFi capture adapter below).
+- **[AngryOxide](https://git.3ntropy.io/aluminum-ice/AngryOxide) v0.9.4** at `/usr/bin/angryoxide`, with bash completion. The statically linked `aarch64-musl` release build runs on every supported board. AngryOxide captures only on an external USB WiFi adapter, not the built-in chip (see WiFi capture adapter below).
 - **No kernel headers or DKMS**: capture uses in-kernel drivers only, and Python packages install from prebuilt arm64 wheels, so the build compiles nothing. (Stock Raspberry Pi OS Lite itself ships `build-essential`.)
 - **CLI utilities**: `git`, `screen` (the [screenrc](https://github.com/aluminum-ice/screenrc) config is temporarily not installed), `lnav`, `p7zip-full` (7z), `ncdu`, `lsof`, `rsync`, `sqlite3`, `unzip`, `cifs-utils`, `openvpn`, `fonts-firacode`.
 

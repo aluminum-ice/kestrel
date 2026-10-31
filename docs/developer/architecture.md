@@ -289,7 +289,7 @@ the model, episode-log and `status.json` schemas are the normative
 - **Training** (`agent/train.py`): on-device fine-tuning gated by RAM and CPU
   temperature, or offloaded to a desktop via [Remote training](remote-training.md).
 
-**Design ceiling**: AngryOxide v0.9.3 is controllable only at launch time. Each
+**Design ceiling**: AngryOxide v0.9.4 is controllable only at launch time. Each
 posture change restarts the launcher for the next window (`decision_seconds`);
 there is no live mid-run steering and no per-target PMKID-vs-handshake choice
 (AngryOxide owns that internally). The escape hatch is a `contract_version` bump

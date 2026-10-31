@@ -6,8 +6,10 @@ This is the stable surface the capture service exposes for the plugin system and
 the reinforcement-learning agent. It is the promise about what stays put, so
 those consumers can build against it without reading the implementation. It is
 versioned: a change that breaks a consumer bumps `contract_version`. Pinning
-AngryOxide at v0.9.3 is what lets this stay stable; an AngryOxide bump is a
-contract review, not a drop-in.
+AngryOxide (v0.9.4) is what lets this stay stable; an AngryOxide bump is a
+contract review, not a drop-in. (v0.9.3 to v0.9.4 changed only how AngryOxide
+writes its kismet database, which nothing here reads, so the contract stayed
+at version 3.)
 
 Version 2 added the best-effort in-range readout (`capture-status.json`, under
 [Status](#status)); it is additive, so a v1 consumer that reads only the
