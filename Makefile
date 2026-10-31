@@ -150,7 +150,7 @@ lint:
 	# captures or device data (CLAUDE.md, "Nothing real in the repo").
 	python3 tools/real-data-check/real_data_check.py
 
-# Framework unit tests (run with the venv's pytest on-device; needs pytest and
+# Framework unit tests (run on the build host or in CI, not on the device; need pytest and
 # flask/requests). Not part of `lint`/CI, which only has the lint tools.
 .PHONY: test
 test:
