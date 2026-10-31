@@ -119,14 +119,16 @@ class RemoteTrain(Plugin):
         # Literal default (not _DEFAULT_KEY): plugins-ctl reads __options__ with
         # ast.literal_eval and never imports plugin code.
         "ssh_key": {"type": "str", "default": "/home/pi/.ssh/id_ed25519"},
-        # Which per-algorithm models to keep trained remotely: a comma-separated
-        # subset of the agent's algorithms. Defaults to all four; empty trains
-        # nothing. A string (not a TOML array) so it is settable via
-        # `plugins ... --set` and the web settings page like every scalar option.
+        # Which per-algorithm models to keep trained remotely, beyond the one
+        # the agent runs (always trained, first): a comma-separated subset of
+        # the agent's algorithms. Defaults to all four. A string (not a TOML
+        # array) so it is settable via `plugins ... --set` and the web settings
+        # page like every scalar option.
         "algorithms": {
             "type": "str", "default": "RecurrentPPO,PPO,DQN,QR-DQN",
             "help": "Comma-separated, case-sensitive. Any of: "
-                    "RecurrentPPO, PPO, DQN, QR-DQN. Empty trains nothing.",
+                    "RecurrentPPO, PPO, DQN, QR-DQN. The algorithm the agent "
+                    "runs is always trained, first, even when it isn't listed.",
         },
         # Data-driven trigger: launch a run for an algorithm only once this many
         # new episodes have accrued since its model's watermark.
@@ -271,7 +273,7 @@ class RemoteTrain(Plugin):
         algorithms = self._algorithms()
         if not algorithms:
             self._train_now.clear()
-            self._set_status("idle: no algorithms selected")
+            self._set_status("idle: no algorithm to train")
             return
         if not self._run_lock.acquire(blocking=False):
             return
@@ -1065,7 +1067,8 @@ class RemoteTrain(Plugin):
                 "the detail" % (self._host(), self._contact_age()))
         elif not self._algorithms():
             self.context.health_note = (
-                "no algorithms selected to train (set algorithms=...)")
+                "no algorithm to train: the agent's algorithm couldn't be "
+                "read from config.toml and the algorithms list is empty")
         elif self._stack_err:
             self.context.health_note = (
                 "host training stack not ready: %s" % self._stack_err)

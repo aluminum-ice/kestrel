@@ -162,7 +162,8 @@ def test_option_field_renders_help_and_default_hints():
     # the default is still shown; both guide the operator on the settings page.
     spec = {"type": "str", "default": "RecurrentPPO,PPO,DQN,QR-DQN",
             "help": "Comma-separated, case-sensitive. Any of: "
-                    "RecurrentPPO, PPO, DQN, QR-DQN. Empty trains nothing."}
+                    "RecurrentPPO, PPO, DQN, QR-DQN. The algorithm the agent "
+                    "runs is always trained, first, even when it isn't listed."}
     html = web._option_field("algorithms", spec, {}, set(), False)
     assert "Comma-separated, case-sensitive" in html
     assert "default: RecurrentPPO,PPO,DQN,QR-DQN" in html

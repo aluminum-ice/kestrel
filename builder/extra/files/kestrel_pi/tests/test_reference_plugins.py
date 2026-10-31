@@ -2316,7 +2316,7 @@ def test_remote_train_health_note_states(tmp_path):
     plugin, _mod, _ad = _make_remote_train(tmp_path, algorithms=[],
                                            _agent_algorithm="bogus")
     plugin._set_health()
-    assert "no algorithms" in plugin.context.health_note
+    assert "no algorithm to train" in plugin.context.health_note
     # A recorded host-prep failure surfaces on the /plugins note and survives
     # the per-epoch _set_health() refresh (it reads the cached reason).
     plugin, _mod, _ad = _make_remote_train(tmp_path)
