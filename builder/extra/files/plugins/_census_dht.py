@@ -10,6 +10,16 @@ Loaded by the ``census`` plugin with ``kestrel_pi.load_helper``; the desktop
 census report loads it the same way. Stdlib + ``cryptography``.
 """
 
+import errno
+import os
+import select
+import socket
+import time
+
+# IPv4 + UDP headers, counted with every packet against the data budget.
+UDP_IP_OVERHEAD = 28
+
+
 # -- bencode -------------------------------------------------------------------
 
 class BencodeError(ValueError):
@@ -142,7 +152,6 @@ def crc32c(data):
 
 def ip_int(ip):
     """An IPv4 address as an integer; ValueError for anything else."""
-    import socket
     try:
         return int.from_bytes(socket.inet_aton(ip), "big")
     except (OSError, TypeError):
@@ -186,3 +195,177 @@ def bep42_make_id(ip, rng):
     head = bytes([(crc >> 24) & 0xFF, (crc >> 16) & 0xFF,
                   ((crc >> 8) & 0xF8) | rng.randrange(8)])
     return head + bytes(rng.randrange(256) for _ in range(16)) + bytes([rand])
+
+
+# -- transport -------------------------------------------------------------------
+
+# A send or receive failing with one of these means the interface the socket is
+# bound to has gone (a phone tether that dropped).
+_LINK_ERRNOS = frozenset({errno.ENODEV, errno.ENETDOWN, errno.ENETUNREACH,
+                          errno.EADDRNOTAVAIL})
+
+
+class TetherBindError(OSError):
+    """The socket couldn't be bound to the requested interface."""
+
+
+class LinkDown(OSError):
+    """The interface the socket is bound to went away mid-cycle."""
+
+
+class UdpTransport:
+    """A non-blocking UDP socket on an ephemeral port, optionally bound to one
+    interface (``SO_BINDTODEVICE``, allowed for an unprivileged user since
+    Linux 5.7), so that its packets leave only by that interface."""
+
+    def __init__(self, bind_device=None):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if bind_device:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET,
+                                getattr(socket, "SO_BINDTODEVICE", 25),
+                                bind_device.encode() + b"\0")
+            except OSError as exc:
+                sock.close()
+                raise TetherBindError(exc.errno, "can't bind to %s: %s"
+                                      % (bind_device, exc.strerror)) from None
+        sock.bind(("0.0.0.0", 0))
+        sock.setblocking(False)
+        self._sock = sock
+
+    def send(self, data, addr):
+        """True when the packet went out; LinkDown when the interface is gone."""
+        try:
+            self._sock.sendto(data, addr)
+            return True
+        except OSError as exc:
+            if exc.errno in _LINK_ERRNOS:
+                raise LinkDown(exc.errno, exc.strerror) from None
+            return False
+
+    def recv(self, timeout):
+        """``(data, (ip, port))``, or None once ``timeout`` seconds pass with
+        nothing to read."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            try:
+                ready, _w, _x = select.select([self._sock], [], [], left)
+            except InterruptedError:
+                continue
+            if not ready:
+                return None
+            try:
+                data, addr = self._sock.recvfrom(4096)
+            except (BlockingIOError, InterruptedError):
+                continue
+            except OSError as exc:
+                if exc.errno in _LINK_ERRNOS:
+                    raise LinkDown(exc.errno, exc.strerror) from None
+                continue
+            return data, (addr[0], addr[1])
+
+    def close(self):
+        self._sock.close()
+
+
+# -- KRPC ------------------------------------------------------------------------
+
+class KrpcClient:
+    """Sends KRPC queries and matches their replies.
+
+    Every query carries ``ro = 1`` (BEP 43: don't add this node to routing
+    tables) and no client version. A packet is used only when it is a reply
+    (``y`` is ``r`` or ``e``) to a query still outstanding, from the exact
+    address that query went to; everything else is dropped and counted. At most
+    ``max_in_flight`` queries are outstanding at once, and at most ``rate``
+    are sent per second. Bytes sent and received (with IP and UDP headers) are
+    counted for the data budget."""
+
+    def __init__(self, transport, node_id=None, clock=time.monotonic,
+                 sleep=time.sleep, timeout=2.0, max_in_flight=8, rate=10.0):
+        self.transport = transport
+        self.node_id = node_id or os.urandom(20)
+        self.clock = clock
+        self.sleep = sleep
+        self.timeout = timeout
+        self.max_in_flight = max_in_flight
+        self.rate = float(rate)
+        self.sent_bytes = 0
+        self.received_bytes = 0
+        self.queries = 0
+        self.dropped = 0
+        self._allowance = self.rate
+        self._last = clock()
+
+    def query(self, requests):
+        """Send each ``(addr, method, args)`` and wait for the replies. Returns,
+        in order, ``(reply_dict, None)`` or ``(None, reason)`` with reason
+        ``"timeout"``, ``"unsent"``, ``"malformed"`` or ``"e<code>"`` for a
+        KRPC error reply. Raises LinkDown when the interface goes away."""
+        results = []
+        for start in range(0, len(requests), self.max_in_flight):
+            results.extend(self._batch(requests[start:start + self.max_in_flight]))
+        return results
+
+    def _batch(self, requests):
+        results = [(None, "timeout")] * len(requests)
+        pending = {}
+        for idx, (addr, method, args) in enumerate(requests):
+            self._throttle()
+            tid = os.urandom(2)
+            while tid in pending:
+                tid = os.urandom(2)
+            body = dict(args)
+            body[b"id"] = self.node_id
+            packet = bencode({b"t": tid, b"y": b"q", b"q": method, b"a": body, b"ro": 1})
+            if not self.transport.send(packet, addr):
+                results[idx] = (None, "unsent")
+                continue
+            self.sent_bytes += len(packet) + UDP_IP_OVERHEAD
+            self.queries += 1
+            pending[tid] = (idx, (addr[0], addr[1]))
+        deadline = self.clock() + self.timeout
+        while pending:
+            left = deadline - self.clock()
+            if left <= 0:
+                break
+            got = self.transport.recv(left)
+            if got is None:
+                break
+            data, src = got
+            self.received_bytes += len(data) + UDP_IP_OVERHEAD
+            try:
+                msg = bdecode(data)
+            except BencodeError:
+                msg = None
+            kind = msg.get(b"y") if isinstance(msg, dict) else None
+            entry = pending.get(msg.get(b"t")) if kind in (b"r", b"e") else None
+            if entry is None or entry[1] != (src[0], src[1]):
+                self.dropped += 1
+                continue
+            del pending[msg[b"t"]]
+            idx = entry[0]
+            if kind == b"r" and isinstance(msg.get(b"r"), dict):
+                results[idx] = (msg[b"r"], None)
+            elif kind == b"e":
+                err = msg.get(b"e")
+                code = err[0] if isinstance(err, list) and err and isinstance(err[0], int) else 0
+                results[idx] = (None, "e%d" % code)
+            else:
+                results[idx] = (None, "malformed")
+        return results
+
+    def _throttle(self):
+        """A token bucket: ``rate`` sends a second, bursting up to ``rate``."""
+        now = self.clock()
+        self._allowance = min(self.rate, self._allowance + (now - self._last) * self.rate)
+        self._last = now
+        if self._allowance < 1.0:
+            self.sleep((1.0 - self._allowance) / self.rate)
+            now = self.clock()
+            self._allowance = min(self.rate, self._allowance + (now - self._last) * self.rate)
+            self._last = now
+        self._allowance -= 1.0

@@ -224,3 +224,151 @@ def test_bep42_exempt_ranges_and_bad_input():
     assert not dht.bep42_valid("x" * 20, "192.0.2.1")
     assert not dht.bep42_valid(bytes(20), "not-an-ip")
     assert not dht.bep42_valid(bytes(20), "2001:db8::1")
+
+
+# -- step 4: transport and KRPC client -----------------------------------------------
+
+class FakeClock:
+    """A clock that moves only when something sleeps on it."""
+
+    def __init__(self, start=1000.0):
+        self.now = start
+        self.slept = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+        self.slept += seconds
+
+
+class FakeTransport:
+    """Hands each sent packet to ``responder(packet, addr) -> [(data, src)]``
+    and queues what it returns for ``recv``. ``recv`` returns None when the
+    queue is empty, as the real one does when its timeout passes."""
+
+    def __init__(self, responder):
+        self.responder = responder
+        self.sent = []
+        self.inbox = []
+        self.max_outstanding = 0
+        self._since_recv = 0
+
+    def send(self, data, addr):
+        self.sent.append((data, addr))
+        self._since_recv += 1
+        self.max_outstanding = max(self.max_outstanding, self._since_recv)
+        self.inbox.extend(self.responder(data, addr))
+        return True
+
+    def recv(self, timeout):
+        self._since_recv = 0
+        return self.inbox.pop(0) if self.inbox else None
+
+
+def _reply(packet, body, src):
+    msg = dht.bdecode(packet)
+    return (dht.bencode({b"t": msg[b"t"], b"y": b"r", b"r": body}), src)
+
+
+def test_krpc_queries_are_read_only_and_carry_no_version():
+    sent = []
+
+    def responder(packet, addr):
+        sent.append(dht.bdecode(packet))
+        return [_reply(packet, {b"id": bytes(20)}, addr)]
+    clock = FakeClock()
+    client = dht.KrpcClient(FakeTransport(responder), node_id=b"N" * 20,
+                            clock=clock, sleep=clock.sleep)
+    out = client.query([(("192.0.2.1", 6881), b"ping", {}),
+                        (("192.0.2.2", 6881), b"get", {b"target": bytes(20)})])
+    assert [err for _r, err in out] == [None, None]
+    for msg in sent:
+        assert msg[b"ro"] == 1 and msg[b"y"] == b"q"
+        assert b"v" not in msg and msg[b"a"][b"id"] == b"N" * 20
+    assert [m[b"q"] for m in sent] == [b"ping", b"get"]
+    assert client.queries == 2 and client.sent_bytes > 0 and client.received_bytes > 0
+
+
+def test_krpc_drops_anything_that_isnt_a_reply_to_its_own_query():
+    def responder(packet, addr):
+        msg = dht.bdecode(packet)
+        good = _reply(packet, {b"id": bytes(20)}, addr)
+        return [
+            (good[0], ("198.51.100.9", addr[1])),            # right tid, wrong host
+            (good[0], (addr[0], addr[1] + 1)),               # right tid, wrong port
+            (dht.bencode({b"t": b"zz", b"y": b"r", b"r": {}}), addr),   # unknown tid
+            (dht.bencode({b"t": msg[b"t"], b"y": b"q", b"q": b"ping",
+                          b"a": {b"id": bytes(20)}}), addr),            # a query
+            (b"\xff garbage", addr),
+            good,                                            # finally, the reply
+        ]
+    clock = FakeClock()
+    client = dht.KrpcClient(FakeTransport(responder), clock=clock, sleep=clock.sleep)
+    [(reply, err)] = client.query([(("192.0.2.1", 6881), b"ping", {})])
+    assert err is None and reply == {b"id": bytes(20)}
+    assert client.dropped == 5
+
+
+def test_krpc_reports_errors_and_timeouts():
+    def responder(packet, addr):
+        msg = dht.bdecode(packet)
+        if addr[0] == "192.0.2.1":
+            return [(dht.bencode({b"t": msg[b"t"], b"y": b"e",
+                                  b"e": [302, b"sequence number less than current"]}), addr)]
+        if addr[0] == "192.0.2.2":
+            return [(dht.bencode({b"t": msg[b"t"], b"y": b"r", b"r": b"not a dict"}), addr)]
+        return []                                            # silent
+    clock = FakeClock()
+    client = dht.KrpcClient(FakeTransport(responder), clock=clock, sleep=clock.sleep)
+    out = client.query([(("192.0.2.1", 1), b"put", {}), (("192.0.2.2", 1), b"get", {}),
+                        (("192.0.2.3", 1), b"get", {})])
+    assert [err for _r, err in out] == ["e302", "malformed", "timeout"]
+
+
+def test_krpc_rate_limit_and_in_flight_cap():
+    clock = FakeClock()
+    transport = FakeTransport(lambda packet, addr: [_reply(packet, {b"id": bytes(20)}, addr)])
+    client = dht.KrpcClient(transport, clock=clock, sleep=clock.sleep)
+    out = client.query([(("192.0.2.%d" % i, 6881), b"ping", {}) for i in range(1, 26)])
+    assert all(err is None for _r, err in out)
+    # 25 sends at 10 a second with a burst of 10: at least 1.5 s of waiting.
+    assert clock.slept >= 1.5 - 1e-9
+    assert transport.max_outstanding <= 8
+
+
+def test_krpc_link_down_propagates():
+    import pytest
+
+    class Gone(FakeTransport):
+        def send(self, data, addr):
+            raise dht.LinkDown(19, "No such device")
+    clock = FakeClock()
+    client = dht.KrpcClient(Gone(lambda p, a: []), clock=clock, sleep=clock.sleep)
+    with pytest.raises(dht.LinkDown):
+        client.query([(("192.0.2.1", 6881), b"ping", {})])
+
+
+def test_udp_transport_round_trip_on_loopback():
+    import socket
+    peer = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    peer.bind(("127.0.0.1", 0))
+    transport = dht.UdpTransport()
+    try:
+        port = transport._sock.getsockname()[1]
+        assert transport.send(b"hello", peer.getsockname())
+        data, src = peer.recvfrom(64)
+        assert data == b"hello"
+        peer.sendto(b"back", ("127.0.0.1", port))
+        assert transport.recv(2.0) == (b"back", peer.getsockname())
+        assert transport.recv(0.05) is None
+    finally:
+        transport.close()
+        peer.close()
+
+
+def test_udp_transport_bind_to_a_missing_interface_fails_clearly():
+    import pytest
+    with pytest.raises(dht.TetherBindError):
+        dht.UdpTransport(bind_device="kcensus-none0")
