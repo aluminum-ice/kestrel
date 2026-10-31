@@ -709,3 +709,103 @@ def test_slot_cache_round_trips_and_ignores_junk():
     assert again.get(target) == []
     junk = dht.SlotCache({"aa": [["192.0.2.1", 0], [5, 1], "x", ["192.0.2.3", 9]], 5: [], "bb": "x"})
     assert junk.to_json() == {"aa": [["192.0.2.3", 9]]}
+
+
+# -- step 7: BEP 44 get and put ---------------------------------------------------------
+
+def _keypair():
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    sk = Ed25519PrivateKey.generate()
+    return sk, sk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+
+def test_items_sign_and_verify():
+    sk, pk = _keypair()
+    sig = sk.sign(dht.signed_payload(7, b"value"))
+    assert dht.verify_item(pk, 7, b"value", sig)
+    assert not dht.verify_item(pk, 8, b"value", sig)
+    assert not dht.verify_item(pk, 7, b"other", sig)
+    assert not dht.verify_item(_keypair()[1], 7, b"value", sig)
+    assert not dht.verify_item(pk, 7, b"value", sig[:-1] + bytes([sig[-1] ^ 1]))
+    assert not dht.verify_item(b"short", 7, b"value", sig)
+
+
+def test_items_match_the_bep44_published_example():
+    # BEP 44's own test vector for a mutable item without salt.
+    pk = bytes.fromhex("77ff84905a91936367c01360803104f92432fcd904a43511876df5cdf3e7e548")
+    sig = bytes.fromhex("305ac8aeb6c9c151fa120f120ea2cfb923564e11552d06a5d856091e5e853cff"
+                        "1260d3f39e4999684aa92eb73ffd136e6f4f3ecbfda0ce53a1608ecd7ae21f01")
+    assert dht.verify_item(pk, 1, b"Hello World!", sig)
+    assert dht.item_target(pk).hex() == "4a533d47ec9c7d95b1ad75f576cffc641853b750"
+
+
+def test_put_then_get_from_elsewhere():
+    net = FakeDHT(invalid=0.3, seed=21)
+    writer, wpool = _client(net, seed=1)
+    net.seed_pool(wpool)
+    sk, pk = _keypair()
+    empty = dht.get_item(writer, wpool, None, pk)
+    assert empty.values == [] and empty.max_seq == -1 and len(empty.storing) == 8
+    confirms, errors = dht.put_item(writer, empty, sk, pk, b"entry-bytes", 5)
+    assert confirms == 8 and not errors
+    # Another client with its own pool finds it.
+    reader, rpool = _client(net, seed=2)
+    net.seed_pool(rpool)
+    got = dht.get_item(reader, rpool, None, pk)
+    assert got.holders >= 3 and set(got.values) == {b"entry-bytes"} and got.max_seq == 5
+
+
+def test_get_uses_cached_nodes_and_falls_back_to_a_lookup():
+    net = FakeDHT(invalid=0.0, seed=22)
+    client, pool = _client(net)
+    net.seed_pool(pool)
+    cache = dht.SlotCache()
+    sk, pk = _keypair()
+    first = dht.get_item(client, pool, cache, pk)
+    cached = cache.get(first.target)
+    assert len(cached) == 8
+    before = client.queries
+    dht.get_item(client, pool, cache, pk)
+    assert client.queries - before == 8          # straight to the 8 cached nodes
+    # Five of them go quiet: fewer than 4 answer, so it looks the slot up again.
+    for addr in cached[:5]:
+        net.nodes[addr]["silent"] = True
+    before = client.queries
+    again = dht.get_item(client, pool, cache, pk)
+    assert client.queries - before > 8 and again.answered >= 4
+    assert cache.get(first.target) != cached
+
+
+def test_get_rejects_bad_values():
+    net = FakeDHT(invalid=0.0, seed=23)
+    client, pool = _client(net)
+    net.seed_pool(pool)
+    sk, pk = _keypair()
+    fetched = dht.get_item(client, pool, None, pk)
+    dht.put_item(client, fetched, sk, pk, b"good", 3)
+    stored = [n for n in net.nodes.values() if fetched.target in n["store"]]
+    stored[0]["store"][fetched.target]["sig"] = bytes(64)                 # bad signature
+    stored[1]["store"][fetched.target]["k"] = _keypair()[1]               # another key
+    got = dht.get_item(client, pool, None, pk)
+    assert got.rejected == 2 and set(got.values) == {b"good"}
+    assert got.holders == len(stored) - 2
+
+
+def test_put_reports_a_lower_seq_and_refuses_a_frozen_slot():
+    import pytest
+    net = FakeDHT(invalid=0.0, seed=24)
+    client, pool = _client(net)
+    net.seed_pool(pool)
+    sk, pk = _keypair()
+    fetched = dht.get_item(client, pool, None, pk)
+    assert dht.put_item(client, fetched, sk, pk, b"a", 10)[0] == 8
+    confirms, errors = dht.put_item(client, fetched, sk, pk, b"b", 9)
+    assert confirms == 0 and errors == {"e302": 8}
+    frozen = dht.get_item(client, pool, None, pk)
+    dht.put_item(client, frozen, sk, pk, b"c", 5_000_000)
+    frozen = dht.get_item(client, pool, None, pk)
+    with pytest.raises(dht.SlotFrozen):
+        dht.put_item(client, frozen, sk, pk, b"d", 5_000_001, ceiling=1_000_000)
+    with pytest.raises(ValueError):
+        dht.put_item(client, fetched, sk, pk, b"x" * 1000, 11)

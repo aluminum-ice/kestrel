@@ -10,13 +10,18 @@ Loaded by the ``census`` plugin with ``kestrel_pi.load_helper``; the desktop
 census report loads it the same way. Stdlib + ``cryptography``.
 """
 
+import collections
 import errno
+import hashlib
 import ipaddress
 import json
 import os
 import select
 import socket
 import time
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 # IPv4 + UDP headers, counted with every packet against the data budget.
 UDP_IP_OVERHEAD = 28
@@ -612,3 +617,112 @@ class SlotCache:
 
     def to_json(self):
         return {t: [[ip, port] for ip, port in addrs] for t, addrs in self._nodes.items()}
+
+
+# -- BEP 44 mutable items ------------------------------------------------------------
+
+# A BEP 44 value is at most 1000 bytes, bencoded.
+MAX_VALUE = 1000
+
+
+class SlotFrozen(Exception):
+    """The item's stored sequence number is above the writer's ceiling, so the
+    writer can't replace it; it moves to another key."""
+
+
+def item_target(public_key):
+    """The DHT target of a mutable item with no salt: SHA-1 of its key."""
+    return hashlib.sha1(public_key).digest()
+
+
+def signed_payload(seq, value):
+    return b"3:seqi%de1:v" % seq + bencode(value)
+
+
+def verify_item(public_key, seq, value, sig):
+    try:
+        Ed25519PublicKey.from_public_bytes(public_key).verify(sig, signed_payload(seq, value))
+        return True
+    except (InvalidSignature, ValueError, TypeError):
+        return False
+
+
+class Fetched:
+    """What a ``get`` of one item found: every valid value (one per node that
+    holds one), the highest valid ``seq`` (-1 for none), and the nodes that can
+    store it, with their write tokens."""
+
+    def __init__(self, target):
+        self.target = target
+        self.values = []
+        self.max_seq = -1
+        self.storing = []          # [(node_id, addr, token)]
+        self.answered = 0
+        self.rejected = 0
+
+    @property
+    def holders(self):
+        return len(self.values)
+
+
+def get_item(client, pool, cache, public_key, only_bep42=True, min_cached=4):
+    """``get`` the mutable item for ``public_key``: straight from the storing
+    nodes cached for it today while at least ``min_cached`` of them answer,
+    otherwise by a lookup (whose nodes are then cached). A value counts only
+    when its key matches, its signature verifies and it is within BEP 44's
+    size limit."""
+    target = item_target(public_key)
+    replies = []
+    cached = cache.get(target) if cache is not None else []
+    if len(cached) >= min_cached:
+        out = client.query([(addr, b"get", {b"target": target}) for addr in cached])
+        for addr, (reply, _err) in zip(cached, out):
+            node_id = reply.get(b"id") if reply else None
+            if (isinstance(node_id, bytes) and len(node_id) == 20
+                    and (bep42_valid(node_id, addr[0]) or not only_bep42)):
+                replies.append((node_id, addr, reply))
+    if len(replies) < min_cached:
+        replies, _stats = lookup(client, pool, target, b"get", only_bep42)
+        if cache is not None:
+            if replies:
+                cache.set(target, [addr for _n, addr, _r in replies])
+            else:
+                cache.drop(target)
+    fetched = Fetched(target)
+    for node_id, addr, reply in replies:
+        fetched.answered += 1
+        token = reply.get(b"token")
+        if isinstance(token, bytes) and 0 < len(token) <= 64:
+            fetched.storing.append((node_id, addr, token))
+        value, key, seq, sig = (reply.get(b"v"), reply.get(b"k"),
+                                reply.get(b"seq"), reply.get(b"sig"))
+        if value is None:
+            continue
+        if (key == public_key and isinstance(seq, int) and seq >= 0
+                and isinstance(sig, bytes) and len(sig) == 64
+                and len(bencode(value)) <= MAX_VALUE
+                and verify_item(public_key, seq, value, sig)):
+            fetched.values.append(value)
+            fetched.max_seq = max(fetched.max_seq, seq)
+        else:
+            fetched.rejected += 1
+    return fetched
+
+
+def put_item(client, fetched, private_key, public_key, value, seq, ceiling=None):
+    """``put`` ``value`` at ``seq``, signed, to the nodes ``fetched`` found.
+    Raises SlotFrozen when the stored ``seq`` is above ``ceiling``. Returns
+    ``(confirms, errors)``, errors a Counter of the failures' reasons (``e302``
+    means the node holds a higher or equal ``seq``)."""
+    if ceiling is not None and fetched.max_seq > ceiling:
+        raise SlotFrozen(fetched.max_seq)
+    if len(bencode(value)) > MAX_VALUE:
+        raise ValueError("value too big for one item")
+    sig = private_key.sign(signed_payload(seq, value))
+    requests = [(addr, b"put", {b"token": token, b"k": public_key, b"seq": seq,
+                                b"sig": sig, b"v": value})
+                for _n, addr, token in fetched.storing]
+    out = client.query(requests)
+    confirms = sum(1 for reply, _err in out if reply is not None)
+    errors = collections.Counter(err for reply, err in out if reply is None)
+    return confirms, errors
