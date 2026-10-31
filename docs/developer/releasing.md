@@ -98,7 +98,8 @@ The workflow writes `update-manifest.json` and attaches it to the release:
 
 `kind` is `app-layer` or `reflash`; `requires_reflash_reason` is a short
 human string, set only for a reflash. A release with **no** manifest is treated
-by the plugin as reflash.
+by the plugin as reflash. An optional `min_update_from` names the oldest
+installed version the in-place update may be applied on (see below).
 
 In `auto` mode, `kind` comes from the diff against the **previous release by
 version**: for a stable release, the highest stable release below it; for a
@@ -106,6 +107,18 @@ beta, the highest release of either kind below it. A stable release is never
 compared with a beta, because a device on the stable channel never ran the
 betas: if `1.3.0-beta.1` changed the playbook, `1.3.0` must still come out
 reflash for a device on `1.2.x`.
+
+A device that flashed that beta doesn't need to flash again, though. So when a
+stable release comes out reflash against the previous stable one, the workflow
+also diffs it against each beta of its own cycle, newest first, and stops at
+the first whose diff touches a build-layer input. If the betas from some
+`1.3.0-beta.N` up to the newest all diffed clean, `1.3.0` is `app-layer` with
+`"min_update_from": "1.3.0-beta.N"`: devices on that beta or later update in
+place, and the plugin and `update-apply --verify` send a device on `1.2.x` (or
+an older beta) to reflash. The release notes say so. The logic lives in
+`.forgejo/update_manifest.py`, tested by `.forgejo/test_update_manifest.py`
+(run by `make test`). Forcing `update_kind` to `app-layer` or `reflash` skips
+it, as before.
 
 ## Release notes
 
@@ -121,7 +134,8 @@ rather than being a bare "Built from `<sha>`". The generator:
 - groups their subjects into **New** (subjects starting `Add` / `Introduce` /
   `Create` / `Ship`), **Fixes** (`Fix` / `Correct` / `Prevent` / `Stop`), and
   **Improvements** (everything else);
-- adds an install-type line from the manifest (`app-layer` → apply in place;
+- adds an install-type line from the manifest (`app-layer` → apply in place,
+  naming the oldest version it applies on when there is a `min_update_from`;
   `reflash` → flash, with the reason), and a `Built from <sha>` footer.
 
 Grouping is a first-word heuristic, so the notes are only as good as the commit

@@ -2,7 +2,7 @@
 """Generate grouped release notes for a kestrel release.
 
 Reads the release metadata from update-manifest.json (version, kind, commit,
-reflash reason), collects the commits unique to this release (reachable from the
+reflash reason, min_update_from), collects the commits unique to this release (reachable from the
 release commit but not from any earlier tag), groups them into New /
 Improvements / Fixes, and prints Markdown notes to stdout. CI tooling only; not
 shipped in the image.
@@ -52,7 +52,7 @@ def collect_commits(ref, prev_tags):
     return subjects
 
 
-def render(version, kind, commit, reason, subjects):
+def render(version, kind, commit, reason, subjects, min_from=""):
     groups = {"new": [], "improvement": [], "fix": []}
     for s in subjects:
         groups[classify(s)].append(s)
@@ -75,7 +75,10 @@ def render(version, kind, commit, reason, subjects):
         lines.append("Maintenance release.")
         lines.append("")
 
-    if kind == "app-layer":
+    if kind == "app-layer" and min_from:
+        install = (f"_Install: app-layer on {min_from} or later — apply in place via "
+                   "the updates plugin; older devices flash the image._")
+    elif kind == "app-layer":
         install = "_Install: app-layer — apply in place via the updates plugin._"
     elif kind == "reflash":
         install = f"_Install: reflash — {reason}._" if reason else "_Install: reflash — flash the image._"
@@ -103,6 +106,7 @@ def main():
     kind = m.get("kind", "")
     commit = m.get("commit", "")
     reason = m.get("requires_reflash_reason", "")
+    min_from = m.get("min_update_from", "")
 
     if opts.prev_tags is not None:
         prev_tags = opts.prev_tags.split()
@@ -110,7 +114,8 @@ def main():
         prev_tags = [t for t in git("tag").split() if t and t != version]
 
     subjects = collect_commits(opts.ref, prev_tags)
-    sys.stdout.write(render(version, kind, commit[:7] if commit else "", reason, subjects))
+    sys.stdout.write(render(version, kind, commit[:7] if commit else "", reason, subjects,
+                            min_from))
 
 
 if __name__ == "__main__":
