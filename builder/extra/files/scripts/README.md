@@ -16,22 +16,37 @@ scp pi@<device>:/usr/local/share/kestrel/scripts/pull-agent-diagnostics.sh .
 
 ## What's here
 
-Each `pull-*` script reads the device read-only over SSH and writes a single
-shareable `.tar.gz`; `gps-check.sh` is an interactive live check instead.
+Each `pull-*` script reads the device read-only over SSH and saves one report:
+a private text file for `pull-health.sh` and `pull-eink-diagnostics.sh`, a
+`.tar.gz` for the others. `gps-check.sh` is an interactive live check instead.
 
-- `pull-device-diagnostics.sh` — the "grab this first" general health bundle:
-  image version, board/OS/kernel, firmware throttling + temperature, disk,
-  memory, uptime, every `kestrel-*` unit's state, failed units, which features
-  are enabled and the plugin list. MAC/IP-redacted on the device; never runs
-  `kestrel status` or dumps `config.toml`.
+- `pull-health.sh` — the "grab this first" health check (it replaced
+  `pull-device-diagnostics.sh` and `pull-capture-health.sh`). It opens with a
+  **verdict** (OK / WARN / FAIL lines), then the readings:
+  - the device: version, update status, uptime, temperature and throttling,
+    disk and memory;
+  - every `kestrel` unit's state, last start and restart count, and failed
+    units;
+  - which features are on, and the plugin list;
+  - capture: config (no whitelist), the authorized-use acknowledgment, the
+    whitelist's size, the USB adapter, whether AngryOxide and the collector are
+    running, how recently the capture database was written, and whether the
+    dashboard's *Environment* reading is current (it tells "capture is fine but
+    the collector can't read the database" apart from "capture stopped");
+  - store counts, and the learning agent's state;
+  - journal error and traceback counts per unit, scrubbed recent warnings, and
+    kernel USB/Wi-Fi disconnects.
+
+  Run as your login user, no sudo. It reads no capture content: no hashlines,
+  network names, BSSIDs, whitelist entries, capture file names or capture-unit
+  log text (counts only). MACs, IPs, coordinates, a custom hostname, a
+  non-default login and quoted log text are masked on the device. Saves one
+  private file, `kestrel-health-<time>.txt` (mode 600), and refuses to save
+  inside a git checkout.
 - `pull-connectivity-diagnostics.sh` — BT-PAN / Wi-Fi / internet triage:
   profile and link state, routes, DNS, device-side reachability and the
   connectivity journal. MAC/IP-redacted on the device; never reads the Wi-Fi
   SSID or any NetworkManager secret.
-- `pull-capture-health.sh` — capture health only: config (no whitelist), the
-  authorized-use ack, the detected adapter, the capture unit's systemd health
-  and aggregate store sizes. Deliberately reads **no** capture content — not the
-  hashlines, raw captures, whitelist or capture journal.
 - `pull-agent-diagnostics.sh` — pull a PII-free snapshot of the learning
   agent's model-promotion state off a field unit (read-only over SSH), so
   quality-aware promotion can be reviewed off-device. It never pulls the model

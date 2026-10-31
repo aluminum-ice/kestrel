@@ -89,6 +89,7 @@ FORBIDDEN_NAMES = ("capture-seen.json", "capture-status.json",
                    "id_rsa", "id_ecdsa", "id_ed25519", "id_dsa")
 FORBIDDEN_NAME_RES = (re.compile(r"^model-.*\.zip$"),
                       re.compile(r"^kestrel-beta-check-\d"),   # beta check reports
+                      re.compile(r"^kestrel-health-\d{8}T\d{6}Z\.txt$"),  # pull-health.sh
                       # a scripts/pull-*.sh report or bundle saved as one file
                       re.compile(r"^[a-z0-9-]+-diagnostics-\d{8}T\d{6}Z(\.txt|\.tar\.gz)?$"))
 # Bundles the scripts/pull-*.sh tools write into the current directory.
