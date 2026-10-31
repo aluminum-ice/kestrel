@@ -154,25 +154,49 @@ else
   say INFO "capture is off (enabled = $cap_on)"
 fi
 
-echo "capture database (run dir; files never opened, ages only):"
-newest_db=""
-for db in $(ls -t "$RUNDIR"/*.kismet 2>/dev/null); do
-  [ -z "$newest_db" ] && newest_db=$db
-  printf '  kismet db: %8s KB, written %ss ago\n' "$(( $(stat -c %s "$db") / 1024 ))" "$(age_of "$db")"
+echo "AngryOxide's output files (run dir; files never opened, sizes and ages only):"
+newest_cap=""
+for f in $(ls -t "$RUNDIR"/*.pcapng 2>/dev/null); do
+  [ -z "$newest_cap" ] && newest_cap=$f
+  printf '  capture file (pcapng): %8s KB, written %ss ago\n' "$(( $(stat -c %s "$f") / 1024 ))" "$(age_of "$f")"
 done
-[ -z "$newest_db" ] && echo "  (no kismet database in the run dir)"
-if [ "$cap_on" = true ] && [ -n "$newest_db" ]; then
-  a=$(age_of "$newest_db")
-  if [ "$a" -le 300 ]; then say OK "capture database written ${a}s ago"
-  elif [ "$a" -le 900 ]; then say WARN "capture database last written ${a}s ago (AngryOxide writes in bursts; check again in a few minutes)"
-  else say FAIL "capture database not written for ${a}s: AngryOxide may have stalled or the adapter dropped"; fi
+for db in $(ls -t "$RUNDIR"/*.kismet 2>/dev/null); do
+  printf '  kismet database:       %8s KB, written %ss ago\n' "$(( $(stat -c %s "$db") / 1024 ))" "$(age_of "$db")"
+done
+[ -e "$(ls "$RUNDIR"/*.kismet-journal 2>/dev/null | head -1)" ] \
+  && echo "  a kismet-journal file is present (an insert was cut short, or AngryOxide is mid-write)"
+[ -z "$newest_cap" ] && echo "  (no capture file in the run dir)"
+# The capture file is a plain append, so its age says whether AngryOxide is
+# still capturing. (Its kismet database is no guide: AngryOxide commits one row
+# per frame and falls minutes behind in a busy area, while its file still updates.)
+if [ "$cap_on" = true ] && [ -n "$newest_cap" ]; then
+  a=$(age_of "$newest_cap")
+  if [ "$a" -le 120 ]; then say OK "capture file written ${a}s ago"
+  elif [ "$a" -le 600 ]; then say WARN "capture file last written ${a}s ago (a quiet channel? check again in a few minutes)"
+  else say FAIL "capture file not written for ${a}s: AngryOxide may have stalled or the adapter dropped"; fi
 elif [ "$cap_on" = true ]; then
-  say WARN "no capture database yet (capture just (re)started?)"
+  say WARN "no capture file yet (capture just (re)started?)"
+fi
+# AngryOxide queues every frame for its database without a limit, so in a busy
+# area its memory grows for as long as capture runs.
+ao_pid=$(pgrep -x angryoxide | head -1)
+if [ -n "$ao_pid" ]; then
+  rss_kb=$(awk '/^VmRSS/ {print $2}' "/proc/$ao_pid/status" 2>/dev/null)
+  total_kb=$(awk '/^MemTotal/ {print $2}' /proc/meminfo)
+  if [ -n "$rss_kb" ] && [ -n "$total_kb" ]; then
+    pct=$(( rss_kb * 100 / total_kb ))
+    echo "  AngryOxide memory: $(( rss_kb / 1024 )) MB (${pct}% of RAM)"
+    if [ "$pct" -ge 30 ]; then
+      say WARN "AngryOxide is using ${pct}% of RAM; in a busy area its database queue grows while capture runs (restart capture to reset it)"
+    else
+      say OK "AngryOxide memory $(( rss_kb / 1024 )) MB (${pct}% of RAM)"
+    fi
+  fi
 fi
 
 echo "dashboard Environment reading (capture-status.json; counts and ages only):"
-db_age=""; [ -n "$newest_db" ] && db_age=$(age_of "$newest_db")
-python3 -I - "$STORE/capture-status.json" "$(cfg capture.environment.max_age_s 900)" "$db_age" "$cap_on" <<'PY' >"$work/env.txt" 2>&1
+cap_age=""; [ -n "$newest_cap" ] && cap_age=$(age_of "$newest_cap")
+python3 -I - "$STORE/capture-status.json" "$(cfg capture.environment.max_age_s 900)" "$cap_age" "$cap_on" <<'PY' >"$work/env.txt" 2>&1
 import json, sys, time
 path, max_age = sys.argv[1], int(sys.argv[2] or 900)
 now = time.time()
@@ -186,7 +210,7 @@ except Exception as exc:
     print("  unreadable:", type(exc).__name__); print("VERDICT FAIL Environment status file unreadable"); sys.exit()
 written = int(now - float(d.get("updated_at") or 0))
 data_age = int(now - float(d["data_ts"])) if "data_ts" in d else None
-db_age = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+cap_age = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
 capturing = len(sys.argv) > 4 and sys.argv[4] == "true"
 print("  scanning: %s   written %ss ago   newest data %s   radios in window: %s   window: %ss"
       % (d.get("scanning"), written, ("%ss old" % data_age) if data_age is not None else "none",
@@ -197,10 +221,10 @@ elif written > 180:
     print("VERDICT FAIL Environment card: the collector last wrote %ss ago (it should every few seconds)" % written)
 elif data_age is None:
     print("VERDICT WARN Environment card: no reading yet, so it shows 'Scanning the area...'")
-elif data_age > max_age and db_age is not None and db_age <= 300:
-    print("VERDICT FAIL Environment card stuck: the capture database was written %ss ago but the "
-          "collector's newest reading is %ss old, so the collector can't read the database "
-          "(locked, too slow or replaced); capture itself is working" % (db_age, data_age))
+elif data_age > max_age and cap_age is not None and cap_age <= 300:
+    print("VERDICT FAIL Environment card stuck: AngryOxide wrote its capture file %ss ago but the "
+          "collector's newest reading is %ss old; capture itself is working. Before 1.0.11 the "
+          "collector read AngryOxide's database, which falls behind in a busy area" % (cap_age, data_age))
 elif data_age > max_age:
     print("VERDICT WARN Environment card: newest data is %ss old (over %ss), so it shows 'Scanning the area...'" % (data_age, max_age))
 else:
