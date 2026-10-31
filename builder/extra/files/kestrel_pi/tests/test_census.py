@@ -1,0 +1,126 @@
+"""Tests for the census plugin and its helper files (the DHT client and the
+``kestrel-census/1`` format). No test touches the network: the DHT is an
+in-process fake whose nodes sit at RFC 5737 documentation addresses, and every
+key and token is generated here."""
+
+import importlib.util
+import logging
+import os
+import types
+
+from kestrel_pi import declarations
+from kestrel_pi.capture import CaptureInterface
+from kestrel_pi.connectivity import ConnectivityState
+from kestrel_pi.context import PluginContext, ServiceRegistry
+from kestrel_pi.loader import Loader
+
+PLUGIN_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "plugins"))
+CENSUS = os.path.join(PLUGIN_DIR, "census.py")
+LOG = logging.getLogger("test_census")
+
+
+def _load(path, modname):
+    spec = importlib.util.spec_from_file_location(modname, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _plugin(tmp_path, online=False, **opts):
+    """A Census instance with its context, without its worker running."""
+    mod = _load(CENSUS, "census_under_test")
+    options = {"report": True, "read": True, "poll_hours": 4,
+               "tether_only": True, "daily_mb": 5,
+               "bootstrap": "router.example.net:6881,dht.example.org:25401"}
+    options.update(opts)
+    plugin = mod.Census()
+    plugin.options = options
+    plugin.context = PluginContext(
+        name="census", options=options,
+        capture=CaptureInterface(str(tmp_path)),
+        connectivity=types.SimpleNamespace(online=online,
+                                           active_paths=lambda: []),
+        services=ServiceRegistry(),
+        capabilities=("network", "ui", "web"))
+    plugin.on_loaded()
+    return plugin, mod
+
+
+# -- step 1: the plugin's declarations and options ------------------------------
+
+def test_census_loads_with_its_helpers(tmp_path):
+    plugin, _mod = _plugin(tmp_path)
+    assert plugin._dht.__name__ == "kestrel_plugin_helpers.census.dht"
+    assert plugin._proto.__name__ == "kestrel_plugin_helpers.census.proto"
+    assert plugin.context.health_note == ""
+
+
+def test_census_declarations_read_statically():
+    # Root and plugins-ctl read declarations with ast, never importing the file.
+    decl = declarations.read_declarations(CENSUS)["census"]
+    assert tuple(decl["capabilities"]) == ("network", "ui", "web")
+    assert tuple(decl["provides"]) == ("census",)
+    assert tuple(decl["optional_requires"]) == ("agent", "remote-training")
+    assert set(decl["options"]) == {"report", "read", "poll_hours", "tether_only",
+                                    "daily_mb", "bootstrap"}
+    assert decl["options"]["tether_only"]["default"] is True
+    assert decl["options"]["bootstrap"]["default"] == (
+        "dht.transmissionbt.com:6881,dht.libtorrent.org:25401")
+    # Every option carries help text for the settings page.
+    assert all(spec.get("help") for spec in decl["options"].values())
+
+
+def test_census_loads_after_remote_train(tmp_path):
+    config = {"plugins": {
+        "census": {"enabled": True},
+        "remote-train": {"enabled": True, "train_host": "h", "train_user": "u",
+                         "train_path": "/remote"},
+    }}
+    loader = Loader(config=config, capture=CaptureInterface(str(tmp_path)),
+                    connectivity=ConnectivityState(), services=ServiceRegistry(),
+                    search_paths=[PLUGIN_DIR], logger=LOG)
+    loaded = loader.load_all()
+    try:
+        order = [r.name for r in loaded]
+        assert order.index("remote-train") < order.index("census")
+        assert loader.services.has("census")
+        assert loader.services.get("census") is None      # nothing read yet
+    finally:
+        for rec in loaded:
+            loader.unload(rec)
+
+
+def test_census_bootstrap_parsing(tmp_path):
+    _plugin_obj, mod = _plugin(tmp_path)
+    parse = mod.parse_bootstrap
+    assert parse("a.example.net:6881, b.example.org:25401") == (
+        [("a.example.net", 6881), ("b.example.org", 25401)], [])
+    assert parse("") == ([], [])
+    assert parse(" , ,") == ([], [])
+    # Duplicates collapse; bad entries are reported, not used.
+    routers, bad = parse("a.example.net:6881,a.example.net:6881,nope,"
+                         "x.example.net:0,x.example.net:70000,bad host:1,"
+                         "-x.example.net:1,192.0.2.7:6881")
+    assert routers == [("a.example.net", 6881), ("192.0.2.7", 6881)]
+    assert bad == ["nope", "x.example.net:0", "x.example.net:70000",
+                   "bad host:1", "-x.example.net:1"]
+
+
+def test_census_health_note_names_bad_bootstrap_entries(tmp_path):
+    plugin, _mod = _plugin(tmp_path, bootstrap="router.example.net:6881,oops")
+    assert "oops" in plugin.context.health_note
+    plugin, _mod = _plugin(tmp_path, bootstrap="")
+    assert "no usable bootstrap router" in plugin.context.health_note
+
+
+def test_census_clamps_poll_hours_and_budget(tmp_path):
+    plugin, _mod = _plugin(tmp_path, poll_hours=0, daily_mb=-3)
+    assert plugin._poll_hours() == 1
+    assert plugin._daily_bytes() == 0
+    plugin, _mod = _plugin(tmp_path, poll_hours=99, daily_mb=2)
+    assert plugin._poll_hours() == 24
+    assert plugin._daily_bytes() == 2 * 1024 * 1024
+    plugin, _mod = _plugin(tmp_path, poll_hours="x", daily_mb="y")
+    assert plugin._poll_hours() == 4
+    assert plugin._daily_bytes() == 5 * 1024 * 1024
