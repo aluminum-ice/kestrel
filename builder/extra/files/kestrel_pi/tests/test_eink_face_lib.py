@@ -14,7 +14,7 @@ from kestrel_pi import load_library
 from kestrel_pi.ui import UIState
 
 PLUGIN_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "plugins"))
-FACE = load_library(os.path.join(PLUGIN_DIR, "eink.py"), "eink_face", api=1)
+FACE = load_library(os.path.join(PLUGIN_DIR, "eink-ws27.py"), "eink_face", api=1)
 
 
 def _M(**kw):
@@ -163,7 +163,7 @@ def test_iface_ipv4_is_none_for_a_missing_interface():
 
 # --- what the library adds over the old per-plugin code ---------------------
 def test_both_e_ink_plugins_use_this_library():
-    for plugin in ("eink.py", "eink-ws213.py"):
+    for plugin in ("eink-ws27.py", "eink-ws213.py"):
         src = open(os.path.join(PLUGIN_DIR, plugin), encoding="utf-8").read()
         assert 'load_library(__file__, "eink_face", api=1)' in src, plugin
         # no copy of the face left in the plugin

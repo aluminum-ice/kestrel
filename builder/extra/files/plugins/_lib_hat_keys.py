@@ -3,7 +3,7 @@
 Reads a HAT's keys, turns presses into gestures, and acts on them: your
 plugin's own functions, or the built-in actions that start or stop capture and
 reboot or shut the device down, with the confirmation and safety rules every
-plugin needs kept here once. The ``eink`` plugin's four keys are built on it.
+plugin needs kept here once. The ``eink-ws27`` plugin's four keys are built on it.
 Load it with ``kestrel_pi.load_library`` (see
 docs/developer/plugin-libraries.md)::
 

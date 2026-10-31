@@ -49,7 +49,8 @@ Ghost page should be edited by hand: the next publish overwrites it, and
     Max in dark mode**: its user agent, touch and mobile layout, a 430 x 932 pt
     screen at 2x, the page in the 430 x 896 pt area under a 36 pt status strip,
     framed with a bezel and the Dynamic Island: 904 x 1908 px.
-  - E-ink: the `eink` plugin's own compositor draws the 264 x 176 panel frame
+  - E-ink: the `eink-ws27` plugin's own compositor (`eink`'s, for a release
+    before 1.0.11) draws the 264 x 176 panel frame
     for the same demo state (mood, voice, counters), scaled 3x on a light margin
     (824 x 560 px).
 - **Images on Ghost.** Each figure's image is named after its `key`. On push, a

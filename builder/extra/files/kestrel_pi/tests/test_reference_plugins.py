@@ -1,4 +1,4 @@
-"""Load the shipped reference plugins (all but eink, which test_eink.py covers)
+"""Load the shipped reference plugins (the e-ink faces have their own test files)
 through the real loader, proving they import, declare valid metadata, and
 satisfy provides/requires - the framework half of Gate 3's "all plugins load
 and report as loaded" check (the hardware half is on-device)."""

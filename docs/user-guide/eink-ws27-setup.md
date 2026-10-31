@@ -6,10 +6,10 @@ animated "tamagotchi" face on a
 so the device shows what it is doing at a glance, with no phone. Like every
 reference plugin it ships **disabled**.
 
-`eink-ws27` is the plugin that used to be called `eink`, under a name that says
-which display it drives (like [`eink-ws213`](eink-ws213-setup.md) for the 2.13"
-HAT): the same face, keys and options. `eink` still works but is deprecated;
-see [Switching from `eink`](#switching-from-eink).
+`eink-ws27` replaced the plugin called `eink`, under a name that says which
+display it drives (like [`eink-ws213`](eink-ws213-setup.md) for the 2.13" HAT):
+the same face, keys and options. `eink` was removed in 1.0.11; see
+[Coming from `eink`](#coming-from-eink).
 
 ## What it does
 
@@ -82,11 +82,10 @@ the web mirror.
 The HAT's four keys work too; see [The HAT's keys](#the-hats-keys) below.
 
 For the smaller 2.13" HAT, use the [`eink-ws213` plugin](eink-ws213-setup.md)
-instead. Enable one e-ink plugin at a time (`eink-ws27`, `eink` or
-`eink-ws213`): they drive the same pins. With more than one enabled, the first
-to load drives the panel (the deprecated `eink` always gives way to the others);
-the rest stand down, keep only their web mirror and leave the pins and keys
-alone, and their card reads "Display: used by" the plugin that has the panel.
+instead. Enable one e-ink plugin at a time (`eink-ws27` or `eink-ws213`): they
+drive the same pins. With both enabled, the first to load drives the panel;
+the other stands down, keeps only its web mirror and leaves the pins and keys
+alone, and its card reads "Display: used by" the plugin that has the panel.
 
 ## Enabling
 
@@ -244,22 +243,18 @@ it. While an e-ink plugin is enabled the daemon holds the e-Paper pins, so the
 report says the driver isn't imported then; disable the e-ink plugins first if
 you want that check too.
 
-## Switching from `eink`
+## Coming from `eink`
 
-Before this release the plugin was called `eink`. It still ships and still
-works, but it is **deprecated** and will be removed in a future release that
-requires reflashing the SD card. `eink-ws27` is the same face for the same HAT
-with the same options, so switching takes a minute:
+Up to 1.0.10 this plugin was also shipped under its old name, `eink`. `eink` was
+removed in 1.0.11, a release that needs reflashing the SD card, so after
+reflashing:
 
-1. Note any settings you changed for `eink` (`sudo kestrel plugins info eink`
-   lists them), including `[plugins.eink.faces]` or `[plugins.eink.voices]` in
-   `config.toml`.
-2. Enable `eink-ws27` with the same settings: on the dashboard's Plugins page,
-   or `sudo kestrel plugins enable eink-ws27`. Copy any face or voice overrides
-   to `[plugins.eink-ws27.faces]` / `[plugins.eink-ws27.voices]`.
-3. Disable `eink`: `sudo kestrel plugins disable eink`.
+1. Enable `eink-ws27` with the settings you had for `eink`: on the dashboard's
+   Plugins page, or `sudo kestrel plugins enable eink-ws27`. It has the same
+   options.
+2. Put any face or voice overrides you had under `[plugins.eink.faces]` or
+   `[plugins.eink.voices]` under `[plugins.eink-ws27.faces]` /
+   `[plugins.eink-ws27.voices]` instead.
 
-Only one of them can drive the panel, so don't leave both on. One difference:
 `eink-ws27` offers `variant` and `rotation` as a list, so a value written in a
 different case (`V2`) needs to be lower-case (`v2`).
-

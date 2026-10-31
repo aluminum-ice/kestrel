@@ -2,9 +2,10 @@
 #
 # Pull a PII-free e-ink diagnostics report off a field unit, so a blank or
 # not-updating panel can be triaged off-device. It works for any e-ink plugin:
-# --plugin names it (default eink, the deprecated name of eink-ws27; eink-ws27
-# for the 2.7" HAT: docs/user-guide/eink-ws27-setup.md; eink-ws213 for the
-# 2.13" HAT: docs/user-guide/eink-ws213-setup.md).
+# --plugin names it (default eink-ws27, for the 2.7" HAT:
+# docs/user-guide/eink-ws27-setup.md; eink-ws213 for the 2.13" HAT:
+# docs/user-guide/eink-ws213-setup.md; eink for a device still on 1.0.10 or
+# older, where the 2.7" plugin also shipped under that old name).
 #
 # Runs on your WORKSTATION (not the device) and reads the device READ-ONLY over
 # SSH. It ships in the image under /usr/local/share/kestrel/scripts/ so you can
@@ -42,7 +43,7 @@
 
 set -eu
 
-plugin=eink
+plugin=eink-ws27
 case "${1:-}" in
   --plugin) [ "$#" -ge 2 ] || { echo "usage: $0 [--plugin NAME] user@host [ssh-port]" >&2; exit 2; }
             plugin=$2; shift 2 ;;

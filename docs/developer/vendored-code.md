@@ -5,7 +5,7 @@ code belongs to the plugin that uses it, as that plugin's
 [helper files](plugin-development.md#helper-files), never to the `kestrel_pi`
 core.
 
-## Waveshare e-Paper driver (`eink-ws27` and `eink` plugins)
+## Waveshare e-Paper driver (`eink-ws27` plugin)
 
 Waveshare's driver for the 2.7" e-Paper HAT, copied from Waveshare's e-Paper
 demo library with the file contents unchanged:
@@ -16,16 +16,14 @@ demo library with the file contents unchanged:
 
 | File (in `builder/extra/files/plugins/`) | Upstream file | Purpose |
 | --- | --- | --- |
-| `_eink_epd2in7_V2.py` | `epd2in7_V2.py` | Current **V2** 2.7" mono panel (264×176); `display_Partial`, 4-gray |
-| `_eink_epd2in7.py` | `epd2in7.py` | Original **V1** 2.7" mono panel |
-| `_eink_epdconfig.py` | `epdconfig.py` | Shared GPIO/SPI backend (selects `RaspberryPi` via `gpiozero`+`spidev`) |
+| `_eink-ws27_epd2in7_V2.py` | `epd2in7_V2.py` | Current **V2** 2.7" mono panel (264×176); `display_Partial`, 4-gray |
+| `_eink-ws27_epd2in7.py` | `epd2in7.py` | Original **V1** 2.7" mono panel |
+| `_eink-ws27_epdconfig.py` | `epdconfig.py` | Shared GPIO/SPI backend (selects `RaspberryPi` via `gpiozero`+`spidev`) |
 
-`eink-ws27` carries the same three files as `_eink-ws27_epd2in7_V2.py`,
-`_eink-ws27_epd2in7.py` and `_eink-ws27_epdconfig.py`, byte for byte
-(`test_eink_ws27.py` checks it): each plugin ships its own helpers, and the
-copies go when the deprecated `eink` is removed.
+(Up to 1.0.10 the deprecated `eink` plugin carried byte-identical copies as
+`_eink_*.py`; they went with it in 1.0.11.)
 
-Only the file names change, to each plugin's helper prefix. The drivers'
+Only the file names change, to the plugin's helper prefix. The drivers'
 `from . import epdconfig` still works: `kestrel_pi.load_helper` registers a
 plugin's helpers as one package, and the plugin loads `epdconfig` before a
 driver.
@@ -43,9 +41,9 @@ in `spidev`/`gpiozero`, or `Jetson.GPIO` off a Pi). The plugin loads the
 helpers lazily, inside a `try/except`, only when it looks for a panel, so
 importing the plugin (as the test suite does) never touches the hardware.
 
-**Updating:** copy the new upstream files over the helpers of both plugins,
-keeping the `_eink_` and `_eink-ws27_` names, update the version and date above,
-and run the e-ink tests (`test_eink.py`, `test_eink_ws27.py`). A driver for another panel goes beside the plugin that drives
+**Updating:** copy the new upstream files over the plugin's helpers, keeping
+the `_eink-ws27_` names, update the version and date above, and run the e-ink
+tests (`test_eink.py`, `test_eink_ws27.py`). A driver for another panel goes beside the plugin that drives
 it, with that plugin's prefix.
 
 ## Waveshare e-Paper driver (`eink-ws213` plugin)
@@ -62,7 +60,7 @@ with the file contents unchanged, pinned to upstream commit
 | `_eink-ws213_epd2in13_V2.py` | `epd2in13_V2.py` | V4.0 (2019-06-20) | V2 panel (`init(FULL_UPDATE/PART_UPDATE)`) |
 | `_eink-ws213_epdconfig.py` | `epdconfig.py` | V1.2 (2022-10-29) | Shared GPIO/SPI backend |
 
-`_eink-ws213_epdconfig.py` is the same file as `_eink_epdconfig.py`: each
+`_eink-ws213_epdconfig.py` is the same file as `_eink-ws27_epdconfig.py`: each
 plugin carries its own copy, so neither depends on the other. Same licence
 (MIT, header kept), same import-time note, and the same way of updating, with
 `test_eink_ws213.py`.

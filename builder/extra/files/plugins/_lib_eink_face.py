@@ -1,7 +1,7 @@
 """Shared plugin library: the Kestrel e-ink face.
 
 Everything about the face that does not depend on a particular panel, kept
-once here for every e-ink plugin (``eink`` for the Waveshare 2.7" HAT and
+once here for every e-ink plugin (``eink-ws27`` for the Waveshare 2.7" HAT and
 ``eink-ws213`` for the 2.13" one): the faces and their voices, the mood ladder
 that picks one from live device and learning-agent state, the motion estimate
 from GPS fixes, the Kestrel mark, the small glyphs of the status rows, text

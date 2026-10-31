@@ -113,8 +113,8 @@ its `LIB_API`; a test (`tests/test_load_library.py`) keeps the two in step.
 | Library | File | API | Status | Used by |
 | --- | --- | --- | --- | --- |
 | `alerts` | `_lib_alerts.py` | 1.0 | stable | `ntfy`, `telegram` |
-| `eink_face` | `_lib_eink_face.py` | 1.1 | stable | `eink-ws27`, `eink-ws213`, `eink` (deprecated) |
-| `hat_keys` | `_lib_hat_keys.py` | 0.1 | provisional | `eink-ws27`, `eink` (deprecated) |
+| `eink_face` | `_lib_eink_face.py` | 1.1 | stable | `eink-ws27`, `eink-ws213` |
+| `hat_keys` | `_lib_hat_keys.py` | 0.1 | provisional | `eink-ws27` |
 | `ina219` | `_lib_ina219.py` | 1.1 | stable | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-hat` (deprecated) |
 | `ups` | `_lib_ups.py` | 0.3 | provisional | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-wse`, `ups-hat` (deprecated) |
 
@@ -258,7 +258,7 @@ the faces and their voices, the mood ladder that picks one from live device
 and learning-agent state, the motion estimate from GPS, the Kestrel mark, the
 small glyphs of the status rows, text helpers and the address lookup. Your
 plugin decides the layout (what goes where on its panel), brings its panel up
-and redraws it. `eink-ws27` (2.7" HAT, 264x176, with keys; formerly `eink`) and `eink-ws213` (2.13"
+and redraws it. `eink-ws27` (2.7" HAT, 264x176, with keys) and `eink-ws213` (2.13"
 HAT, 250x122, partial redraws) are built on it, and are the best examples.
 
 ### A minimal plugin
@@ -399,8 +399,7 @@ applies: a key never sends the acknowledgment.
 ## `hat_keys`: push-buttons on a HAT
 
 `load_library(__file__, "hat_keys", api=0)`. **Provisional (API 0):** one HAT
-uses it so far (the 2.7" e-Paper HAT's four keys in `eink-ws27`, and the
-deprecated `eink`), so its API may
+uses it so far (the 2.7" e-Paper HAT's four keys in `eink-ws27`), so its API may
 still change in a minor release when a second HAT with keys shows what really
 varies. Pin `api=0` and expect to follow its changes until it reaches 1.
 
@@ -413,7 +412,7 @@ say how many keys there are, on which pins, and what each gesture does.
 
 A two-key HAT: a short press on KEY1 runs your function, a long press on KEY2
 shuts down after a second press. It shows its prompts on its dashboard card; a
-plugin with a display draws them on the panel instead (see `eink.py`).
+plugin with a display draws them on the panel instead (see `eink-ws27.py`).
 
 ```python
 from kestrel_pi import Plugin, load_library
