@@ -52,27 +52,58 @@ def test_model_source_shows_local_or_remote_only_when_learned():
     assert "Model source" not in unknown
 
 
-def test_promotion_tally_shows_local_and_remote_counts():
+def test_an_older_agents_flat_tally_still_reads():
     els = readout.widget_elements({
         "running": True, "policy": "learned", "algorithm": "RecurrentPPO",
         "promotion_tally": {"local": 3, "remote": 1}})
     assert _labels(els)["Promotions"] == "3 on-device / 1 remote"
-
-
-def test_promotion_tally_shown_once_either_side_has_happened():
-    # A device that has only trained locally still sees its count.
-    local_only = _labels(readout.widget_elements({
-        "running": True, "policy": "baseline", "algorithm": "PPO",
-        "promotion_tally": {"local": 2, "remote": 0}}))
-    assert local_only["Promotions"] == "2 on-device / 0 remote"
-    # Nothing to show before either side has adopted a model.
     none_yet = _labels(readout.widget_elements({
         "running": True, "policy": "baseline", "algorithm": "PPO",
         "promotion_tally": {"local": 0, "remote": 0}}))
     assert "Promotions" not in none_yet
-    missing = _labels(readout.widget_elements({
-        "running": True, "policy": "baseline", "algorithm": "PPO"}))
-    assert "Promotions" not in missing
+
+
+def test_model_contests_show_wins_out_of_contests_by_source():
+    els = _labels(readout.widget_elements({
+        "running": True, "policy": "learned", "algorithm": "RecurrentPPO",
+        "promotion_tally": {"local": {"won": 3, "lost": 6},
+                            "remote": {"won": 2, "lost": 0},
+                            "before_fair_promotion": {"local": 34, "remote": 0}}}))
+    assert els["Model contests"] == "on-device 3 of 9 won · remote 2 of 2 won"
+    assert "Earlier adoptions" not in els
+
+
+def test_before_any_contest_the_earlier_adoptions_show():
+    els = _labels(readout.widget_elements({
+        "running": True, "policy": "learned", "algorithm": "RecurrentPPO",
+        "promotion_tally": {"local": {"won": 0, "lost": 0},
+                            "remote": {"won": 0, "lost": 0},
+                            "before_fair_promotion": {"local": 34, "remote": 0}}}))
+    assert els["Earlier adoptions"] == "34 on-device / 0 remote"
+    fresh = _labels(readout.widget_elements({
+        "running": True, "policy": "learned", "algorithm": "RecurrentPPO",
+        "promotion_tally": {"local": {"won": 0, "lost": 0},
+                            "remote": {"won": 0, "lost": 0}}}))
+    assert "Model contests" not in fresh and "Earlier adoptions" not in fresh
+
+
+def test_the_last_contest_says_what_happened():
+    import time as _time
+    now = _time.time()
+    base = {"running": True, "policy": "learned", "algorithm": "RecurrentPPO"}
+    won = _labels(readout.widget_elements(dict(base, last_decision={
+        "at": now - 600, "result": "promoted", "winner": "remote",
+        "candidates": [{"source": "remote", "won": True}]})))
+    assert won["Last contest"] == "remote candidate promoted · 10m ago"
+    kept = _labels(readout.widget_elements(dict(base, last_decision={
+        "at": now - 7200, "result": "kept", "winner": None,
+        "candidates": [{"source": "local", "won": False,
+                        "reason": "not significant (mean diff +0.0020, z 0.40)"}]})))
+    assert kept["Last contest"].startswith("on-device candidate kept out: not significant")
+    assert kept["Last contest"].endswith("· 2h ago")
+    waiting = _labels(readout.widget_elements(dict(base, last_decision={
+        "at": now - 60, "result": "deferred", "candidates": ["local"]})))
+    assert waiting["Last contest"] == "on-device candidate waiting for held-out rows · 1m ago"
 
 
 def test_no_training_record_shows_neither_row():

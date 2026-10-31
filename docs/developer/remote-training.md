@@ -68,8 +68,9 @@ running image has no build toolchain and no package *source* tree (the
 `kestrel_pi` sources are deleted after the venv install), so there is nothing
 to `pip wheel` from at runtime and the feature stays app-layer (no reflash).
 Instead the plugin **rsyncs the device's already-installed
-`kestrel_pi` package directory** (`os.path.dirname(kestrel_pi.__file__)`)
-straight into the host venv's `site-packages`. This is *stronger* than a wheel for
+`kestrel_pi` package directory** (`os.path.dirname(kestrel_pi.__file__)`) to
+the host: into the venv's `site-packages` at setup, and to `pkg/` before every
+run, which the run imports first. This is *stronger* than a wheel for
 the one thing that matters — the host then runs the device's **exact bytes**, so
 `spec_version` parity is guaranteed by construction — and it needs no compiler or
 package index for our code (only for the ML dependencies, and only the first time
@@ -217,16 +218,16 @@ a blocking SSH call the device babysits.
      marker (carrying the model's version/mtime).
 3. **Reconcile every interval / on reconnect, *before* starting any new work:**
    - **Pull and stage; the agent decides.** If the host has a finished
-     `model-<algorithm>.zip`, pull it (and its sidecar) to a **staging path**
-     (`.remote-staging/<slug>/` under the agent dir). The plugin applies only a
-     cheap, torch-free **pre-filter** — spec match and data watermark — to decide
-     *whether a pull is even worth staging*; it never loads a model and never
-     touches the active slot. The **agent process** then scores the staged model
-     against the incumbent on a common held-out slice and promotes the winner (see
-     "Favoring the remote model safely" below, and
-     [the promotion rules](agent-interface.md#remote-model-staging-and-promotion)). A
-     candidate the pre-filter rejects (stale watermark or spec mismatch) is cleared
-     from staging so the agent never scores it.
+     `model-<algorithm>.zip`, pull its sidecar first and record it
+     (`.remote-staging/host-models.json`: the host's latest model per algorithm).
+     A model already staged, one the agent has already judged
+     (`.remote-staging/evaluated.json`) or one with a different env-spec isn't
+     pulled again. A new one is pulled to a **staging path**
+     (`.remote-staging/<slug>/` under the agent dir). The plugin never loads a
+     model and never touches the active slot; the **agent process** runs the
+     same contest for it as for a model trained on the device (see "One contest
+     for every model" below, and
+     [the promotion rules](agent-interface.md#candidates-and-promotion)).
    - **Don't double-launch.** If an algorithm is marked `running`, leave it —
      never start a second run for the same algorithm. A `running` lock older than
      `stale_lock_hours` (a config option, **default 6**) is treated as a crashed
@@ -242,10 +243,17 @@ a blocking SSH call the device babysits.
      decides how often it looks; the **data** decides whether it launches. So a
      device sitting idle with no new experience never triggers a run, and a device
      out capturing hard triggers one as soon as it has enough to be worth the
-     compute. "New since last trained" is measured against the model's data
-     watermark (see below), the same watermark used to decide which model wins.
-4. **Push the logs up as part of a run.** Before launching, the plugin rsyncs the
-   agent's `episodes/` up to the host (incremental — only new rows cross the
+     compute. "New since last trained" is measured against the data watermark
+     of **the host's own last model** of that algorithm (from
+     `host-models.json`), never the device's: the device training its own model
+     doesn't reset the remote's clock. With no remote model yet, every row
+     counts. The algorithm the agent runs is always trained, and first, even if
+     the `algorithms` option leaves it out.
+4. **Push the package and the logs up as part of a run.** Before launching, the
+   plugin rsyncs the device's installed `kestrel_pi` package to `pkg/` on the
+   host (the run imports it ahead of the venv's copy, `PYTHONPATH=pkg`), so the
+   host always trains with the device's current code, even after an in-place
+   update. It then rsyncs the agent's `episodes/` up to the host (incremental — only new rows cross the
    link), so the host trains on current experience. (If the backup host and
    training host are the same, this overlaps with backup, but it's cheap and
    keeps the two features independent.)
@@ -256,68 +264,42 @@ is never retrained; and two runs for the same algorithm never stack. The device
 only ever *reads* results and decides what to start — all the heavy work, and all
 the waiting, happen on the host.
 
-## Favoring the remote model safely
+## One contest for every model
 
-The whole point is to prefer the remote model *when it's genuinely better* — it
-trains with far more timesteps than a resource-gated on-device run can afford.
-But the device may have trained its own `model-<algorithm>.zip` locally in the
-meantime (where the board allows it), and a remote model must **not** clobber a
-better local one just because it ran on a beefier machine. "Newer file mtime" is
-the wrong test; so, on its own, is "trained on newer data" — more compute on
-slightly older data can still produce the better policy, and fresher data does
-not guarantee a better one.
+The point is to use the remote model *when it's genuinely better* — it trains
+with far more timesteps than a resource-gated on-device run can afford — without
+letting either side win by default. "Newer file mtime" is the wrong test, and so
+is "trained on newer data": more compute on slightly older data can produce the
+better policy, and fresher data doesn't guarantee one. So every new model,
+whatever trained it, is a **candidate** that has to beat the active model in the
+same **contest** (the full rules are in
+[the agent interface](agent-interface.md#candidates-and-promotion)):
 
-So promotion is decided by **quality, judged fairly**, not by recency. Two pieces
-work together:
+- **Held-out rows no model trains on.** About 20% of the logged rows, chosen by
+  hour block (`metrics.is_holdout`), are kept out of every training run, on the
+  device and on the host alike (the host runs the device's own trainer). They
+  are what every candidate is scored on.
+- **One yardstick.** The agent process (which already has torch for inference)
+  scores the candidate, the active model and the scripted baseline on the newest
+  of those rows, under one reward model fitted on the other rows, stepping
+  through each hour block in order so a recurrent model sees real sequences.
+- **One rule for both sources** (`metrics.contest_decision`): the candidate must
+  beat the scripted baseline, beat the active model by a significant paired
+  difference (`[agent] promotion_min_z`, default 1.0), and clear the margin
+  (`[agent] promotion_margin`, default 10% of lift), and its data must not be
+  more than `[agent] promotion_max_stale_episodes` rows behind (default 900).
+  With no active model at all, a candidate that beats the baseline is adopted:
+  that's how a board that can't train (a Zero 2 W) gets its first model.
+- **On-device runs are candidates too.** They warm-start from the active model
+  (a fine-tune, not a fresh model) and write to `.candidates/local/<slug>/`;
+  they replace the active model only by winning. A remote model is no longer
+  overwritten half an hour later by a fresh local run that never had to compete.
 
-**1. The plugin's cheap pre-filter (torch-free, in the daemon).** The
-`remote-train` plugin runs inside the always-on daemon, which **must never import
-torch**. It therefore cannot score a model; it only compares *metadata* to decide
-whether a pull is worth staging at all. Each model's sidecar carries a **data
-watermark** alongside `spec_version` — the latest episode timestamp it trained on
-and the row count — written the same way by `train.py` on the device and by the
-remote trainer. The plugin stages a pulled model only when its spec matches and
-its watermark is at least as recent as the on-device model's; a staler or
-spec-mismatched candidate is cleared from staging. This is just a filter to avoid
-handing the agent obviously-pointless work — **it is not the promotion decision.**
-
-**2. The agent's held-out quality score (torch, in the agent process).** When a
-staged model appears, the agent process — which already has torch loaded for
-inference — re-scores **both** the incumbent local model and the staged remote
-model on the **same held-out slice** of the device's current episode logs, under
-the **same** learned reward model r̂ (re-derived on that slice). Scoring is the
-mean reward each policy earns playing its greedy action across the held-out
-windows. Because both are judged by one yardstick on the freshest data, any
-recency advantage the remote had from its own training-time score drops out. The
-agent promotes the staged model into the active slot (atomic `os.replace`,
-restamping `source="remote"`) **only when it clears the promotion rule:**
-
-- its env-spec matches the device (re-checked; a mismatch is never promoted);
-- **bootstrap:** if there is no local model at all, the staged model is adopted
-  unconditionally — this is how a board that can't train locally (a Zero 2 W)
-  ever gets a model;
-- **baseline floor:** the remote must beat the scripted baseline's held-out score
-  — a learned model that can't out-score the sweep is never promoted;
-- **margin:** the remote's lift over baseline must exceed the local's by at least
-  the **promotion margin** (`[agent] promotion_margin`, default `0.10` = 10%),
-  measured as lift over baseline so it's robust to reward scale and offset, with a
-  small absolute floor so two near-equal models don't flip-flop on each pull;
-- **staleness guard:** a remote trained on data the device has since moved far
-  past (more than `[agent] promotion_max_stale_episodes` new rows, default 900)
-  is not adopted on the strength of a lucky held-out score; `0` disables the
-  guard.
-
-The rule is symmetric: when the local model scores higher, the device keeps it;
-the staged remote is left in place (not thrown away) for diagnostics. A log too
-thin to form a reliable held-out set (fewer than 32 observation-carrying windows)
-means the agent keeps the incumbent rather than promoting on noise. Scoring is
-inference-only — one forward pass per held-out window, no gradients — so it is
-cheap even on a small board.
-
-The watermark still drives the **data-driven training trigger** (retrain an
-algorithm once more than `remote_train_min_new_episodes` rows have accrued past
-its watermark), so one number decides "should I retrain?"; a separate held-out
-score now decides "should I adopt what came back?".
+The plugin daemon stays torch-free throughout: it only pulls and stages. The
+dashboard's agent card shows **Model contests** (how many on-device and remote
+candidates won) and the **Last contest**, and
+`builder/extra/files/scripts/pull-agent-diagnostics.sh` reports every contest
+from the journal.
 
 ## Triggers and surface
 
@@ -402,13 +384,14 @@ Why the plugin works the way it does:
 5. **Training host separate from the backup host.** It has its own
    `train_host`/`train_user`/`train_path`/`train_port` and its own `setup`; it may
    reuse the device's `pi` SSH key, authorized on the second host.
-6. **Model promotion by held-out quality, not file mtime or recency.** The plugin
-   only pre-filters by watermark (torch-free, in the daemon); the **agent** scores
-   the staged remote and the incumbent on a common held-out slice under one reward
-   model and promotes the winner, behind a baseline floor, a 10% margin, and a
-   staleness guard. Remote wins when it's genuinely better; a worse remote never
-   clobbers a better local, whichever trained on newer data. See
-   [the promotion rules](agent-interface.md#remote-model-staging-and-promotion).
+6. **One contest for every model, judged on rows none trained on.** The plugin
+   only pulls and stages (torch-free, in the daemon); the **agent** runs the same
+   contest for a remote model as for one trained on the device: scored on
+   held-out hours no model trains on, under one reward model, against the active
+   model, behind a baseline floor, a significant paired difference, a 10% margin
+   and a staleness guard. Either side wins when it's genuinely better, and
+   neither wins by default. See
+   [the promotion rules](agent-interface.md#candidates-and-promotion).
 
 ## Config surface
 
@@ -467,15 +450,15 @@ Useful commands:
 
 - `kestrel remote-train status` — the configured host, whether SSH reaches
   it, and the host's job markers (what's installing / running / done).
-- `kestrel remote-train now` — reconcile immediately: pull and stage any
-  finished model that clears the pre-filter (the agent then scores and promotes
-  it), and launch due runs, without waiting for the interval.
+- `kestrel remote-train now` — reconcile immediately: pull and stage any new
+  finished model (the agent then runs its contest), and launch due runs, without
+  waiting for the interval.
 
 The plugin's dashboard card shows the train host, the host-stack state, the live
 training status and when a model was last pulled. A finished model is pulled back
-and staged automatically; the agent scores it against the current model on a
-held-out slice and promotes it only if it's genuinely better (see above), picking
-it up live, no restart.
+and staged automatically; the agent judges it against the current model on
+held-out hours no model trained on and promotes it only if it's genuinely better
+(see above), picking it up live, no restart.
 
 Uninstalling is `sudo kestrel plugins disable remote-train` on the device
 and deleting `train_path` on the host.

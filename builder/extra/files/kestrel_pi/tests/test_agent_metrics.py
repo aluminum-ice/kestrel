@@ -99,77 +99,94 @@ def test_new_rows_since_counts_only_newer_episodes():
     assert metrics.new_rows_since(rows, 30.0) == 0
 
 
-def test_remote_model_wins_only_when_not_stale():
-    fresh_remote = {"data_watermark": {"latest_ts": 200.0, "episodes": 50}}
-    stale_remote = {"data_watermark": {"latest_ts": 90.0, "episodes": 30}}
-    local = {"data_watermark": {"latest_ts": 100.0, "episodes": 40}}
-    assert metrics.remote_model_wins(fresh_remote, local) is True      # newer data
-    assert metrics.remote_model_wins(stale_remote, local) is False     # stale remote
-    assert metrics.remote_model_wins(local, local) is True             # tie -> remote
-    # A remote with a watermark beats a local that has none (oldest).
-    assert metrics.remote_model_wins(stale_remote, {}) is True
+# -- the held-out set ----------------------------------------------------
+
+def test_holdout_is_by_hour_block_deterministic_and_about_a_fifth():
+    hours = range(10000)
+    held = [h for h in hours if metrics.is_holdout({"ts": h * 3600.0})]
+    assert 0.18 <= len(held) / len(hours) <= 0.22
+    # Every row in one hour shares the verdict, and it never changes.
+    for h in held[:50]:
+        assert all(metrics.is_holdout({"ts": h * 3600.0 + s}) for s in (0, 1, 1799, 3599))
+    assert held == [h for h in hours if metrics.is_holdout({"ts": h * 3600.0})]
 
 
-def test_promotion_decision_bootstraps_when_no_local_model():
-    # No incumbent: adopt the remote even with no scores (the only way a board
-    # that can't train locally ever gets a model). Judged before scoring.
-    promote, reason = metrics.promotion_decision({}, has_local=False)
-    assert promote is True
-    assert "bootstrap" in reason
+def test_a_row_without_a_timestamp_is_never_held_out():
+    assert metrics.is_holdout({}) is False
+    assert metrics.is_holdout({"ts": "soon"}) is False
 
 
-def test_promotion_decision_needs_a_remote_score():
-    promote, reason = metrics.promotion_decision(
-        {"local": 1.0, "baseline": 0.0}, has_local=True)
-    assert promote is False
-    assert "no remote score" in reason
+def test_split_holdout_keeps_order_and_covers_every_row():
+    rows = [{"ts": i * 1800.0, "i": i} for i in range(400)]
+    train, held = metrics.split_holdout(rows)
+    assert len(train) + len(held) == 400 and held and train
+    assert [r["i"] for r in train] == sorted(r["i"] for r in train)
+    assert all(metrics.is_holdout(r) for r in held)
+    assert not any(metrics.is_holdout(r) for r in train)
 
 
-def test_promotion_decision_promotes_a_clear_remote_win():
-    # Remote lift 0.8, local lift 0.4 over baseline: 0.8 >= 1.1 * 0.4 and the
-    # absolute gap clears the floor -> promote.
-    scores = {"remote": 0.8, "local": 0.4, "baseline": 0.0}
-    promote, reason = metrics.promotion_decision(scores, has_local=True)
-    assert promote is True
-    assert "remote wins" in reason
+def test_model_fingerprint_identifies_a_model_by_its_sidecar():
+    meta = {"algorithm": "PPO", "train_seconds": 12.5,
+            "data_watermark": {"latest_ts": 100.0, "episodes": 40}}
+    assert metrics.model_fingerprint(meta) == metrics.model_fingerprint(dict(meta))
+    assert metrics.model_fingerprint(meta) != metrics.model_fingerprint(
+        dict(meta, train_seconds=13.0))
+    assert metrics.model_fingerprint({}) == ""
 
 
-def test_promotion_decision_keeps_local_when_margin_not_met():
-    # Remote only marginally above local (0.42 vs 0.40): under the 10% margin.
-    scores = {"remote": 0.42, "local": 0.40, "baseline": 0.0}
-    promote, reason = metrics.promotion_decision(scores, has_local=True)
-    assert promote is False
-    assert "as good or better" in reason
+# -- the contest rule ----------------------------------------------------
+
+def _decide(diffs, ch=0.5, inc=0.2, **kw):
+    return metrics.contest_decision(diffs, ch, inc, **kw)
 
 
-def test_promotion_decision_rejects_a_remote_below_baseline():
-    scores = {"remote": -0.1, "local": 0.5, "baseline": 0.0}
-    promote, reason = metrics.promotion_decision(scores, has_local=True)
-    assert promote is False
-    assert "baseline" in reason
+def test_contest_promotes_a_clear_significant_win():
+    promote, reason = _decide([0.3, 0.25, 0.35, 0.3] * 10)
+    assert promote is True and "challenger wins" in reason
 
 
-def test_promotion_decision_staleness_guard_keeps_local():
-    # A strong remote win is still rejected when the device has logged far more
-    # new episodes than the staleness bound since the remote trained.
-    scores = {"remote": 0.9, "local": 0.1, "baseline": 0.0}
-    promote, reason = metrics.promotion_decision(
-        scores, has_local=True, new_since_remote=1000, max_stale_episodes=900)
-    assert promote is False
-    assert "stale" in reason
-    # Within the bound, the same scores promote.
-    promote, _ = metrics.promotion_decision(
-        scores, has_local=True, new_since_remote=100, max_stale_episodes=900)
-    assert promote is True
-    # A 0 bound disables the guard.
-    promote, _ = metrics.promotion_decision(
-        scores, has_local=True, new_since_remote=10_000, max_stale_episodes=0)
-    assert promote is True
+def test_contest_keeps_the_incumbent_when_not_better():
+    promote, reason = _decide([0.0, -0.1, 0.05, -0.02] * 10, ch=0.21)
+    assert promote is False and "not better" in reason
 
 
-def test_promotion_decision_does_not_churn_on_near_zero_lifts():
-    # Both models barely beat the baseline: the ratio test can pass but the
-    # absolute-improvement guard keeps the incumbent so pulls don't flip-flop.
-    scores = {"remote": 0.0006, "local": 0.0004, "baseline": 0.0}
-    promote, _ = metrics.promotion_decision(scores, has_local=True)
-    assert promote is False
+def test_contest_keeps_the_incumbent_when_not_significant():
+    # A positive mean that is mostly noise.
+    promote, reason = _decide([1.0, -0.9, 1.0, -0.9, 0.9, -1.0], ch=0.5)
+    assert promote is False and "not significant" in reason
+
+
+def test_contest_keeps_the_incumbent_within_the_margin():
+    # Significant but tiny: lift 0.21 vs 0.20 is inside the 10% margin.
+    promote, reason = _decide([0.01] * 40, ch=0.21, inc=0.20)
+    assert promote is False and "margin" in reason
+    # A margin of 0 lets it through.
+    assert _decide([0.01] * 40, ch=0.21, inc=0.20, margin=0.0)[0] is True
+
+
+def test_contest_rejects_a_challenger_below_the_baseline():
+    promote, reason = _decide([0.5] * 10, ch=-0.1, inc=-0.4)
+    assert promote is False and "baseline" in reason
+
+
+def test_contest_bootstraps_without_an_incumbent_but_not_below_the_baseline():
+    assert _decide([], ch=0.3, inc=0.0, has_incumbent=False) == (
+        True, "no active model; adopting (bootstrap)")
+    assert _decide([], ch=0.0, inc=0.0, has_incumbent=False)[0] is False
+
+
+def test_contest_staleness_guard():
+    win = [0.3] * 20
+    assert _decide(win, new_since=1000, max_stale_episodes=900)[0] is False
+    assert _decide(win, new_since=100, max_stale_episodes=900)[0] is True
+    assert _decide(win, new_since=10_000, max_stale_episodes=0)[0] is True
+
+
+def test_contest_rule_has_no_notion_of_source():
+    # The rule takes no "local"/"remote" argument at all: the same numbers give
+    # the same outcome whoever trained either model.
+    import inspect
+    params = inspect.signature(metrics.contest_decision).parameters
+    assert not any("local" in p or "remote" in p for p in params)
+
+

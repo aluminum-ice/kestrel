@@ -135,7 +135,7 @@ def read_meta(model_dir, algorithm=None):
 
 
 def write_meta(model_dir, algorithm, watermark=None, provenance=None,
-               train_seconds=None, source=None):
+               train_seconds=None, source=None, extra=None):
     """Write the per-algorithm model sidecar beside a freshly trained model.
 
     ``watermark`` (a ``{"latest_ts", "episodes"}`` dict from
@@ -150,8 +150,11 @@ def write_meta(model_dir, algorithm, watermark=None, provenance=None,
     the dashboard can tell an on-device model from one trained on the remote host.
     All are written whether the model was trained on-device or on a remote host;
     readers that predate any field ignore it (source-compatible, so the hook API
-    is unchanged)."""
+    is unchanged). ``extra`` adds further fields (the held-out scheme the model
+    was trained under, whether it was warm-started, its timesteps)."""
     meta = {"algorithm": algorithm, "spec_version": spec.SPEC_VERSION}
+    if extra:
+        meta.update(extra)
     if watermark:
         meta["data_watermark"] = watermark
     if provenance:

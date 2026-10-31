@@ -220,6 +220,10 @@ importer and the backup plugin reference these names.
   | `provenance` | object | which reward model trained it + held-out scores (optional) |
   | `train_seconds` | number | how long the training run took (optional) |
   | `source` | `"local"` \| `"remote"` | trained on this device, or pulled from the remote host (optional) |
+  | `holdout` | string | the held-out scheme it was trained under (`"block-hash-v1"`); absent on a model from before held-out rows (optional) |
+  | `warm_start` | string \| null | the `source` of the model it was fine-tuned from, or null when trained fresh (optional) |
+  | `timesteps`, `train_rows`, `held_out_rows` | int | training steps, and the rows it trained on and kept out (optional) |
+  | `promoted_at`, `contest` | number, object | when it won its contest and how (rows, lifts, mean difference, reason) (optional) |
 
   Every optional key is additive: a reader that predates one ignores it, so
   adding a key does **not** bump `SPEC_VERSION`.
@@ -237,44 +241,71 @@ importer and the backup plugin reference these names.
   per-algorithm files) still loads for the algorithm its sidecar names; it is
   the only fallback path and is otherwise superseded by the per-algorithm files.
 
-## Remote-model staging and promotion
+## Candidates and promotion
 
-A model pulled from a remote training host is **staged**, not dropped straight
-into the active slot, so the agent can judge it on quality before adopting it
-(see [Remote training](remote-training.md)).
+Every new model is a **candidate**, whether this device trained it or a remote
+host did, and it replaces the active model only by winning a **contest**
+against it. One code path, one rule, no source advantage.
 
-- **Staging dir** — `AGENT_DIR/.remote-staging/<slug>/` holds a pulled
-  `model-<slug>.zip` + `model-<slug>.meta.json` for the configured algorithm
-  (`agent.REMOTE_STAGING_DIR`). The `remote-train` plugin (daemon, **torch-free**)
-  writes here after a cheap pre-filter (spec match + data-watermark freshness via
-  `metrics.remote_model_wins`); it never loads a model and never writes the active
-  slot. A candidate the pre-filter rejects is cleared from staging.
-- **Promotion ownership is the agent process** (which has torch for inference).
-  Its decide loop watches the staged model's mtime like it watches the active
-  model's. When a staged model appears, the agent re-scores the staged remote and
-  the incumbent on one fixed held-out slice of the current logs under one reward
-  model (`train.score_candidates`) and applies `metrics.promotion_decision`
-  (spec gate, no-local bootstrap, baseline floor, `[agent] promotion_margin`
-  lift-over-baseline margin, `[agent] promotion_max_stale_episodes` staleness
-  guard). On a win it atomically `os.replace`s the staged files into the active
-  slot and restamps `source="remote"`; otherwise the incumbent stays and the
-  staged files are left for diagnostics. The swap is serialized against the
-  agent's own training (`_training` guard) so a half-written model is never
-  scored or promoted. The daemon and plugins stay torch-free throughout.
-- **Lifetime adoption tally.** Each adoption increments a persistent
-  `promotion-tally.json` (`{"local": N, "remote": M}`) in the agent dir: a
-  completed on-device training run (which overwrites the active model with a
-  freshly trained local one) bumps `local`; a staged remote model promoted into
-  the active slot bumps `remote`. The agent publishes it in `status.json`
-  (`promotion_tally`) and the daemon renders it on the `/agent` card as a
-  "Promotions" line (`N on-device / M remote`), so the field can see which side
-  has been winning over the device's life.
+- **The held-out rows.** A row is held out when its hour block
+  (`floor(ts / 3600)`) hashes into one bucket of five
+  (`metrics.HOLDOUT_SCHEME = "block-hash-v1"`, `metrics.is_holdout`): about 20%
+  of rows, the same on the device and a remote host, stable as old episode files
+  rotate out. `train.train_from_logs` keeps them out of training entirely (the
+  reward model and the replay env), and stamps `holdout` into the sidecar.
+- **Where candidates wait.** An on-device run writes
+  `AGENT_DIR/.candidates/local/<slug>/model-<slug>.{zip,meta.json}` (never the
+  active slot), warm-started from the active model's weights (weights only, as
+  every load is). The `remote-train` plugin (daemon, **torch-free**) stages a
+  pulled model in `AGENT_DIR/.remote-staging/<slug>/` when its spec matches and
+  the agent hasn't judged it before. It records the host's latest model per
+  algorithm in `.remote-staging/host-models.json` (its launch trigger counts
+  rows since that model's watermark).
+- **When a contest runs.** After a local run finishes, and when the staged
+  remote model's mtime changes (the decide loop watches it), never while a
+  training child is writing. One contest at a time.
+- **The contest** (`controller._run_contest`). The agent loads each candidate,
+  the active model and the scripted baseline, and `train.evaluate` scores them
+  on the newest 2,000 held-out rows that carry an observation, in time order,
+  resetting a policy's recurrent state at each hour-block boundary, under one
+  reward model fitted on the non-held-out rows. A model trained before rows were
+  held out (no `holdout` in its sidecar) saw them all, so the contest then uses
+  only held-out rows newer than its data watermark.
+- **The rule** (`metrics.contest_decision`, the same for both sources). From the
+  per-row differences `r̂(o, candidate) - r̂(o, active)`:
+  - **stale:** more than `[agent] promotion_max_stale_episodes` (900) rows
+    logged since the candidate's data rejects it; `0` turns the guard off;
+  - **baseline:** the candidate's lift over the scripted baseline must be at
+    least `PROMOTION_ABS_FLOOR`;
+  - **bootstrap:** with no active model, that's enough;
+  - **paired test:** the mean difference must be at least the floor and
+    significant, `mean / standard error >= [agent] promotion_min_z` (1.0);
+  - **margin:** its lift must be at least `(1 + [agent] promotion_margin)` times
+    the active model's (10%), so two near-equal models don't swap every run.
+
+  With two candidates waiting, the qualifying one with the larger mean
+  difference wins. An unusable active model gives way to a candidate that
+  loads. Fewer than 64 evaluation rows **defers** the contest (the candidates
+  wait, and it's retried after 32 more logged episodes), except with no active
+  model, when the first candidate that loads is adopted.
+- **After a contest.** The winner is moved into the active slot (atomic
+  `os.replace`, model then sidecar), its sidecar stamped `source`,
+  `promoted_at` and `contest`. Every other candidate is deleted; a remote one's
+  fingerprint (`metrics.model_fingerprint`: algorithm, watermark, train time)
+  goes into `.remote-staging/evaluated.json` so the plugin doesn't stage it
+  again. Each decision is logged (`contest (<trigger>): <source> candidate vs
+  active (<source>): promote|keep - <reason>; N held-out rows`).
+- **The tally.** `promotion-tally.json` counts contests by source:
+  `{"local": {"won", "lost"}, "remote": {"won", "lost"}}`. A device's adoption
+  counts from before contests are kept under `before_fair_promotion`. The agent
+  publishes it in `status.json` (`promotion_tally`, with `last_decision`), and
+  the daemon renders **Model contests** (`on-device 3 of 9 won · remote 2 of 2
+  won`) and **Last contest** on the `/agent` card.
 - **Validating it in the field.** `builder/extra/files/scripts/pull-agent-diagnostics.sh`
-  (shipped in the image under `/usr/local/share/kestrel/scripts/`, run from
-  your workstation) pulls a PII-free snapshot off a device — the model + staged sidecars,
-  `status.json`, the agent-dir listings, and the `promotion check … | scores={…}`
-  / `staged …` / `promoted …` journal lines — so a promotion decision can be
-  checked off-device.
+  (shipped under `/usr/local/share/kestrel/scripts/`, run from your workstation)
+  reports the sidecars, the contests and their reasons from the journal, each
+  model's real-world yield, and with `--score` re-scores the models on the
+  device as the contest does.
 
 ## Episode logs
 

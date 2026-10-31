@@ -61,6 +61,36 @@ How to use this file:
   script), have both sides use it, and drop the duplicate.
 - **Pick up when:** either side's decision logic next changes.
 
+## Learning agent
+
+### Confirm contests with real handshakes
+
+- **What:** promotion scores candidates with the reward model r̂ on held-out
+  rows. Extend `interleave_compare` to alternate the active model and a
+  candidate in blocks, and confirm a promotion on real handshakes per hour.
+- **Why deferred:** fair r̂ contests come first; a live A/B needs hours of
+  capture per decision and a design for when to run it.
+- **Pick up when:** contests have run on devices for a while and their winners
+  can be compared with the yield the diagnostics script reports.
+
+### The learned policy collapses to one action
+
+- **What:** on the test device the learned RecurrentPPO model picks one action
+  (`autohunt / 2 s / passive`) for every observation. Add that fixed posture as
+  a second baseline, and look at exploration (entropy) and the reward weights.
+- **Why deferred:** worth judging once contests are fair and remote models,
+  trained far longer, actually compete.
+- **Pick up when:** a few days of fair contests are logged.
+
+### Pin the training host's ML stack
+
+- **What:** the remote host installs the ML stack unpinned (a CUDA build of
+  torch, newer than the device's 2.10). Pin it to the device's versions and
+  prefer the CPU build; the policies are small.
+- **Why deferred:** weights still load across these versions, and the host
+  stack only changes when it is rebuilt.
+- **Pick up when:** the host stack is next rebuilt, or a model fails to load.
+
 ## Recovered networks (`kestrel_pi.recovered`)
 
 ### Support the default `hashcat.potfile` format

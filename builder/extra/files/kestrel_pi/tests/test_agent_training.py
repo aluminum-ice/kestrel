@@ -352,153 +352,400 @@ def _obs_rows(n, actions_rewards):
     return rows
 
 
-def test_score_candidates_ranks_the_better_policy_higher():
-    # Reward is 1.0 for action 0, 0.0 for action 1. The policy that always picks
-    # action 0 must score above the one that always picks action 1, on the shared
-    # held-out slice under the shared reward model.
-    rows = _obs_rows(40, [(0, 1.0), (1, 0.0)])
-    policies = {"remote": _FixedPolicy(0), "local": _FixedPolicy(1),
-                "baseline": _FixedPolicy(1)}
-    scores = train_mod.score_candidates(rows, policies)
-    assert scores is not None
-    assert scores["remote"] > scores["local"]
-    # Each policy's recurrent state was reset exactly once before its pass.
-    assert policies["remote"].resets == 1
+def _hourly_rows(hours, per_hour=6, actions_rewards=((0, 1.0), (1, 0.0))):
+    """Observation-carrying rows spread over ``hours`` hours (``per_hour`` each),
+    so about a fifth fall in held-out hour blocks."""
+    import numpy as np
+    from kestrel_pi.agent import spec
+    rng = np.random.default_rng(0)
+    rows = []
+    for i in range(hours * per_hour):
+        action, reward = actions_rewards[i % len(actions_rewards)]
+        rows.append({"obs": rng.standard_normal(spec.OBS_SIZE).tolist(),
+                     "action": action, "reward": reward,
+                     "ts": i * 3600.0 / per_hour})
+    return rows
 
 
-def test_score_candidates_returns_none_on_a_thin_log():
-    # Fewer than min_rows observation-carrying windows: too thin to score, so the
-    # caller keeps the incumbent rather than promoting on noise.
-    rows = _obs_rows(10, [(0, 1.0), (1, 0.0)])
-    assert train_mod.score_candidates(rows, {"remote": _FixedPolicy(0)}) is None
+def test_evaluate_scores_only_held_out_rows_and_ranks_the_better_policy():
+    from kestrel_pi.agent import metrics
+    rows = _hourly_rows(200)
+    policies = {"good": _FixedPolicy(0), "bad": _FixedPolicy(1)}
+    res = train_mod.evaluate(rows, policies)
+    held = [r for r in rows if metrics.is_holdout(r)]
+    assert res["rows"] == len(held)
+    assert res["mean"]["good"] > res["mean"]["bad"]
+    assert len(res["per_row"]["good"]) == res["rows"]
+    # The recurrent state is reset at every held-out hour block, in time order.
+    blocks = {metrics.holdout_block(r["ts"]) for r in held}
+    assert policies["good"].resets == len(blocks)
 
 
-# -- quality-aware promotion: controller decision (no torch) --------------
-
-def _stage(agent_dir, meta):
-    """Write a staged remote model + sidecar under .remote-staging/dqn/."""
-    from kestrel_pi.agent import (REMOTE_STAGING_DIR, model_meta_name_for,
-                                     model_name_for)
-    staging = agent_dir / REMOTE_STAGING_DIR / "dqn"
-    staging.mkdir(parents=True, exist_ok=True)
-    (staging / model_name_for("DQN")).write_text("STAGED-MODEL")
-    with open(staging / model_meta_name_for("DQN"), "w", encoding="utf-8") as fh:
-        json.dump(meta, fh)
-
-
-def test_promote_staged_bootstraps_when_no_local_model(tmp_path):
-    from kestrel_pi.agent import (model_meta_name_for, model_name_for,
-                                     policies, spec)
-    c, agent_dir = _make(tmp_path)
-    _stage(agent_dir, {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
-                       "data_watermark": {"latest_ts": 10.0, "episodes": 5}})
-    assert c._maybe_promote_staged() is True
-    # The staged model moved into the active slot and is stamped remote.
-    assert (agent_dir / model_name_for("DQN")).read_text() == "STAGED-MODEL"
-    assert policies.read_meta(str(agent_dir), "DQN")["source"] == "remote"
+def test_evaluate_respects_cap_min_ts_and_min_rows():
+    from kestrel_pi.agent import metrics
+    rows = _hourly_rows(400)
+    held_ts = sorted(r["ts"] for r in rows if metrics.is_holdout(r))
+    # The cap keeps the newest held-out rows.
+    capped = train_mod.evaluate(rows, {"p": _FixedPolicy(0)}, cap=70)
+    assert capped["rows"] == 70 and capped["newest_ts"] == held_ts[-1]
+    assert capped["oldest_ts"] == held_ts[-70]
+    # min_ts keeps only held-out rows newer than it.
+    cut = held_ts[len(held_ts) // 3]
+    later = train_mod.evaluate(rows, {"p": _FixedPolicy(0)}, min_ts=cut)
+    assert later["oldest_ts"] > cut
+    # Too thin to decide on.
+    assert train_mod.evaluate(_hourly_rows(10), {"p": _FixedPolicy(0)}) is None
 
 
-def test_promote_staged_rejects_a_spec_mismatch(tmp_path):
-    from kestrel_pi.agent import model_name_for, spec
-    c, agent_dir = _make(tmp_path)
-    _stage(agent_dir, {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION + 1,
-                       "data_watermark": {"latest_ts": 10.0, "episodes": 5}})
-    assert c._maybe_promote_staged() is False
-    assert not (agent_dir / model_name_for("DQN")).exists()   # not adopted
+def _stub_training(monkeypatch, seen, set_params=None):
+    class _Model:
+        device = "cpu"
+
+        def learn(self, **_kw):
+            pass
+
+        def save(self, path):
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("TRAINED")
+
+        def set_parameters(self, path, **_kw):
+            if set_params is not None:
+                set_params.append(path)
+
+    def fake_env(rows, **_kw):
+        seen["env_rows"] = rows
+        return object()
+
+    def fake_select(rows):
+        seen["reward_rows"] = rows
+        return (lambda o, a: 0.0), {"reward_model": "state-independent"}
+
+    monkeypatch.setattr(train_mod, "build_replay_env", fake_env)
+    monkeypatch.setattr(train_mod, "select_reward_model", fake_select)
+    monkeypatch.setattr(train_mod.policies_mod, "make_algorithm",
+                        lambda *a, **k: _Model())
 
 
-def test_promote_staged_keeps_local_when_scoring_says_no(tmp_path, monkeypatch):
-    from kestrel_pi.agent import model_name_for, policies, spec
-    c, agent_dir = _make(tmp_path)
-    # An incumbent exists.
-    (agent_dir / model_name_for("DQN")).write_text("LOCAL-MODEL")
-    policies.write_meta(str(agent_dir), "DQN", source="local",
-                        watermark={"latest_ts": 50.0, "episodes": 40})
-    _stage(agent_dir, {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
-                       "data_watermark": {"latest_ts": 60.0, "episodes": 45}})
-    # Avoid torch: stub the SB3 load and the held-out scoring.
-    monkeypatch.setattr(policies, "load_learned",
-                        lambda algo, path, logger=None: (object(), ""))
-    monkeypatch.setattr(train_mod, "score_candidates",
-                        lambda *a, **k: {"remote": 0.1, "local": 0.5,
-                                         "baseline": 0.0})
-    assert c._maybe_promote_staged() is False
-    assert (agent_dir / model_name_for("DQN")).read_text() == "LOCAL-MODEL"
-    assert policies.read_meta(str(agent_dir), "DQN")["source"] == "local"
+def _write_rows(agent_dir, rows):
+    with open(agent_dir / EPISODES_DIR / "e.jsonl", "w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row) + "\n")
 
 
-def test_promote_staged_adopts_a_clear_remote_win(tmp_path, monkeypatch):
-    from kestrel_pi.agent import model_name_for, policies, spec
-    c, agent_dir = _make(tmp_path)
-    (agent_dir / model_name_for("DQN")).write_text("LOCAL-MODEL")
-    policies.write_meta(str(agent_dir), "DQN", source="local",
-                        watermark={"latest_ts": 50.0, "episodes": 40})
-    _stage(agent_dir, {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
-                       "data_watermark": {"latest_ts": 60.0, "episodes": 45}})
-    monkeypatch.setattr(policies, "load_learned",
-                        lambda algo, path, logger=None: (object(), ""))
-    monkeypatch.setattr(train_mod, "score_candidates",
-                        lambda *a, **k: {"remote": 0.9, "local": 0.1,
-                                         "baseline": 0.0})
-    assert c._maybe_promote_staged() is True
-    assert (agent_dir / model_name_for("DQN")).read_text() == "STAGED-MODEL"
-    assert policies.read_meta(str(agent_dir), "DQN")["source"] == "remote"
-
-
-def test_promote_staged_refuses_while_training(tmp_path):
-    from kestrel_pi.agent import model_name_for, spec
-    c, agent_dir = _make(tmp_path)
-    c._training = True                                   # a run is writing a model
-    _stage(agent_dir, {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
-                       "data_watermark": {"latest_ts": 10.0, "episodes": 5}})
-    # Even the bootstrap adopt is refused mid-train (the atomic guard).
-    assert c._maybe_promote_staged() is False
+def test_training_never_sees_a_held_out_row_and_writes_where_told(tmp_path, monkeypatch):
+    from kestrel_pi.agent import metrics, model_name_for, policies
+    agent_dir = tmp_path / "agent"
+    (agent_dir / EPISODES_DIR).mkdir(parents=True)
+    rows = [{"action": 0, "reward": 1.0, "ts": h * 1800.0} for h in range(400)]
+    _write_rows(agent_dir, rows)
+    seen = {}
+    _stub_training(monkeypatch, seen)
+    out = tmp_path / "candidate"
+    train_mod.train_from_logs(str(agent_dir), "DQN", timesteps=7, out_dir=str(out))
+    assert not any(metrics.is_holdout(r) for r in seen["env_rows"])
+    assert not any(metrics.is_holdout(r) for r in seen["reward_rows"])
+    assert len(seen["env_rows"]) < len(rows)
+    # Written to the candidate folder, never the active slot.
+    assert (out / model_name_for("DQN")).exists()
     assert not (agent_dir / model_name_for("DQN")).exists()
+    meta = policies.read_meta(str(out), "DQN")
+    assert meta["holdout"] == metrics.HOLDOUT_SCHEME
+    assert meta["timesteps"] == 7 and meta["warm_start"] is None
+    assert meta["held_out_rows"] == len(rows) - meta["train_rows"]
 
 
-# -- local-vs-remote promotion tally --------------------------------------
+def test_training_warm_starts_from_the_active_model(tmp_path, monkeypatch):
+    from kestrel_pi.agent import model_name_for, policies, spec
+    agent_dir = tmp_path / "agent"
+    (agent_dir / EPISODES_DIR).mkdir(parents=True)
+    _write_rows(agent_dir, [{"action": 0, "reward": 1.0, "ts": h * 1800.0}
+                            for h in range(100)])
+    (agent_dir / model_name_for("DQN")).write_text("ACTIVE")
+    policies.write_meta(str(agent_dir), "DQN", source="remote")
+    seen, loaded = {}, []
+    _stub_training(monkeypatch, seen, set_params=loaded)
+    train_mod.train_from_logs(str(agent_dir), "DQN", timesteps=1,
+                              out_dir=str(tmp_path / "cand"))
+    assert loaded == [str(agent_dir / model_name_for("DQN"))]
+    assert policies.read_meta(str(tmp_path / "cand"), "DQN")["warm_start"] == "remote"
+    # A model from another env-spec isn't used as a starting point.
+    loaded.clear()
+    meta_path = agent_dir / "model-dqn.meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["spec_version"] = spec.SPEC_VERSION + 1
+    meta_path.write_text(json.dumps(meta))
+    train_mod.train_from_logs(str(agent_dir), "DQN", timesteps=1,
+                              out_dir=str(tmp_path / "cand2"))
+    assert loaded == []
+    # --no-warm-start trains fresh.
+    meta["spec_version"] = spec.SPEC_VERSION
+    meta_path.write_text(json.dumps(meta))
+    train_mod.train_from_logs(str(agent_dir), "DQN", timesteps=1,
+                              out_dir=str(tmp_path / "cand3"), warm_start=False)
+    assert loaded == []
 
-def test_training_bumps_the_local_tally_and_persists(tmp_path, monkeypatch):
-    from kestrel_pi.agent import PROMOTION_TALLY_NAME
+
+def test_training_command_writes_a_local_candidate(tmp_path):
+    from kestrel_pi.agent import CANDIDATES_DIR
     c, agent_dir = _make(tmp_path)
-    monkeypatch.setattr(c, "_resources_ok", lambda: True)
-    monkeypatch.setattr(c, "_board_can_train", lambda: True)
-    monkeypatch.setattr(c, "_spawn_training", lambda *a, **k: 0)
-    c._run_training("manual", force=True)
-    assert c._promotion_tally == {"local": 1, "remote": 0}
-    # Persisted and reloaded by a fresh controller (survives a restart).
-    saved = json.load(open(agent_dir / PROMOTION_TALLY_NAME))
-    assert saved["local"] == 1
-    c2 = ctrl_mod.AgentController(
-        config_path=str(tmp_path / "config.toml"),
-        agent_dir=str(agent_dir), capture_store=str(tmp_path / "cap"))
-    assert c2._promotion_tally == {"local": 1, "remote": 0}
+    cmd = c._training_command()
+    assert cmd[cmd.index("--out-dir") + 1] == str(agent_dir / CANDIDATES_DIR / "local" / "dqn")
 
 
-def test_failed_training_does_not_bump_the_tally(tmp_path, monkeypatch):
+# -- contests: every candidate faces the same gate (no torch) -------------
+
+def _cand(directory, meta, content):
+    from kestrel_pi.agent import model_meta_name_for, model_name_for
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / model_name_for("DQN")).write_text(content)
+    (directory / model_meta_name_for("DQN")).write_text(json.dumps(meta))
+
+
+def _meta(latest=10.0, **extra):
+    from kestrel_pi.agent import metrics, spec
+    meta = {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
+            "holdout": metrics.HOLDOUT_SCHEME,
+            "data_watermark": {"latest_ts": latest, "episodes": 5}}
+    meta.update(extra)
+    return meta
+
+
+def _local(agent_dir, content="LOCAL-CAND", **meta):
+    from kestrel_pi.agent import CANDIDATES_DIR
+    _cand(agent_dir / CANDIDATES_DIR / "local" / "dqn", _meta(**meta), content)
+
+
+def _remote(agent_dir, content="REMOTE-CAND", **meta):
+    from kestrel_pi.agent import REMOTE_STAGING_DIR
+    _cand(agent_dir / REMOTE_STAGING_DIR / "dqn", _meta(**meta), content)
+
+
+def _active(agent_dir, content="ACTIVE", source="local", **meta):
+    from kestrel_pi.agent import model_meta_name_for, model_name_for
+    (agent_dir / model_name_for("DQN")).write_text(content)
+    (agent_dir / model_meta_name_for("DQN")).write_text(
+        json.dumps(_meta(source=source, **meta)))
+
+
+def _contest_stubs(monkeypatch, means, calls=None, broken=()):
+    """Stub the model loads and the held-out scoring: ``means`` gives each
+    policy name ("baseline", "incumbent", "local", "remote") its per-row
+    reward; None for ``means`` means too few held-out rows."""
+    from kestrel_pi.agent import policies
+
+    def fake_load(algorithm, path, logger=None):
+        if any(b in str(path) for b in broken):
+            return None, "corrupt"
+        return _FixedPolicy(0), ""
+
+    def fake_evaluate(rows, pols, cap=2000, min_rows=64, min_ts=None):
+        if calls is not None:
+            calls.append({"names": sorted(pols), "min_ts": min_ts})
+        if means is None:
+            return None
+        per_row = {n: [means[n] + d for d in (0.01, -0.01) * 40] for n in pols}
+        return {"rows": 80, "per_row": per_row,
+                "mean": {n: means[n] for n in pols},
+                "reward_model": "state-conditioned"}
+
+    monkeypatch.setattr(policies, "load_learned", fake_load)
+    monkeypatch.setattr(train_mod, "evaluate", fake_evaluate)
+
+
+def _active_content(agent_dir):
+    from kestrel_pi.agent import model_name_for
+    return (agent_dir / model_name_for("DQN")).read_text()
+
+
+def test_a_local_candidate_that_wins_is_promoted(tmp_path, monkeypatch):
+    from kestrel_pi.agent import policies
+    c, agent_dir = _make(tmp_path)
+    _active(agent_dir)
+    _local(agent_dir)
+    _contest_stubs(monkeypatch, {"baseline": 0.0, "incumbent": 0.2, "local": 0.5})
+    assert c._run_contest("local") == "promoted"
+    assert _active_content(agent_dir) == "LOCAL-CAND"
+    meta = policies.read_meta(str(agent_dir), "DQN")
+    assert meta["source"] == "local" and meta["contest"]["trigger"] == "local"
+    assert c._promotion_tally["local"] == {"won": 1, "lost": 0}
+
+
+def test_a_local_candidate_that_loses_is_discarded(tmp_path, monkeypatch):
+    from kestrel_pi.agent import CANDIDATES_DIR
+    c, agent_dir = _make(tmp_path)
+    _active(agent_dir)
+    _local(agent_dir)
+    _contest_stubs(monkeypatch, {"baseline": 0.0, "incumbent": 0.5, "local": 0.2})
+    assert c._run_contest("local") == "kept"
+    assert _active_content(agent_dir) == "ACTIVE"
+    assert not list((agent_dir / CANDIDATES_DIR / "local" / "dqn").iterdir())
+    assert c._promotion_tally["local"] == {"won": 0, "lost": 1}
+    assert c._last_decision["result"] == "kept"
+
+
+def test_a_remote_candidate_that_wins_is_promoted_and_stamped(tmp_path, monkeypatch):
+    from kestrel_pi.agent import policies
+    c, agent_dir = _make(tmp_path)
+    _active(agent_dir)
+    _remote(agent_dir)
+    _contest_stubs(monkeypatch, {"baseline": 0.0, "incumbent": 0.2, "remote": 0.5})
+    assert c._run_contest("remote") == "promoted"
+    assert _active_content(agent_dir) == "REMOTE-CAND"
+    assert policies.read_meta(str(agent_dir), "DQN")["source"] == "remote"
+    assert c._promotion_tally["remote"] == {"won": 1, "lost": 0}
+
+
+def test_a_losing_remote_is_recorded_and_never_judged_again(tmp_path, monkeypatch):
+    from kestrel_pi.agent import EVALUATED_NAME, REMOTE_STAGING_DIR, metrics
+    c, agent_dir = _make(tmp_path)
+    _active(agent_dir)
+    _remote(agent_dir)
+    calls = []
+    _contest_stubs(monkeypatch, {"baseline": 0.0, "incumbent": 0.5, "remote": 0.1},
+                   calls=calls)
+    assert c._run_contest("remote") == "kept"
+    judged = json.loads((agent_dir / REMOTE_STAGING_DIR / EVALUATED_NAME).read_text())
+    assert judged == [metrics.model_fingerprint(_meta())]
+    # The same model staged again is dropped without another evaluation.
+    _remote(agent_dir)
+    assert c._run_contest("remote") == "none"
+    assert len(calls) == 1
+
+
+def test_the_rule_is_the_same_for_both_sources(tmp_path, monkeypatch):
+    # Identical numbers decide identically whether the candidate was trained on
+    # the device or on a remote host.
+    outcomes = []
+    for source in ("local", "remote"):
+        (tmp_path / source).mkdir()
+        c, agent_dir = _make(tmp_path / source)
+        _active(agent_dir)
+        (_local if source == "local" else _remote)(agent_dir)
+        for means in ({"baseline": 0.0, "incumbent": 0.2, source: 0.5},
+                      {"baseline": 0.0, "incumbent": 0.2, source: 0.21}):
+            _contest_stubs(monkeypatch, means)
+            (_local if source == "local" else _remote)(agent_dir, latest=means[source])
+            outcomes.append((source, c._run_contest(source)))
+    assert [o for _s, o in outcomes[:2]] == [o for _s, o in outcomes[2:]]
+
+
+def test_a_spec_mismatch_is_discarded_unscored(tmp_path, monkeypatch):
+    from kestrel_pi.agent import spec
+    c, agent_dir = _make(tmp_path)
+    _active(agent_dir)
+    _remote(agent_dir, spec_version=spec.SPEC_VERSION + 1)
+    calls = []
+    _contest_stubs(monkeypatch, {"baseline": 0.0, "incumbent": 0.2, "remote": 0.9},
+                   calls=calls)
+    assert c._run_contest("remote") == "none"
+    assert calls == [] and _active_content(agent_dir) == "ACTIVE"
+
+
+def test_bootstrap_adopts_without_held_out_rows(tmp_path, monkeypatch):
+    c, agent_dir = _make(tmp_path)
+    _remote(agent_dir)                      # no active model at all
+    _contest_stubs(monkeypatch, None)
+    assert c._run_contest("remote") == "promoted"
+    assert _active_content(agent_dir) == "REMOTE-CAND"
+
+
+def test_bootstrap_still_needs_to_beat_the_baseline(tmp_path, monkeypatch):
+    c, agent_dir = _make(tmp_path)
+    _local(agent_dir)
+    _contest_stubs(monkeypatch, {"baseline": 0.3, "local": 0.1})
+    assert c._run_contest("local") == "kept"
+
+
+def test_too_few_rows_defers_and_a_legacy_model_is_scored_on_newer_rows(tmp_path, monkeypatch):
+    from kestrel_pi.agent import CANDIDATES_DIR, model_meta_name_for
+    c, agent_dir = _make(tmp_path)
+    _active(agent_dir, latest=500.0)
+    # The active model predates held-out rows: no "holdout" in its sidecar.
+    meta_path = agent_dir / model_meta_name_for("DQN")
+    meta = json.loads(meta_path.read_text())
+    del meta["holdout"]
+    meta_path.write_text(json.dumps(meta))
+    _local(agent_dir)
+    calls = []
+    _contest_stubs(monkeypatch, None, calls=calls)
+    assert c._run_contest("local") == "deferred"
+    assert calls[0]["min_ts"] == 500.0
+    assert c._contest_deferred is True
+    # The candidate waits for the retry.
+    assert list((agent_dir / CANDIDATES_DIR / "local" / "dqn").iterdir())
+    assert c._last_decision["result"] == "deferred"
+
+
+def test_both_candidates_at_once_the_better_wins(tmp_path, monkeypatch):
+    c, agent_dir = _make(tmp_path)
+    _active(agent_dir)
+    _local(agent_dir)
+    _remote(agent_dir)
+    _contest_stubs(monkeypatch, {"baseline": 0.0, "incumbent": 0.2,
+                                 "local": 0.4, "remote": 0.6})
+    assert c._run_contest("remote") == "promoted"
+    assert _active_content(agent_dir) == "REMOTE-CAND"
+    assert c._promotion_tally == {"local": {"won": 0, "lost": 1},
+                                  "remote": {"won": 1, "lost": 0}}
+
+
+def test_an_unusable_active_model_gives_way(tmp_path, monkeypatch):
+    c, agent_dir = _make(tmp_path)
+    _active(agent_dir, content="BROKEN")
+    _local(agent_dir)
+    _contest_stubs(monkeypatch, {"baseline": 0.0}, broken=("model-dqn.zip",))
+
+    from kestrel_pi.agent import policies
+    real = policies.load_learned
+
+    def load(algorithm, path, logger=None):
+        if str(path) == str(agent_dir / "model-dqn.zip"):
+            return None, "corrupt"
+        return _FixedPolicy(0), ""
+    monkeypatch.setattr(policies, "load_learned", load)
+    assert c._run_contest("local") == "promoted"
+    assert _active_content(agent_dir) == "LOCAL-CAND"
+    assert real is not None
+
+
+def test_a_finished_training_run_starts_a_contest(tmp_path, monkeypatch):
     c, _agent_dir = _make(tmp_path)
     monkeypatch.setattr(c, "_resources_ok", lambda: True)
     monkeypatch.setattr(c, "_board_can_train", lambda: True)
-    # A non-zero exit (e.g. the child found no episode logs) is a failed run.
+    monkeypatch.setattr(c, "_spawn_training", lambda *a, **k: 0)
+    contests = []
+    monkeypatch.setattr(c, "_run_contest", lambda trigger: contests.append(trigger))
+    c._run_training("manual", force=True)
+    assert contests == ["local"]
+    # A failed run (non-zero exit) starts none.
     monkeypatch.setattr(c, "_spawn_training", lambda *a, **k: 1)
     c._run_training("manual", force=True)
-    assert c._promotion_tally == {"local": 0, "remote": 0}
-    assert c._last_trained is None                 # nothing recorded on failure
+    assert contests == ["local"]
 
 
-def test_remote_adoption_bumps_the_remote_tally(tmp_path):
-    from kestrel_pi.agent import PROMOTION_TALLY_NAME, spec
+def test_the_tally_migrates_persists_and_reaches_the_status(tmp_path, monkeypatch):
+    from kestrel_pi.agent import PROMOTION_TALLY_NAME
     c, agent_dir = _make(tmp_path)
-    _stage(agent_dir, {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
-                       "data_watermark": {"latest_ts": 10.0, "episodes": 5}})
-    assert c._maybe_promote_staged() is True           # bootstrap adopt
-    assert c._promotion_tally == {"local": 0, "remote": 1}
-    assert json.load(open(agent_dir / PROMOTION_TALLY_NAME))["remote"] == 1
-
-
-def test_status_carries_the_promotion_tally(tmp_path):
-    c, agent_dir = _make(tmp_path)
-    c._promotion_tally = {"local": 2, "remote": 1}
-    c._write_status(True, "learned", "")
+    (agent_dir / PROMOTION_TALLY_NAME).write_text(json.dumps({"local": 34, "remote": 0}))
+    c._read_promotion_tally()
+    assert c._promotion_tally == {"local": {"won": 0, "lost": 0},
+                                  "remote": {"won": 0, "lost": 0},
+                                  "before_fair_promotion": {"local": 34, "remote": 0}}
+    c._bump_promotion_tally("remote", won=True)
+    c2 = ctrl_mod.AgentController(
+        config_path=str(tmp_path / "config.toml"),
+        agent_dir=str(agent_dir), capture_store=str(tmp_path / "cap"))
+    assert c2._promotion_tally["remote"] == {"won": 1, "lost": 0}
+    assert c2._promotion_tally["before_fair_promotion"]["local"] == 34
+    c2._last_decision = {"result": "kept"}
+    c2._write_status(True, "learned", "")
     status = json.load(open(agent_dir / STATUS_NAME))
-    assert status["promotion_tally"] == {"local": 2, "remote": 1}
+    assert status["promotion_tally"]["remote"]["won"] == 1
+    assert status["last_decision"] == {"result": "kept"}
+
+
+def test_logging_an_episode_counts_toward_the_contest_retry(tmp_path):
+    c, _agent_dir = _make(tmp_path)
+    before = c._episodes_since_contest
+    c._log_episode({"action": 0, "reward": 0.0})
+    assert c._episodes_since_contest == before + 1

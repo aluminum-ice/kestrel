@@ -65,6 +65,62 @@ def _dur(secs):
     return "%dm %02ds" % (minutes, int(round(secs - minutes * 60)))
 
 
+_SOURCE_LABELS = {"local": "on-device", "remote": "remote"}
+
+
+def _contest_elements(status):
+    """The model-contest readout: how many on-device and remote candidates won
+    their contest against the active model, and how the last one went. A device
+    from before contests shows its earlier adoption counts instead, and an older
+    agent's flat tally still reads as before."""
+    elements = []
+    tally = status.get("promotion_tally") or {}
+    local, remote = tally.get("local"), tally.get("remote")
+    if isinstance(local, dict) or isinstance(remote, dict):
+        def counts(side):
+            side = side if isinstance(side, dict) else {}
+            won = int(_num(side.get("won")) or 0)
+            return won, won + int(_num(side.get("lost")) or 0)
+        (lw, lt), (rw, rt) = counts(local), counts(remote)
+        before = tally.get("before_fair_promotion") or {}
+        if lt or rt:
+            elements.append({"name": "promotion_tally", "label": "Model contests",
+                             "value": "on-device %d of %d won · remote %d of %d won"
+                             % (lw, lt, rw, rt), "kind": "text"})
+        elif isinstance(before, dict) and (_num(before.get("local")) or
+                                            _num(before.get("remote"))):
+            elements.append({"name": "promotion_tally", "label": "Earlier adoptions",
+                             "value": "%d on-device / %d remote" % (
+                                 int(_num(before.get("local")) or 0),
+                                 int(_num(before.get("remote")) or 0)),
+                             "kind": "text"})
+    else:
+        local_n = int(_num(local) or 0)
+        remote_n = int(_num(remote) or 0)
+        if local_n or remote_n:
+            elements.append({"name": "promotion_tally", "label": "Promotions",
+                             "value": "%d on-device / %d remote" % (local_n, remote_n),
+                             "kind": "text"})
+    last = status.get("last_decision")
+    at = _num(last.get("at")) if isinstance(last, dict) else None
+    if at is not None:
+        result = last.get("result")
+        cands = [c for c in (last.get("candidates") or []) if isinstance(c, dict)]
+        who = " and ".join(_SOURCE_LABELS.get(c.get("source"), "?") for c in cands) or "a"
+        if result == "promoted":
+            value = "%s candidate promoted" % _SOURCE_LABELS.get(last.get("winner"), "a")
+        elif result == "deferred":
+            names = [_SOURCE_LABELS.get(s, "?") for s in (last.get("candidates") or [])
+                     if isinstance(s, str)]
+            value = "%s candidate waiting for held-out rows" % (" and ".join(names) or "a")
+        else:
+            reason = next((c.get("reason") for c in cands if c.get("reason")), "")
+            value = "%s candidate kept out%s" % (who, ": %s" % reason if reason else "")
+        elements.append({"name": "last_contest", "label": "Last contest",
+                         "value": "%s · %s" % (value[:120], _ago(at)), "kind": "text"})
+    return elements
+
+
 def widget_elements(status):
     """The ``[{name,label,value,kind}, ...]`` for the Learning agent card, from
     a status dict (see :mod:`.controller`). Returns an empty list for a missing
@@ -86,16 +142,7 @@ def widget_elements(status):
         label = {"local": "On-device", "remote": "Remote host"}.get(source, source)
         elements.append({"name": "model_source", "label": "Model source",
                          "value": label, "kind": "text"})
-    # Lifetime tally of which side won: how many times an on-device trained model
-    # vs a promoted remote model became the active model. Shown once either side
-    # has happened, so a device that only trains locally still sees its count.
-    tally = status.get("promotion_tally") or {}
-    local_n = int(_num(tally.get("local")) or 0)
-    remote_n = int(_num(tally.get("remote")) or 0)
-    if local_n or remote_n:
-        elements.append({"name": "promotion_tally", "label": "Promotions",
-                         "value": "%d on-device / %d remote" % (local_n, remote_n),
-                         "kind": "text"})
+    elements += _contest_elements(status)
     # On-device idle training: show it live while a run is in flight, otherwise
     # when it last ran and how long that run took (both persist across restarts).
     if status.get("training"):

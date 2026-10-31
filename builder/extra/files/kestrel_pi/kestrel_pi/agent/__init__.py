@@ -53,10 +53,9 @@ LAST_TRAIN_NAME = "last-train.json"
 # A manual "train now" request from the dashboard: the config tool drops this
 # file and the agent's training thread consumes it to start a run promptly.
 TRAIN_REQUEST_NAME = "train-request"
-# A running count of model adoptions by source over the device's lifetime: how
-# many times a locally trained model vs a promoted remote model became the
-# active model. Persisted so the dashboard can show which side is winning, and
-# so it survives an agent/daemon restart.
+# The lifetime contest tally by source: how many local and remote candidates won
+# (became the active model) or lost. Persisted so the dashboard can show which
+# side wins, and so it survives an agent/daemon restart.
 PROMOTION_TALLY_NAME = "promotion-tally.json"
 EPISODES_DIR = "episodes"
 # Where the remote-train plugin drops a pulled remote model for the agent to
@@ -65,6 +64,17 @@ EPISODES_DIR = "episodes"
 # the staged model against the active one and promotes the winner (quality-aware
 # promotion, docs/developer/agent-interface.md).
 REMOTE_STAGING_DIR = ".remote-staging"
+# Where an on-device training run writes its model for the agent to judge:
+# ``<AGENT_DIR>/.candidates/local/<slug>/model-<slug>.{zip,meta.json}``. A local
+# run never writes the active slot; it is promoted only if it wins the same
+# contest a staged remote model faces.
+CANDIDATES_DIR = ".candidates"
+# Inside REMOTE_STAGING_DIR: the fingerprints of remote models the agent has
+# already judged (written by the agent), so the remote-train plugin doesn't stage
+# the same model again; and the host's latest model per algorithm (written by the
+# plugin), which drives its launch trigger.
+EVALUATED_NAME = "evaluated.json"
+HOST_MODELS_NAME = "host-models.json"
 
 
 def model_slug(algorithm):
