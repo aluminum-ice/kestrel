@@ -124,14 +124,13 @@ MT7612U is the reference adapter: dual-band and active-monitor capable. The Pi 5
 
 ### Python
 
-The image's Python 3.11 has `venv`. Bookworm blocks `pip install` into the system Python, so there is no system `pip`; the packages below install into a virtualenv at `/home/pi/.venv`, owned by `pi`. It sees system site-packages and activates automatically at login. PyTorch is pinned to `torch==2.10.0`, a release with a Python 3.11/arm64 wheel:
+The image's Python 3.11 has `venv`. Bookworm blocks `pip install` into the system Python, so there is no system `pip`; the packages below install into a virtualenv at `/home/pi/.venv`, owned by `pi`. It sees system site-packages and activates automatically at login. PyTorch is pinned to `torch==2.10.0`, a release with a Python 3.11/arm64 wheel, and every package the list brings in is held to an exact version (`pip.local.constraints`), so a build installs a tested set:
 
 |                     |                   |                |                    |          |
 | ---                 | ---               | ---            | ---                | ---      |
 | `vcgencmd`          | `pyyaml`          | `tqdm`         | `requests`         | `urllib3` |
 | `typing-extensions` | `python-dateutil` | `cryptography` | `rpi-hardware-pwm` | `numpy`  |
-| `stable-baselines3` | `sb3-contrib`     | `gymnasium`    | `torch`            | `pytest` |
-| `flask`             |                   |                |                    |          |
+| `stable-baselines3` | `sb3-contrib`     | `gymnasium`    | `torch`            | `flask`  |
 
 `stable-baselines3`, `sb3-contrib`, `gymnasium` and `torch` are the reinforcement-learning agent's runtime (`sb3-contrib` adds RecurrentPPO and QR-DQN; `gymnasium` is the agent's env interface); `flask` serves the plugin host's web status page. The `kestrel_pi` plugin-host package itself is also installed into this venv from its in-image source. The image carries only packages the project uses or is likely to use; add more to `pip.local.install` in [`builder/config.yml`](builder/config.yml) if you need them.
 
