@@ -1,6 +1,6 @@
 # Capture interface contract
 
-`contract_version: 5`
+`contract_version: 6`
 
 This is the stable surface the capture service exposes for the plugin system and
 the reinforcement-learning agent. It is the promise about what stays put, so
@@ -8,8 +8,8 @@ those consumers can build against it without reading the implementation. It is
 versioned: a change that breaks a consumer bumps `contract_version`. Pinning
 AngryOxide (v0.9.4) is what lets this stay stable; an AngryOxide bump is a
 contract review, not a drop-in. (v0.9.3 to v0.9.4 changed only how AngryOxide
-writes its kismet database, which nothing here reads, so the contract stayed
-at version 3.)
+writes its kismet database, which nothing here reads, so it needed no new
+contract version.)
 
 Version 2 added the best-effort in-range readout (`capture-status.json`, under
 [Status](#status)); it is additive, so a v1 consumer that reads only the
@@ -42,6 +42,15 @@ best-effort: a producer may write none, so an absent file means "no known
 location", never an error. It formalizes an existing layout so a producer and
 the core location reader agree without either importing the other.
 
+Version 6 makes `per-ap` the shipped [layout](#output) (`[capture.output] mode`
+in the shipped `config.toml` and every code fallback), so a freshly flashed
+device names its store files `<ssid>_<bssid>.hc22000` instead of
+`<ssid>.hc22000`. The layouts themselves are unchanged and `per-ssid` is still
+supported; a device updated in place keeps whatever mode its `config.toml`
+holds. A consumer that read every `*.hc22000` in the store (as the daemon, the
+agent and the shipped plugins do) is unaffected; one that expected a file per
+network name must read all files and group by the hashline's ESSID instead.
+
 This file is the normative reference.
 
 ## Output
@@ -49,19 +58,19 @@ This file is the normative reference.
 - **Persistent store:** `/var/lib/kestrel/capture/`. Consumers read
   hashlines here and nowhere else.
 - **Layout** (set by `[capture.output] mode` in `/etc/kestrel/config.toml`):
-  - `per-ssid` (default): one `<ssid>.hc22000` per network. The filename is the
+  - `per-ap` (default since contract version 6): one `<ssid>_<bssid>.hc22000`
+    per access point. The grouping key is the AP **BSSID** (field 4), the only field that uniquely identifies one AP
+    radio — SSIDs are reused across unrelated APs, so `per-ssid` can merge them,
+    while `per-ap` never does. The composite BSSID+ESSID is encoded in the name
+    (each part sanitized as below), so one BSSID advertising multiple ESSIDs
+    splits into one file per ESSID. A handshake with an empty/hidden ESSID routes
+    to `__hidden_<bssid>.hc22000`; a line with no BSSID goes to `unknown.hc22000`.
+    Both PMKID (`01`) and EAPOL (`02`) records for an AP share its one file.
+  - `per-ssid`: one `<ssid>.hc22000` per network. The filename is the
     ESSID with every character outside `A-Za-z0-9._-` replaced by `_`, trimmed to
     64 characters. A handshake whose ESSID is unknown (PMKID-only or hidden) is
     written to `bssid-<AP-MAC>.hc22000` until the ESSID is learned; truly unknown
     lines go to `unknown.hc22000`.
-  - `per-ap`: one `<ssid>_<bssid>.hc22000` per access point. The grouping key is
-    the AP **BSSID** (field 4), the only field that uniquely identifies one AP
-    radio — SSIDs are reused across unrelated APs, so `per-ssid` can merge them,
-    while `per-ap` never does. The composite BSSID+ESSID is encoded in the name
-    (each part sanitized as above), so one BSSID advertising multiple ESSIDs
-    splits into one file per ESSID. A handshake with an empty/hidden ESSID routes
-    to `__hidden_<bssid>.hc22000`; a line with no BSSID goes to `unknown.hc22000`.
-    Both PMKID (`01`) and EAPOL (`02`) records for an AP share its one file.
   - `single`: one combined file named by `[capture.output] single_file`
     (default `all.hc22000`).
 - **Format:** hashcat 22000 (`.hc22000`) lines, one hashline per line. The

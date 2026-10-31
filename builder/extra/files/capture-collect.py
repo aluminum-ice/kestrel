@@ -4,10 +4,10 @@
 The capture launcher runs this alongside AngryOxide. AngryOxide writes its
 per-run artifacts (pcapng, hashlines, logs) into the run directory; this watches
 for *.hc22000 files there and appends each unique hashline to the persistent
-store, routing by SSID in "per-ssid" mode (one <ssid>.hc22000 per network), by
-access point in "per-ap" mode (one <ssid>_<bssid>.hc22000 per network+radio,
-keyed on the BSSID so unrelated APs that share a name never merge), or to one
-combined file in "single" mode. (This is a file-layout choice only; the
+store, routing by access point in "per-ap" mode (the default: one
+<ssid>_<bssid>.hc22000 per network+radio, keyed on the BSSID so unrelated APs
+that share a name never merge), by SSID in "per-ssid" mode (one <ssid>.hc22000
+per network), or to one combined file in "single" mode. (This is a file-layout choice only; the
 dashboard's "access points" count is distinct radios regardless of layout.)
 
 The store is only ever appended to and de-duplicated, never truncated, so
@@ -89,7 +89,7 @@ _SINGLE_FILE_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
 def output_config():
     """(mode, single_file) from config, with safe defaults. A single_file that
     isn't a plain file name falls back to the default."""
-    mode, single = "per-ssid", "all.hc22000"
+    mode, single = "per-ap", "all.hc22000"
     out = _capture_config().get("output", {}) or {}
     mode = out.get("mode", mode)
     configured = out.get("single_file", single)
@@ -141,7 +141,7 @@ def target_for(line, mode, single):
     filename (capture filenames are not a trustworthy key):
 
     - ``single``: everything into one combined file.
-    - ``per-ap``: one file per physical AP, keyed on the BSSID (field 4) -- the
+    - ``per-ap`` (default): one file per physical AP, keyed on the BSSID (field 4) -- the
       only field that uniquely identifies one AP radio, since SSIDs are heavily
       reused across unrelated APs. The composite BSSID+ESSID is encoded in the
       name ``<ssid>_<bssid>.hc22000`` so a BSSID advertising multiple SSIDs
@@ -149,7 +149,7 @@ def target_for(line, mode, single):
       ``__hidden_<bssid>.hc22000``. The BSSID in the name keeps unrelated APs
       that share a name (e.g. "poswifi") in separate files, and both PMKID (01)
       and EAPOL (02) records for an AP land in its one file.
-    - ``per-ssid`` (default): route by ESSID, falling back to the AP BSSID when
+    - ``per-ssid``: route by ESSID, falling back to the AP BSSID when
       the ESSID is unknown (PMKID-only / hidden network).
     """
     if mode == "single":
@@ -166,7 +166,7 @@ def target_for(line, mode, single):
             return sanitize(essid) + "_" + sanitize(bssid) + ".hc22000"
         return "__hidden_" + sanitize(bssid) + ".hc22000"
 
-    # per-ssid (default): route by ESSID, fall back to the AP BSSID when the
+    # per-ssid: route by ESSID, fall back to the AP BSSID when the
     # ESSID is unknown (PMKID-only / hidden network).
     essid, bssid = "", ""
     if len(parts) >= 6:

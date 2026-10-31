@@ -715,7 +715,7 @@ def create_app(daemon):
         # store was captured (see _render_networks / captured_access_points).
         cfg = daemon._fresh_config()
         mode = ((cfg.get("capture") or {}).get("output") or {}).get(
-            "mode", "per-ssid")
+            "mode", "per-ap")
         requested = request.args.get("view")
         if requested in ("ssid", "ap"):
             view = requested

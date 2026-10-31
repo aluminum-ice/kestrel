@@ -78,7 +78,7 @@ tables. The ones you'll most likely touch:
 | `[capture.scan] mode` | `sweep` (default), `autohunt` (scan once then lock onto channels with targets — good for a stationary device), or `fixed` (an explicit channel list). |
 | `[capture.scan] dwell_seconds` | Seconds on each channel (default 5). Lower = faster revisits for a moving device; higher = more time to catch a handshake per channel. |
 | `[capture.scan] bands` | `auto` (all supported), `"2"`/`"5"` for one band, or a channel list like `"1,6,11,36,149"`. |
-| `[capture.output] mode` | `per-ssid` (one `<ssid>.hc22000` per network, default) or `single` (one combined file). |
+| `[capture.output] mode` | `per-ap` (one `<ssid>_<bssid>.hc22000` per access point, default), `per-ssid` (one `<ssid>.hc22000` per network) or `single` (one combined file). |
 
 After editing, restart capture:
 

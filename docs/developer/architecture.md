@@ -242,8 +242,9 @@ file, and versioned interface.
   text UI with no terminal crashes AngryOxide. The TUI is only for launching by
   hand in a terminal.
 - **Collector** (`capture-collect.py`) moves finished handshakes into the store.
-- **Output**: `per-ssid` (one `hc22000` per network) or `single` (one combined
-  file); both are append-only. The store is under
+- **Output**: `per-ap` (one `hc22000` per access point, the default),
+  `per-ssid` (one per network) or `single` (one combined file); all are
+  append-only. The store is under
   `/var/lib/kestrel/capture/`.
 - **Whitelist**: networks never actively attacked (still observed). Pre-loadable
   from the boot folder.
