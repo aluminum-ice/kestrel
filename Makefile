@@ -29,14 +29,30 @@ endif
 
 all: clean plugin image
 
-PACKER := /tmp/raspberrypi/packer
+# Build tools are cached here between runs. The cache is checked before each
+# build (tools-check), and Packer's zip is kept so the binary can be compared
+# with it again before Packer runs as root.
+TOOLS_DIR := /tmp/raspberrypi
+PACKER := $(TOOLS_DIR)/packer
+PACKER_ZIP := $(TOOLS_DIR)/packer.zip
 PACKER_URL := https://releases.hashicorp.com/packer/$(PACKER_VERSION)/packer_$(PACKER_VERSION)_linux_$(GOARCH).zip
-$(PACKER):
+# SHA-256 of each build-host arch's Packer zip, from HashiCorp's signed
+# packer_$(PACKER_VERSION)_SHA256SUMS (check its .sig against HashiCorp's key).
+# Update them together with PACKER_VERSION.
+PACKER_SHA256_amd64 := 6f8272658a6d606583c2b3deaad272233db6e84a6ee651bf17a0d46d8cea4a9c
+PACKER_SHA256_arm64 := 5584a6fe1c86f140e57c086d8dcbd1785a5eae467062777f6a325fbfdd3b82d9
+PACKER_SHA256_386 := 41f7c7f6174814964f7d9a0a48556c9db6bf60b977686d6e9eb7140f7226b76d
+PACKER_SHA256_arm := 2d90f0f5b65486690cbc9458518b022a749b5116e009b7cd8801ac641bb96ef7
+PACKER_SHA256 := $(PACKER_SHA256_$(GOARCH))
+$(PACKER_ZIP):
 	mkdir -p $(@D)
-	curl -L "$(PACKER_URL)" -o $(PACKER).zip
-	unzip $(PACKER).zip -d $(@D)
-	rm $(PACKER).zip
+	curl -fsSL "$(PACKER_URL)" -o $@.tmp
+	echo "$(PACKER_SHA256)  $@.tmp" | sha256sum -c -
+	mv $@.tmp $@
+$(PACKER): $(PACKER_ZIP)
+	unzip -o $(PACKER_ZIP) packer -d $(@D)
 	chmod +x $@
+	touch $@
 
 # The solo-io/arm-image plugin is built from a pinned source commit because its
 # newest published release (v0.2.7) has a race that sometimes finds only some
@@ -46,7 +62,7 @@ $(PACKER):
 ARM_IMAGE_TAG := v0.2.8
 ARM_IMAGE_COMMIT := e1ace42451b208497fa4cc5c26084408a1f1269a
 ARM_IMAGE_MODULE := github.com/solo-io/packer-plugin-arm-image
-PACKER_PLUGIN_PATH := /tmp/raspberrypi/plugins
+PACKER_PLUGIN_PATH := $(TOOLS_DIR)/plugins
 ARM_IMAGE_PLUGIN := $(PACKER_PLUGIN_PATH)/packer-plugin-arm-image
 $(ARM_IMAGE_PLUGIN):
 	rm -rf $(@D)/src
@@ -66,7 +82,7 @@ plugin: $(ARM_IMAGE_PLUGIN)
 # autoexpand would only add a reboot.
 PISHRINK_COMMIT := a5f9463c01607ab07402c7e75c9cfd4bb3a0e886
 PISHRINK_SHA256 := 71026f0c02ac099e588a3eb8f70760c1b680aa8ea3acde61a0141fbaeb68c777
-PISHRINK := /tmp/raspberrypi/pishrink.sh
+PISHRINK := $(TOOLS_DIR)/pishrink.sh
 $(PISHRINK):
 	mkdir -p $(@D)
 	curl -fsSL "https://raw.githubusercontent.com/Drewsif/PiShrink/$(PISHRINK_COMMIT)/pishrink.sh" -o $@.tmp
@@ -74,8 +90,19 @@ $(PISHRINK):
 	chmod +x $@.tmp
 	mv $@.tmp $@
 
+# Refuse a tool cache someone else could have planted or changed: everything
+# in it must be owned by root or the user running the build and not writable by
+# others, and Packer must still match its verified zip.
+.PHONY: tools-check
+tools-check: | $(PACKER) $(ARM_IMAGE_PLUGIN) $(PISHRINK)
+	@uid=$${SUDO_UID:-$$(id -u)}; \
+	  bad=$$(find $(TOOLS_DIR) \( -perm -0002 -o ! \( -uid 0 -o -uid "$$uid" \) \) -print -quit); \
+	  if [ -n "$$bad" ]; then echo "$(TOOLS_DIR): $$bad is writable by others or owned by another user; run make clean" >&2; exit 1; fi
+	@echo "$(PACKER_SHA256)  $(PACKER_ZIP)" | sha256sum -c --quiet -
+	@unzip -p $(PACKER_ZIP) packer | cmp -s - $(PACKER) || { echo "$(PACKER) does not match its verified zip; run make clean" >&2; exit 1; }
+
 # Building the image requires these tools, but don't rebuild the image just because they updated.
-$(MY_RELEASE).img: | $(PACKER) $(ARM_IMAGE_PLUGIN) $(PISHRINK)
+$(MY_RELEASE).img: | $(PACKER) $(ARM_IMAGE_PLUGIN) $(PISHRINK) tools-check
 
 # Packer's download cache (the base .img.xz). Packer verifies iso_checksum on
 # reuse, so a stale entry is re-downloaded, never trusted. CI points this at a
@@ -131,7 +158,7 @@ test:
 	python3 -m pytest -q tools/real-data-check
 
 clean:
-	- rm -f $(PACKER) $(PISHRINK)
+	- rm -f $(PACKER) $(PACKER_ZIP) $(PISHRINK)
 	- rm -rf $(PACKER_PLUGIN_PATH)
 	- rm -f $(MY_RELEASE).*
 	- sudo rm -rf builder/output-my_rpi_image builder/packer_cache

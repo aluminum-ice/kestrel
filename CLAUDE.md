@@ -14,7 +14,7 @@ Consciously deferred improvements are tracked in [`docs/developer/deferred.md`](
 
 Build pipeline:
 
-1. `Makefile` downloads Packer (`PACKER_VERSION`, into `/tmp/raspberrypi/packer`). `make plugin` builds the `solo-io/arm-image` plugin with Go from a pinned commit (`ARM_IMAGE_TAG`/`ARM_IMAGE_COMMIT`) into `/tmp/raspberrypi/plugins/`. Don't switch back to `packer plugins install`: it resolves to v0.2.7, whose partition-scan race fails builds.
+1. `Makefile` downloads Packer (`PACKER_VERSION`, into `/tmp/raspberrypi/packer`), checked against the pinned SHA-256 of its zip for the build host's arch (`PACKER_SHA256_<goarch>`, from HashiCorp's signed `SHA256SUMS`; bump them with `PACKER_VERSION`). Before each image build `tools-check` refuses a tool cache with files owned by another user or writable by others, or a Packer that no longer matches its verified zip (`make clean` resets it). `make plugin` builds the `solo-io/arm-image` plugin with Go from a pinned commit (`ARM_IMAGE_TAG`/`ARM_IMAGE_COMMIT`) into `/tmp/raspberrypi/plugins/`. Don't switch back to `packer plugins install`: it resolves to v0.2.7, whose partition-scan race fails builds.
 2. `builder/config.json` (Packer, legacy JSON template) fetches the base RPiOS image, chroots into it under QEMU, installs `ansible-core` from the bookworm apt repo (plus only the `community.general` collection, extracted from the bookworm `ansible` deb into `/tmp/kestrel-ansible-collections`), then runs the playbook via `ansible-local` with pipelining on.
 3. `builder/config.yml` (Ansible playbook, runs against `127.0.0.1` *inside the image chroot*) does all the customization.
 4. PiShrink (pinned to a release commit and SHA-256 verified by the Makefile, `PISHRINK_COMMIT`/`PISHRINK_SHA256`) shrinks the image, then it is checksummed and archived with `7z`. When bumping PiShrink, update both values together.
@@ -76,6 +76,7 @@ Commits use the project identity `aluminum-ice <aluminum-ice@noreply.git.3ntropy
 | `.forgejo/workflows/main.yml` | Manual (`workflow_dispatch`) Forgejo Actions release workflow on the self-hosted `image-builder` runner: sets `_version.py`, runs `sudo make image`, publishes a Forgejo release. |
 | `.forgejo/workflows/lint.yml`, `test.yml` | Run `make lint` / `make test` on push and pull request (runner label `docker`). |
 | `requirements-lint.txt`, `.yamllint` | Lint tool versions and yamllint config. |
+| `requirements-publish.txt` | The Release workflow's PyPI publishing tools (`build`, `twine`, the `setuptools` backend), pinned with hashes and installed with `--require-hashes`. |
 | `.claude/` | Claude Code settings (secret-file read denies, SessionStart hook that installs lint tools, PreToolUse hook that runs the real-data check before `git commit`). |
 | `CONTRIBUTING.md` | How outside contributors send patches by email (the `patches@3ntropy.io` alias; the forge is closed to registration), the nothing-real and authorized-use expectations, and that accepted patches are committed under the project identity so no contributor's name or email enters the history. |
 | `SECURITY.md` | How to report a vulnerability privately (the `security@3ntropy.io` alias), scope, supported versions and safe harbor. Keep its scope in step when a new privilege boundary or network-facing surface is added. |

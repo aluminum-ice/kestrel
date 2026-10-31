@@ -353,6 +353,7 @@ The same checks run in the **Lint** Forgejo Actions workflow on every push and p
 ├── _version.py               # image version
 ├── LICENSE                   # GPL-3.0-or-later
 ├── requirements-lint.txt     # tools for `make lint`
+├── requirements-publish.txt  # the release job's PyPI tools, pinned with hashes
 ├── assets/
 │   └── branding/             # logo, favicon, brand sheet, web-UI preview
 ├── docs/                     # documentation, split by audience
