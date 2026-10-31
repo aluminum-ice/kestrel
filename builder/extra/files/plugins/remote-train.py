@@ -96,12 +96,14 @@ def _remove(path):
 
 class RemoteTrain(Plugin):
     __author__ = "kestrel"
-    __version__ = "0.1.0"
+    __version__ = "0.2.0"
     __license__ = "GPL3"
     __description__ = "Train the learning agent on a remote desktop host (opt-in)."
 
     __target_api__ = 2
     __capabilities__ = ("capture-read", "network", "ui")
+    # The training host's state, for other plugins (provide_remote_training).
+    __provides__ = ("remote-training",)
     # One row button on the Plugins page: "Train" requests a reconcile/launch
     # now (on_webhook, a POST). Shown only once the plugin is configured and
     # passwordless SSH is set up - see webhook_actions.
@@ -178,6 +180,7 @@ class RemoteTrain(Plugin):
         self._host_state = "unknown"          # unknown / reachable / unreachable
         self._last_contact = None             # epoch of the last SSH session that ran
         self._contact_saved = None            # monotonic time of the last status save
+        self._running = []                    # algorithms running on the host
         self._load_status()
 
     def on_unload(self):
@@ -834,6 +837,33 @@ class RemoteTrain(Plugin):
             "echo launched\n"
         ) % {"path": path, "slug": slug, "worker": worker}
 
+    # -- the remote-training service --------------------------------------
+    def provide_remote_training(self):
+        """The ``remote-training`` service: the training host's state as this
+        plugin last saw it, for other plugins. A new dict on every call, built
+        from cached state (no SSH). It never carries the host name, user,
+        path, port or key path. Keys may be added later; existing keys keep
+        their meaning.
+
+        - ``configured``: host, user and path are set and the SSH key exists.
+        - ``host_state``: "unknown" (not tried yet), "reachable" or
+          "unreachable" (couldn't connect or log in), from the last SSH attempt.
+        - ``stack``: the host's training software: "checking", "installing",
+          "ready" or "failed".
+        - ``last_contact``: epoch of the last SSH session that ran, or None.
+        - ``last_model``: epoch the last new model was staged for the agent, or
+          None.
+        - ``running``: algorithms with a live run on the host.
+        """
+        with self._lock:
+            state = {"host_state": self._host_state,
+                     "last_contact": self._last_contact,
+                     "last_model": self._last_pull[1] if self._last_pull else None,
+                     "running": list(self._running)}
+        state["configured"] = not self._missing_config() and self._key_ready()
+        state["stack"] = self._stack_state
+        return state
+
     # -- readout ---------------------------------------------------------
     def on_ui_setup(self, ui):
         ui.add_element("target", "-", label="Train host")
@@ -867,6 +897,8 @@ class RemoteTrain(Plugin):
 
     def _summarize(self, running, launched, manual=False,
                    has_data=True, attempted=None):
+        with self._lock:
+            self._running = list(running)
         if launched:
             self._set_status("training %s" % ", ".join(launched))
         elif running:

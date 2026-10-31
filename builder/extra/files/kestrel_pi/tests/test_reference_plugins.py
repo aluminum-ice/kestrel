@@ -2154,6 +2154,76 @@ def test_remote_train_status_save_failure_is_logged_once(tmp_path, caplog):
     assert sum("could not save" in r.getMessage() for r in caplog.records) == 1
 
 
+def test_remote_train_declares_the_remote_training_service(tmp_path):
+    from kestrel_pi import declarations
+    _plugin, mod, _ad = _make_remote_train(tmp_path)
+    assert mod.RemoteTrain.__provides__ == ("remote-training",)
+    # Root and plugins-ctl read it statically, never importing the plugin.
+    decl = declarations.read_declarations(os.path.join(PLUGIN_DIR, "remote-train.py"))
+    assert tuple(decl["remote-train"]["provides"]) == ("remote-training",)
+
+
+def test_remote_train_service_before_any_contact(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    assert plugin.provide_remote_training() == {
+        "configured": True, "host_state": "unknown", "stack": "checking",
+        "last_contact": None, "last_model": None, "running": []}
+
+
+def test_remote_train_service_after_a_working_pass(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._note_contact(True)
+    plugin._stack_state = "ready"
+    plugin._record_pull("DQN")
+    plugin._summarize(["DQN"], ["DQN"])
+    service = plugin.provide_remote_training()
+    assert service["host_state"] == "reachable" and service["stack"] == "ready"
+    assert abs(service["last_contact"] - time.time()) < 60
+    assert abs(service["last_model"] - time.time()) < 60
+    assert service["running"] == ["DQN"]
+    service["running"].append("PPO")            # a copy: callers can't change it
+    assert plugin.provide_remote_training()["running"] == ["DQN"]
+
+
+def test_remote_train_service_when_unreachable(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._note_contact(True)
+    reached = plugin._last_contact
+    plugin._note_contact(False)
+    service = plugin.provide_remote_training()
+    assert service["host_state"] == "unreachable"
+    assert service["last_contact"] == reached
+
+
+def test_remote_train_service_not_configured(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path, train_host="")
+    assert plugin.provide_remote_training()["configured"] is False
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    os.remove(plugin.options["ssh_key"])
+    assert plugin.provide_remote_training()["configured"] is False
+
+
+def test_remote_train_service_carries_no_option_values(tmp_path):
+    key = tmp_path / "key-mark"
+    key.write_text("KEY")
+    plugin, _mod, _ad = _make_remote_train(
+        tmp_path, train_host="host-mark", train_user="user-mark",
+        train_path="/path-mark", train_port=2222, ssh_key=str(key))
+    plugin._note_contact(True)
+    plugin._record_pull("DQN")
+    text = json.dumps(plugin.provide_remote_training())
+    assert "mark" not in text and "2222" not in text
+
+
+def test_remote_train_service_through_the_registry(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    registry = ServiceRegistry()
+    assert registry.get("remote-training") is None
+    registry.provide("remote-training", plugin.provide_remote_training,
+                     owner="remote-train")
+    assert registry.get("remote-training")["configured"] is True
+
+
 def test_remote_train_launch_script_runs_the_trainer_detached(tmp_path):
     plugin, _mod, _ad = _make_remote_train(tmp_path, timesteps=123456)
     script = plugin._train_launch_script("DQN", "dqn")
