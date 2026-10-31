@@ -2,7 +2,7 @@
 built-in capture and power actions and their rules, driven with a fake input
 source and a fake clock (no gpiozero or GPIO). Every apply call goes through a
 fake that fails on an ``ack``: a key never gives the authorized-use
-acknowledgment. The eink plugin's wiring is tested in test_eink_keys.py."""
+acknowledgment. eink-ws27's wiring is tested in test_eink_keys.py."""
 
 import logging
 import os
@@ -13,7 +13,7 @@ import pytest
 from kestrel_pi import load_library
 
 PLUGIN_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "plugins"))
-LIB = load_library(os.path.join(PLUGIN_DIR, "eink.py"), "hat_keys", api=0)
+LIB = load_library(os.path.join(PLUGIN_DIR, "eink-ws27.py"), "hat_keys", api=0)
 LOG = logging.getLogger("test.hat_keys")
 
 

@@ -94,7 +94,7 @@ With the optional `eink-ws27` plugin and a Waveshare 2.7" e-Paper HAT (or `eink-
 
 The panel shows a top icon strip (Bluetooth PAN and Wi-Fi link, a GPS satellite with signal bars, and battery), the mascot face with a mood-matched voice line, the **agent** mode (`off` / `baseline` / `learned`) and **capture** state, uptime, the channel plan and how many radios are in range (`NEAR`), the device's address on each connected link (so you can find the dashboard without your router's client list), the counters for captured handshakes (a key glyph, with this session's count in brackets), access points (`AP`) and networks (`NET`), and the Kestrel mark in the corner. With no HAT attached it still renders to the web mirror.
 
-`eink-ws27` used to be called `eink`. **`eink` is deprecated:** it is replaced by `eink-ws27` (the same face, keys and options) and will be removed in a future release that requires reflashing the SD card; switch with [`docs/user-guide/eink-setup.md`](docs/user-guide/eink-setup.md).
+`eink` was this plugin's old name and was removed in 1.0.11: if you used it, enable `eink-ws27` after reflashing (the same face, keys and options).
 
 The HAT's four keys work too: KEY1 opens an info screen, a long KEY2 press stops capture (or, after a second press, starts it again, but only once the authorized-use acknowledgment has been given on the dashboard), and long KEY3/KEY4 presses reboot or shut down after a second press.
 
@@ -230,7 +230,7 @@ Captures land in `/var/lib/kestrel/capture/` — one `.hc22000` file per SSID by
 
 Features ship as plugins hosted by a small daemon, `kestrel-daemon.service`. The daemon is installed and **enabled**, but benign on its own: with no plugins enabled it just runs an event loop and serves a read-only web status page over the management link. Nothing it does touches captures or the network until a plugin is explicitly enabled. It sources `on_handshake` from the capture store and `on_internet_available` from the management link (either BT PAN or Wi-Fi), dispatches hooks off its loop so one slow plugin can't stall the others, and also hosts the learning agent and the device UI. See [`docs/user-guide/user-guides.md`](docs/user-guide/user-guides.md) for step-by-step setup guides.
 
-Twenty reference plugins ship, **all disabled**. Turn on only what you need. A plugin marked **yes** under *Sends data* sends data off the device, so enabling it takes the same authorized-use acknowledgment as capture and asks for your own settings (nothing is baked in). The others read and drive only the device and its local hardware. Starting capture with the e-ink HAT's key still needs the acknowledgment you gave before.
+Nineteen reference plugins ship, **all disabled**. Turn on only what you need. A plugin marked **yes** under *Sends data* sends data off the device, so enabling it takes the same authorized-use acknowledgment as capture and asks for your own settings (nothing is baked in). The others read and drive only the device and its local hardware. Starting capture with the e-ink HAT's key still needs the acknowledgment you gave before.
 
 | Plugin | What it does | Sends data | Guide |
 | --- | --- | :---: | --- |
@@ -259,7 +259,6 @@ Twenty reference plugins ship, **all disabled**. Turn on only what you need. A p
 | `updates` | Alerts on a newer release and applies an app-layer update in place, no reflash. | yes | [Updates](docs/user-guide/updates.md) |
 | `remote-train` | Offloads learning-agent training to a desktop over SSH. | yes | [Remote training](docs/user-guide/remote-training.md) |
 | **Deprecated** | | | |
-| `eink` | The old name of `eink-ws27`. Switch to `eink-ws27`: `eink` will be removed in a future release that requires a reflash. | | [eink](docs/user-guide/eink-setup.md) |
 | `ups-hat` | The old name of `ups-ws`. Switch to `ups-ws`: `ups-hat` will be removed in a future release that requires a reflash. | | [ups-hat](docs/user-guide/ups-hat-setup.md) |
 
 <p align="center">
@@ -280,7 +279,7 @@ sudo kestrel plugins disable wpa-sec
 
 Running `enable` in a terminal walks you through the plugin's declared options — secrets masked, scalars pre-filled with the current/default (press Enter to keep), and yes/no for toggles like wpa-sec's `download_results` — so everything can be set at enable time. `--set key=value` sets any option non-interactively (handy for scripting). For a secret use `--set-stdin KEY` and pass the value on stdin instead: anything on the command line lands in your shell history and in the system journal (sudo logs every command line), and the CLI warns if a secret is given with `--set`.
 
-Operator-added plugins drop a `.py` into `/etc/kestrel/plugins/` (which overrides a shipped plugin of the same name) and get a `[plugins.<name>]` table in `config.toml`. Writing a plugin? Start with [`docs/developer/plugin-development.md`](docs/developer/plugin-development.md); code that several plugins share ships beside them as versioned **plugin libraries** (`_lib_<name>.py`, loaded with `kestrel_pi.load_library`), listed with how to use each in [`docs/developer/plugin-libraries.md`](docs/developer/plugin-libraries.md) (today `alerts`, which `ntfy` and `telegram` use to send their alerts, `eink_face`, the face `eink` and `eink-ws213` draw, `hat_keys`, a HAT's push-buttons, which `eink` uses, and `ups` and `ina219`, a UPS HAT's battery, which `ups-ws`, `ups-wsc`, `ups-wsd` and `ups-wse` use). The web status page (and each web plugin's routes under `/plugins/<name>/…`) is served on the management interfaces and loopback only — `[web] bind = "management"`, default port 8080 — never on the capture dongle.
+Operator-added plugins drop a `.py` into `/etc/kestrel/plugins/` (which overrides a shipped plugin of the same name) and get a `[plugins.<name>]` table in `config.toml`. Writing a plugin? Start with [`docs/developer/plugin-development.md`](docs/developer/plugin-development.md); code that several plugins share ships beside them as versioned **plugin libraries** (`_lib_<name>.py`, loaded with `kestrel_pi.load_library`), listed with how to use each in [`docs/developer/plugin-libraries.md`](docs/developer/plugin-libraries.md) (today `alerts`, which `ntfy` and `telegram` use to send their alerts, `eink_face`, the face `eink-ws27` and `eink-ws213` draw, `hat_keys`, a HAT's push-buttons, which `eink-ws27` uses, and `ups` and `ina219`, a UPS HAT's battery, which `ups-ws`, `ups-wsc`, `ups-wsd` and `ups-wse` use). The web status page (and each web plugin's routes under `/plugins/<name>/…`) is served on the management interfaces and loopback only — `[web] bind = "management"`, default port 8080 — never on the capture dongle.
 
 ## Using a release
 

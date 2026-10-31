@@ -1,7 +1,7 @@
 """One e-ink plugin drives the e-Paper panel at a time (eink_face 1.1): the HATs
 share the SPI bus and GPIO pins (and the 2.7" HAT's keys). The first plugin to
-claim the panel that doesn't yield drives it, the deprecated eink yields to any
-other, and the rest stand down: no panel probe, no keys, the web mirror only,
+claim the panel that doesn't yield drives it (a deprecated plugin yields to any
+other), and the rest stand down: no panel probe, no keys, the web mirror only,
 and their card and health note name the plugin that has the panel."""
 
 import gc
@@ -27,8 +27,8 @@ def _mod(name):
     return mod
 
 
-MODS = {n: _mod(n) for n in ("eink", "eink-ws27", "eink-ws213")}
-CLASSES = {"eink": "EinkFace", "eink-ws27": "EinkWs27", "eink-ws213": "EinkWs213"}
+MODS = {n: _mod(n) for n in ("eink-ws27", "eink-ws213")}
+CLASSES = {"eink-ws27": "EinkWs27", "eink-ws213": "EinkWs213"}
 
 
 class _Owner:
@@ -39,18 +39,18 @@ def test_library_api_and_the_owner_rule():
     assert FACE.LIB_API == (1, 1)
     a, b, c = _Owner(), _Owner(), _Owner()
     assert FACE.panel_owner() is None
-    FACE.claim_panel(a, "eink", yields=True)
-    assert FACE.panel_owner() == "eink"                 # alone, even a yielding claim drives it
+    FACE.claim_panel(a, "old-face", yields=True)
+    assert FACE.panel_owner() == "old-face"             # alone, even a yielding claim drives it
     FACE.claim_panel(b, "eink-ws213")
     FACE.claim_panel(c, "eink-ws27")
     assert FACE.panel_owner() == "eink-ws213"           # the first that doesn't yield
     FACE.release_panel(b)
     assert FACE.panel_owner() == "eink-ws27"
     FACE.claim_panel(c, "eink-ws27")                    # claiming again doesn't duplicate
-    assert [n for _r, n, _y in FACE._claims] == ["eink", "eink-ws27"]
+    assert [n for _r, n, _y in FACE._claims] == ["old-face", "eink-ws27"]
     del c
     gc.collect()
-    assert FACE.panel_owner() == "eink"                 # a plugin that is gone holds nothing
+    assert FACE.panel_owner() == "old-face"             # a plugin that is gone holds nothing
 
 
 def _plugin(name, monkeypatch, started, probed, options=None):
@@ -103,24 +103,25 @@ def test_the_first_plugin_drives_the_panel_and_the_other_stands_down(monkeypatch
     assert FACE.panel_owner() is None
 
 
-def test_the_deprecated_eink_gives_way_to_eink_ws27(monkeypatch):
+def test_a_yielding_claim_gives_way_to_eink_ws27(monkeypatch):
+    # A plugin that yields (as a deprecated plugin does) gives the panel to any
+    # other, even when it claimed first.
     started, probed = [], []
-    old = _plugin("eink", monkeypatch, started, probed)
+    other = _Owner()
+    FACE.claim_panel(other, "old-face", yields=True)
     new = _plugin("eink-ws27", monkeypatch, started, probed)
-    _load([old, new])                                   # eink loads first, still gives way
-    old._ensure_panel()
+    _load([new])
     new._ensure_panel()
     assert set(probed) == {"eink-ws27"} and started == ["eink-ws27"]
-    assert _card(old, "eink")["panel"] == "used by eink-ws27"
-    assert old.context.health_note.startswith(MODS["eink"].DEPRECATED + "; standing down: eink-ws27")
-    for p in (old, new):
-        p.on_unload()
+    assert new._standing_down is None
+    FACE.release_panel(other)
+    new.on_unload()
 
 
 def test_alone_a_plugin_drives_the_panel_and_starts_its_keys(monkeypatch):
     started, probed = [], []
-    only = _plugin("eink", monkeypatch, started, probed)
+    only = _plugin("eink-ws27", monkeypatch, started, probed)
     _load([only])
     only._ensure_panel()
-    assert set(probed) == {"eink"} and started == ["eink"] and only._standing_down is None
+    assert set(probed) == {"eink-ws27"} and started == ["eink-ws27"] and only._standing_down is None
     only.on_unload()

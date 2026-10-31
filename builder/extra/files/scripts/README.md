@@ -68,8 +68,8 @@ a private text file for `pull-health.sh` and `pull-eink-diagnostics.sh`, a
   flask and the web module. MAC/IP-redacted on the device; never reads the web
   username, password or token, and never dumps `config.toml` wholesale.
 - `pull-eink-diagnostics.sh [--plugin NAME]` — triage a blank / not-updating
-  Waveshare e-Paper panel for an e-ink plugin (`eink` by default, the
-  deprecated name of `eink-ws27`; or `eink-ws27`, `eink-ws213`): its state, its
+  Waveshare e-Paper panel for an e-ink plugin (`eink-ws27` by default, or
+  `eink-ws213`; `eink` for a device on 1.0.10 or older): its state, its
   `[plugins.NAME]` table only, SPI nodes/module/config, venv imports including
   its driver helper files (or a note that the running daemon holds the pins),
   and only the e-ink plugins' journal lines. Pulls no other config table and no

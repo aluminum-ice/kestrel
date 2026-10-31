@@ -181,35 +181,11 @@ How to use this file:
   `markdown-it-py` and `Pillow` and runs the tool's tests.
 - **Trigger:** the tool's renderer starts changing often.
 
-## E-ink face (`eink-ws27`, `eink-ws213` and the deprecated `eink`)
-
-### Remove the deprecated `eink` plugin
-
-- **What:** delete `plugins/eink.py`, its helper files (`_eink_epdconfig.py`,
-  `_eink_epd2in7.py`, `_eink_epd2in7_V2.py`), `tests/test_eink_ws27.py`'s
-  same-code and helper checks (move `test_eink.py` and `test_eink_keys.py` onto
-  `eink-ws27`), and `docs/user-guide/eink-setup.md` (or reduce it to a pointer);
-  in the shipped `config.toml`, swap the `[plugins.eink]` table and its comment
-  for `[plugins.eink-ws27]`. Then drop `eink` from the docs, `GUIDE_MD`, the
-  plugin lists and counts, `test_plugins_apply.py`, `tools/beta-check/`, the
-  `vendored-code.md` copies note, and make `eink-ws27` the
-  `scripts/pull-eink-diagnostics.sh` `--plugin` default. Keep the ghost-guide
-  fixture's `EINK_NAMES` fallback until a stable release without `eink` is the
-  latest (it renders the latest stable release's code).
-- **Why deferred:** `eink-ws27` replaced it in an app-layer release, with
-  `eink` deprecated (its description, health note and log say so). Removing it
-  now would stop the face on any device updated in place that still has `eink`
-  enabled, with no message, and the `config.toml` change that goes with it makes
-  a release reflash-class: a release made only for this would make every
-  operator set their device up again.
-- **What to do:** in a release that is reflash-class for another reason, and
-  after at least one release carrying the deprecation, make the change above
-  and say in that release's notes to enable `eink-ws27` after reflashing.
-- **Pick up when:** a release has to be reflash-class anyway.
+## E-ink face (`eink-ws27`, `eink-ws213`)
 
 ### Share more of the e-ink plugins through `eink_face`
 
-- **What:** move the rest of what `eink` and `eink-ws213` still each carry into
+- **What:** move the rest of what `eink-ws27` and `eink-ws213` still each carry into
   the `eink_face` library: the render loop (`_run`/`_tick`), the frame store
   and change-gated redraw, the web mirror (`display`/`display.png`), the
   dashboard card and the start-up fingerprint lines. A plugin would then be its
@@ -234,11 +210,11 @@ How to use this file:
   `close()`) fit that HAT, whether its bindings need more than press, hold,
   double and arm-and-confirm, and whether operators should remap keys from
   `config.toml` (a remap would still have to keep the built-ins' rules).
-- **Why deferred:** only `eink` has keys today, so the API is shaped by one HAT;
+- **Why deferred:** only `eink-ws27` has keys today, so the API is shaped by one HAT;
   fixing it now would make third-party plugins rely on guesses. API 0 says it
   may still change in a minor release.
 - **What to do:** write the second keyed HAT's plugin on the library, change the
-  API where that HAT needs it (updating `eink` in the same change), then set
+  API where that HAT needs it (updating `eink-ws27` in the same change), then set
   `LIB_API = (1, 0)` and mark it stable in `plugin-libraries.md`.
 - **Pick up when:** a plugin for a second HAT with keys is written.
 
@@ -254,7 +230,7 @@ How to use this file:
   lists and counts, `test_plugins_apply.py` and `tools/beta-check/`. Keep the
   ghost-guide fixture's `UPS_NAMES` fallback until a stable release without
   `ups-hat` is the latest.
-- **Why deferred:** as for `eink`: `ups-ws` replaced it in an app-layer release,
+- **Why deferred:** as for `eink` (removed in 1.0.11): `ups-ws` replaced it in an app-layer release,
   with `ups-hat` deprecated (and standing down when both are enabled). Removing
   it now would stop the battery readout and the auto-shutdown on any device
   updated in place that still has `ups-hat` enabled, with no message, and the

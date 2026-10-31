@@ -15,13 +15,8 @@ device and learning-agent state via the shared UI model (``on_ui_update``'s
 ``position`` services) - the web dashboard and the e-ink panel are two views of
 one state model.
 
-This is the ``eink`` plugin under a name that says which display it drives
-(``eink-ws<size>``, like ``eink-ws213``). ``eink`` stays, deprecated, for devices
-that still have it enabled, until a release that requires a reflash removes it;
-until then the two files are the same code, and ``tests/test_eink_ws27.py``
-fails when they differ anywhere but the lines that must (the docstring,
-``DEPRECATED``, the class name, the description and the ``choices`` of
-``variant`` and ``rotation``, which this plugin has from the start).
+It replaced the ``eink`` plugin (the same face under a name that says which
+display it drives, like ``eink-ws213``); ``eink`` was removed in 1.0.11.
 
 The face itself - faces, voices, the mood ladder, the motion estimate, the
 Kestrel mark and the glyphs - comes from the shared ``eink_face`` plugin library
@@ -57,13 +52,9 @@ face = load_library(__file__, "eink_face", api=1)
 # The HAT's keys: gestures, prompts and the safety rules for capture and power.
 keys = load_library(__file__, "hat_keys", api=0)
 
-# The plugin's name is its file name ("eink" for eink.py): it starts the log
-# lines and names the helper files and the mirror's ETag, so this file and its
-# copy under the HAT's newer name (eink-ws27.py) differ only where they must.
+# The plugin's name is its file name: it starts the log lines and names the
+# helper files, the poll thread and the mirror's ETag.
 NAME = os.path.splitext(os.path.basename(__file__))[0]
-# A plugin kept only for devices that still have it enabled names its
-# replacement; the notice shows on the Plugins page and in the log.
-DEPRECATED = ""
 
 # Panel geometry: the 2.7" HAT is 264x176 landscape (176x264 native portrait;
 # the Waveshare getbuffer rotates a landscape image to fit).
@@ -149,10 +140,7 @@ class EinkWs27(Plugin):
         self._setup()
         # One e-ink plugin drives the panel (the HATs share its pins and the
         # keys); which one is settled in on_ready, once every plugin has loaded.
-        face.claim_panel(self, NAME, yields=bool(DEPRECATED))
-        if DEPRECATED:
-            self.log.warning("%s: %s", NAME, DEPRECATED)
-            self._note("")
+        face.claim_panel(self, NAME)
         self._worker = threading.Thread(
             target=self._run, name=NAME + "-face", daemon=True)
         self._worker.start()
@@ -346,8 +334,8 @@ class EinkWs27(Plugin):
 
     def _note(self, text):
         """Set the plugin's health note (the Plugins page and ``kestrel plugins
-        info``), after the deprecation notice when there is one."""
-        self.context.health_note = "; ".join(t for t in (DEPRECATED, text) if t)
+        info``)."""
+        self.context.health_note = text
 
     def _refresh_seconds(self):
         return max(self._MIN_REFRESH,

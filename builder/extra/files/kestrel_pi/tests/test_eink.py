@@ -29,7 +29,7 @@ PLUGIN_DIR = os.path.normpath(
 
 
 def _mod():
-    path = os.path.join(PLUGIN_DIR, "eink.py")
+    path = os.path.join(PLUGIN_DIR, "eink-ws27.py")
     spec = importlib.util.spec_from_file_location("eink_under_test", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -44,7 +44,7 @@ FACE = EINK.face
 
 def _ctx(tmp_path, options=None):
     return PluginContext(
-        name="eink", options=options or {},
+        name="eink-ws27", options=options or {},
         capture=CaptureInterface(str(tmp_path)),
         connectivity=types.SimpleNamespace(online=False),
         services=ServiceRegistry(), capabilities=("ui", "web"),
@@ -54,7 +54,7 @@ def _ctx(tmp_path, options=None):
 def _plugin(tmp_path, options=None):
     """A plugin instance wired with a context but WITHOUT starting the render
     worker thread (so tests drive composition deterministically)."""
-    p = EINK.EinkFace()
+    p = EINK.EinkWs27()
     p.options = options or {}
     p.context = _ctx(tmp_path, options)
     p._setup()
@@ -63,14 +63,14 @@ def _plugin(tmp_path, options=None):
 
 # --- the plugin, HAT-less --------------------------------------------------
 def test_plugin_loads_and_degrades_without_a_hat(tmp_path):
-    cfg = {"plugins": {"eink": {"enabled": True}}}
+    cfg = {"plugins": {"eink-ws27": {"enabled": True}}}
     loader = Loader(
         config=cfg, capture=CaptureInterface(str(tmp_path)),
         connectivity=ConnectivityState(), services=ServiceRegistry(),
         search_paths=[PLUGIN_DIR], logger=logging.getLogger("test.eink"))
     loaded = loader.load_all()
     try:
-        assert [r.name for r in loaded] == ["eink"]
+        assert [r.name for r in loaded] == ["eink-ws27"]
         rec = loaded[0]
         assert rec.state == "loaded"
         assert rec.instance.__actions__[0]["path"] == "display"
@@ -136,8 +136,8 @@ def test_compose_shows_gps_only_when_a_receiver_is_present(tmp_path):
 
 
 def test_view_button_is_declared(tmp_path):
-    assert EINK.EinkFace.__actions__[0]["label"] == "View"
-    assert EINK.EinkFace.__actions__[0]["path"] == "display"
+    assert EINK.EinkWs27.__actions__[0]["label"] == "View"
+    assert EINK.EinkWs27.__actions__[0]["path"] == "display"
 
 
 def test_voice_matches_mood_and_rotates(tmp_path):
@@ -224,10 +224,10 @@ def test_ui_card_reports_cached_mood_and_panel_state(tmp_path):
     p._mood = "cool"
     p._voice = "like a boss"
     ui = StubUI()
-    view = ui.for_plugin("eink")
+    view = ui.for_plugin("eink-ws27")
     p.on_ui_setup(view)
     p.on_ui_update(view, UIState(online=True, capture_active=True))
-    card = {e["name"]: e for e in ui.widgets()["eink"]}
+    card = {e["name"]: e for e in ui.widgets()["eink-ws27"]}
     assert card["face"]["value"] == FACE.FACES["cool"]
     assert card["mood"]["value"] == "cool"
     assert card["voice"]["value"] == "like a boss"
@@ -383,9 +383,9 @@ def _install_fake_panels(monkeypatch, v2="ok", v1="ok"):
         mod.EPD = EPD
         return mod
 
-    helpers = {"_eink_epdconfig.py": cfg,
-               "_eink_epd2in7_V2.py": make("epd2in7_V2", v2),
-               "_eink_epd2in7.py": make("epd2in7", v1)}
+    helpers = {"_eink-ws27_epdconfig.py": cfg,
+               "_eink-ws27_epd2in7_V2.py": make("epd2in7_V2", v2),
+               "_eink-ws27_epd2in7.py": make("epd2in7", v1)}
     monkeypatch.setattr(EINK, "load_helper", lambda plugin_file, filename: helpers[filename])
     return state
 
@@ -674,7 +674,7 @@ def test_a_button_prompt_beats_the_fingerprint_which_beats_the_voice(tmp_path, m
 def test_the_drivers_are_helper_files_beside_the_plugin():
     # Waveshare's files, kept verbatim, as the plugin's own helper files: the
     # loader skips them, and nothing of the e-ink face is left in kestrel_pi.
-    for name in ("_eink_epdconfig.py", "_eink_epd2in7.py", "_eink_epd2in7_V2.py"):
+    for name in ("_eink-ws27_epdconfig.py", "_eink-ws27_epd2in7.py", "_eink-ws27_epd2in7_V2.py"):
         assert os.path.isfile(os.path.join(PLUGIN_DIR, name)), name
     pkg = os.path.join(PLUGIN_DIR, "..", "kestrel_pi", "kestrel_pi")
     assert not os.path.exists(os.path.join(pkg, "vendor"))
@@ -688,11 +688,11 @@ def test_a_driver_reaches_epdconfig_through_its_relative_import(monkeypatch):
     from kestrel_pi.plugins import HELPERS_PACKAGE
     fake = types.ModuleType("epdconfig")
     fake.EPD_WIDTH = 0
-    monkeypatch.setitem(sys.modules, HELPERS_PACKAGE + ".eink.epdconfig", fake)
-    name = HELPERS_PACKAGE + ".eink.epd2in7_V2"
+    monkeypatch.setitem(sys.modules, HELPERS_PACKAGE + ".eink_ws27.epdconfig", fake)
+    name = HELPERS_PACKAGE + ".eink_ws27.epd2in7_V2"
     monkeypatch.delitem(sys.modules, name, raising=False)
     from kestrel_pi import load_helper
-    drv = load_helper(os.path.join(PLUGIN_DIR, "eink.py"), "_eink_epd2in7_V2.py")
+    drv = load_helper(os.path.join(PLUGIN_DIR, "eink-ws27.py"), "_eink-ws27_epd2in7_V2.py")
     try:
         assert drv.epdconfig is fake and hasattr(drv, "EPD")
     finally:

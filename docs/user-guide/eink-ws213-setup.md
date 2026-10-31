@@ -61,11 +61,10 @@ The image already has the SPI and GPIO backends and the fonts, and Waveshare's
 driver ships with the plugin, so a seated HAT needs no extra install. SPI must be
 enabled (it is, in the stock image).
 
-**Use one e-ink plugin at a time.** `eink-ws27` (or the deprecated `eink`) and
-`eink-ws213` drive the same pins; if both are enabled, the first to load drives
-the panel (the deprecated `eink` always gives way) and the other stands down: it
-draws only to its web mirror, leaves the pins alone, and its card reads
-"Display: used by" the plugin that has the panel.
+**Use one e-ink plugin at a time.** `eink-ws27` and `eink-ws213` drive the same
+pins; if both are enabled, the first to load drives the panel and the other
+stands down: it draws only to its web mirror, leaves the pins alone, and its
+card reads "Display: used by" the plugin that has the panel.
 
 ## Enabling
 

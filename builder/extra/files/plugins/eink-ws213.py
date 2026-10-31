@@ -3,13 +3,13 @@
 Renders the Kestrel face - the classic pwnagotchi-style emoticons, driven by
 live device and learning-agent state - to the 2.13" e-Paper HAT (250x122,
 black and white; panel revisions V2, V3 and V4, chosen with ``variant``). It
-mirrors the ``eink`` plugin for the 2.7" HAT: the same mood ladder, voice,
+mirrors the ``eink-ws27`` plugin for the 2.7" HAT: the same mood ladder, voice,
 mirror and dashboard card, with a lean layout for the smaller panel (see
 :meth:`EinkWs213._compose_image`) and no keys (this HAT has none).
 
 The face itself - faces, voices, the mood ladder, the motion estimate, the
 Kestrel mark and the glyphs - comes from the shared ``eink_face`` plugin library
-(``_lib_eink_face.py``), which ``eink`` uses too; a fix to the face is made
+(``_lib_eink_face.py``), which ``eink-ws27`` uses too; a fix to the face is made
 there once. This file holds what is particular to this HAT: its options, its
 layout, how it brings the panel up and redraws it, and the web mirror.
 Waveshare's own driver ships beside it unmodified as helper files

@@ -1,4 +1,4 @@
-"""The eink plugin's four HAT keys: how the plugin wires the hat_keys plugin
+"""eink-ws27's four HAT keys: how the plugin wires the hat_keys plugin
 library (KEY1 info screen, KEY2 capture, KEY3 reboot, KEY4 shut down), with fake
 buttons (no gpiozero or GPIO) and a fake apply helper that records each change.
 The library's own gestures and rules are tested in test_hat_keys_lib.py."""
@@ -18,7 +18,7 @@ PLUGIN_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."
 
 def _eink():
     spec = importlib.util.spec_from_file_location(
-        "eink_keys_under_test", os.path.join(PLUGIN_DIR, "eink.py"))
+        "eink_keys_under_test", os.path.join(PLUGIN_DIR, "eink-ws27.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -47,7 +47,7 @@ def _plugin(tmp_path, monkeypatch, options=None, applied=None, reply=None):
         return button
 
     monkeypatch.setattr(KEYS.GpioSource, "_make_button", fake_make)
-    monkeypatch.setattr(E.EinkFace, "_run", lambda self: None)       # no render loop
+    monkeypatch.setattr(E.EinkWs27, "_run", lambda self: None)       # no render loop
     applied = [] if applied is None else applied
 
     def apply(change):
@@ -55,10 +55,10 @@ def _plugin(tmp_path, monkeypatch, options=None, applied=None, reply=None):
         applied.append(change)
         return reply if reply is not None else {"ok": True}
 
-    p = E.EinkFace()
+    p = E.EinkWs27()
     p.options = dict(options or {})
     p.context = PluginContext(
-        name="eink", options=dict(options or {}), capture=CaptureInterface(str(tmp_path)),
+        name="eink-ws27", options=dict(options or {}), capture=CaptureInterface(str(tmp_path)),
         connectivity=types.SimpleNamespace(online=False, paths={}), services=ServiceRegistry(),
         capabilities=("ui", "web"), apply=apply, logger=logging.getLogger("test.eink.keys"))
     p.on_loaded()
@@ -94,7 +94,7 @@ def test_keys_off_or_bad_pins(tmp_path, monkeypatch):
     off.on_unload()
     bad, made, _ = _plugin(tmp_path, monkeypatch, {"pins": "5,6,13"})
     assert bad._keys is None and made == [] and "four" in bad._keys_note
-    ui = StubUI().for_plugin("eink")
+    ui = StubUI().for_plugin("eink-ws27")
     bad.on_ui_setup(ui)
     assert ui.get("keys") == bad._keys_note            # the reason, on the card
     bad.on_unload()
@@ -102,7 +102,7 @@ def test_keys_off_or_bad_pins(tmp_path, monkeypatch):
 
 def test_key2_stops_capture_and_the_prompt_clears_when_it_has(tmp_path, monkeypatch):
     p, _, applied = _plugin(tmp_path, monkeypatch)
-    ui = StubUI().for_plugin("eink")
+    ui = StubUI().for_plugin("eink-ws27")
     p.on_ui_setup(ui)
     p.on_ui_update(ui, UIState(capture_active=True))
     _hold(p, 1)
@@ -140,10 +140,10 @@ def test_key1_toggles_the_info_screen_and_clears_a_prompt(tmp_path, monkeypatch)
     p.on_unload()
 
 
-def test_eink_declares_the_key_options_and_no_buttons_service():
+def test_eink_ws27_declares_the_key_options_and_no_buttons_service():
     from kestrel_pi.declarations import read_declarations
 
-    decl = read_declarations(os.path.join(PLUGIN_DIR, "eink.py"))["eink"]
+    decl = read_declarations(os.path.join(PLUGIN_DIR, "eink-ws27.py"))["eink-ws27"]
     opts = decl["options"]
     assert opts["buttons"]["default"] is True and opts["pins"]["default"] == "5,6,13,19"
     assert opts["allow_capture"]["default"] is True and "allow_capture_stop" not in opts
@@ -152,7 +152,7 @@ def test_eink_declares_the_key_options_and_no_buttons_service():
     assert not os.path.exists(os.path.join(PLUGIN_DIR, "hat-buttons.py"))
 
 
-def test_eink_uses_the_shared_library_and_keeps_no_copy():
-    src = open(os.path.join(PLUGIN_DIR, "eink.py"), encoding="utf-8").read()
+def test_eink_ws27_uses_the_shared_library_and_keeps_no_copy():
+    src = open(os.path.join(PLUGIN_DIR, "eink-ws27.py"), encoding="utf-8").read()
     assert 'load_library(__file__, "hat_keys", api=0)' in src
     assert "class HatKeys" not in src and "def parse_pins" not in src

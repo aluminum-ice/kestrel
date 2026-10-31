@@ -1,17 +1,14 @@
-"""eink-ws27: the 2.7" HAT's plugin under the name that says which display it
-drives, beside the deprecated ``eink``. Until ``eink`` is removed the two are
-the same code: test_eink.py and test_eink_keys.py test that code (through
-``eink``), and the first test here fails if the two files drift apart anywhere
-but the lines that must differ. The rest test what is particular to each name."""
+"""eink-ws27: the Waveshare 2.7" HAT's face plugin. It replaced ``eink`` (the same
+face under a name that says which display it drives); ``eink`` was removed in
+1.0.11. test_eink.py and test_eink_keys.py test the face, the panel and the keys;
+these test what is particular to the name, and that ``eink`` is gone."""
 
-import ast
-import hashlib
 import importlib.util
 import logging
 import os
+import re
+import tomllib
 import types
-
-import pytest
 
 from kestrel_pi.capture import CaptureInterface
 from kestrel_pi.connectivity import ConnectivityState
@@ -22,8 +19,7 @@ from kestrel_pi.ui import UIState
 
 PLUGIN_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "plugins"))
 WS27 = os.path.join(PLUGIN_DIR, "eink-ws27.py")
-EINK = os.path.join(PLUGIN_DIR, "eink.py")
-SHORT_NOTICE = "Deprecated: replaced by eink-ws27; eink will be removed in a future release that requires a reflash."
+ROOT = os.path.normpath(os.path.join(PLUGIN_DIR, "..", "..", "..", ".."))
 
 
 def _mod(path, name):
@@ -34,65 +30,15 @@ def _mod(path, name):
 
 
 W = _mod(WS27, "eink_ws27_under_test")
-E = _mod(EINK, "eink_deprecated_under_test")
-
-
-def _normalized(path):
-    """The plugin's code with the lines allowed to differ set aside: the module
-    docstring, ``DEPRECATED``, the class name, ``__description__`` and the
-    ``variant``/``rotation`` option entries. Comments don't count."""
-    tree = ast.parse(open(path, encoding="utf-8").read())
-    body = tree.body[1:]                                    # the docstring
-    for node in body:
-        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "DEPRECATED":
-            node.value = ast.Constant("")
-        if isinstance(node, ast.ClassDef):
-            node.name = "Plugin_"
-            for item in node.body:
-                target = getattr(item, "targets", [None])[0]
-                name = getattr(target, "id", "")
-                if name == "__description__":
-                    item.value = ast.Constant("")
-                if name == "__options__":
-                    keep = [(k, v) for k, v in zip(item.value.keys, item.value.values)
-                            if getattr(k, "value", None) not in ("variant", "rotation")]
-                    item.value.keys = [k for k, _ in keep]
-                    item.value.values = [v for _, v in keep]
-    return ast.dump(ast.Module(body=body, type_ignores=[]))
-
-
-def test_eink_and_eink_ws27_are_the_same_code():
-    assert _normalized(EINK) == _normalized(WS27), (
-        "eink.py and eink-ws27.py differ: make the change in both files")
-
-
-@pytest.mark.parametrize("name", ["epdconfig", "epd2in7", "epd2in7_V2"])
-def test_the_driver_helpers_are_the_same_files(name):
-    def digest(prefix):
-        with open(os.path.join(PLUGIN_DIR, "_%s_%s.py" % (prefix, name)), "rb") as handle:
-            return hashlib.sha256(handle.read()).hexdigest()
-
-    assert digest("eink-ws27") == digest("eink")
 
 
 def test_declarations():
     ws27 = read_declarations(WS27)["eink-ws27"]
-    eink = read_declarations(EINK)["eink"]
     assert ws27["options"]["variant"]["choices"] == ["auto", "v2", "v1"]
+    assert ws27["options"]["variant"]["default"] == "auto"
     assert ws27["options"]["rotation"]["choices"] == [0, 90, 180, 270]
-    assert ws27["options"]["variant"]["default"] == eink["options"]["variant"]["default"] == "auto"
-    assert "choices" not in eink["options"]["variant"]     # stored values on devices stay valid
-    assert set(ws27["options"]) == set(eink["options"])
-    assert ws27["capabilities"] == eink["capabilities"] == ("ui", "web")
-    assert "network" not in ws27["capabilities"]
+    assert ws27["capabilities"] == ("ui", "web")
     assert not ws27["description"].startswith("Deprecated")
-
-
-def test_eink_says_it_is_deprecated_and_slated_for_removal():
-    eink = read_declarations(EINK)["eink"]
-    assert eink["description"].startswith(SHORT_NOTICE)
-    assert "eink-ws27" in E.DEPRECATED and "reflash" in E.DEPRECATED
-    assert W.DEPRECATED == ""
 
 
 def _loader(tmp_path, name, options=None):
@@ -122,18 +68,6 @@ def test_eink_ws27_refuses_a_value_outside_its_choices(tmp_path):
         loader.unload_all(timeout=5)
 
 
-def test_eink_still_accepts_its_old_values(tmp_path):
-    # eink has no choices, so a device updated in place keeps working with what
-    # it stored (an upper-case variant, say).
-    loader = _loader(tmp_path, "eink", {"variant": "V2", "buttons": False})
-    loaded = {r.name for r in loader.load_all()}
-    try:
-        assert "eink" in loaded
-        assert loader.records["eink"].instance.context.health_note.startswith("deprecated:")
-    finally:
-        loader.unload_all(timeout=5)
-
-
 def _plugin(mod, cls, name, tmp_path, options=None):
     p = getattr(mod, cls)()
     p.options = dict(options or {})
@@ -145,10 +79,8 @@ def _plugin(mod, cls, name, tmp_path, options=None):
     return p
 
 
-@pytest.mark.parametrize("mod, cls, name, note", [
-    (W, "EinkWs27", "eink-ws27", "no e-Paper HAT detected"),
-    (E, "EinkFace", "eink", None)])
-def test_each_name_loads_its_own_driver_helpers(tmp_path, monkeypatch, mod, cls, name, note):
+def test_it_loads_its_own_driver_helpers(tmp_path, monkeypatch):
+    mod, cls, name = W, "EinkWs27", "eink-ws27"
     loaded = []
 
     def fake_load(plugin_file, filename):
@@ -163,10 +95,7 @@ def test_each_name_loads_its_own_driver_helpers(tmp_path, monkeypatch, mod, cls,
     prefix = "_%s_" % name
     assert loaded == [prefix + "epdconfig.py", prefix + "epd2in7_V2.py",
                       prefix + "epdconfig.py", prefix + "epd2in7.py"]     # auto: V2, then V1
-    if note:
-        assert p.context.health_note == note
-    else:
-        assert p.context.health_note == E.DEPRECATED + "; no e-Paper HAT detected"
+    assert p.context.health_note == "no e-Paper HAT detected"
 
 
 def test_the_mirror_etag_and_keys_carry_the_plugin_name(tmp_path, monkeypatch):
@@ -191,14 +120,19 @@ def test_the_mirror_etag_and_keys_carry_the_plugin_name(tmp_path, monkeypatch):
         p._keys.stop()
 
 
-def test_the_docs_mark_eink_deprecated_wherever_they_list_it():
-    # Wherever the user-facing docs list the plugins, eink is marked deprecated
-    # and slated for removal in a release that requires a reflash.
-    root = os.path.join(PLUGIN_DIR, "..", "..", "..", "..")
+def test_eink_is_gone():
+    # eink was removed in 1.0.11: no plugin, no driver helpers, no shipped config
+    # table, and the user-facing plugin lists don't offer it.
+    names = os.listdir(PLUGIN_DIR)
+    assert "eink.py" not in names
+    assert not [n for n in names if n.startswith("_eink_")]
+    with open(os.path.join(ROOT, "builder", "extra", "files", "config.toml"), "rb") as fh:
+        plugins = tomllib.load(fh)["plugins"]
+    assert "eink" not in plugins and "eink-ws27" in plugins
     for rel in ("README.md", "docs/user-guide/managing-plugins.md",
                 "docs/user-guide/user-guides.md", "docs/user-guide/config-reference.md",
-                "docs/user-guide/eink-setup.md",
                 "builder/extra/files/kestrel_pi/kestrel_pi/userguide.py"):
-        text = open(os.path.join(root, rel), encoding="utf-8").read()
+        text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
         assert "eink-ws27" in text, rel
-        assert "deprecated" in text.lower() and "reflash" in text, rel
+        assert not re.search(r"`eink`(?! was| is)", text), rel
+    assert not os.path.exists(os.path.join(ROOT, "docs", "user-guide", "eink-setup.md"))

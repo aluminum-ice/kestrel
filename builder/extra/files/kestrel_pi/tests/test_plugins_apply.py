@@ -61,7 +61,7 @@ def test_declarations_read_statically(env):
     plugins = ctl.static_plugins()
     assert set(plugins) == {"gps", "memtemp", "session-stats", "wigle",
                             "wpa-sec", "backup", "ups-hat", "updates",
-                            "remote-train", "eink", "eink-ws213", "eink-ws27", "ups-ws", "ups-wsc", "ups-wsd", "ups-wse", "downloads", "map",
+                            "remote-train", "eink-ws213", "eink-ws27", "ups-ws", "ups-wsc", "ups-wsd", "ups-wse", "downloads", "map",
                             "ntfy", "telegram"}
     # downloads only serves the operator's own browser: no ack-gated network.
     assert "network" not in plugins["downloads"][0]["capabilities"]

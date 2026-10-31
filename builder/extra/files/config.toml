@@ -310,7 +310,7 @@ address = 0x42              # the HAT's INA219 I2C address (66)
 shutdown_percent = 5        # auto-shutdown at/below this percent on battery; 0 = off
 poll_seconds = 20           # how often to read the battery
 
-[plugins.eink]
+[plugins.eink-ws27]
 enabled = false             # e-ink "tamagotchi" face on the Waveshare 2.7" e-Paper HAT
 # Renders the classic animated face, a status line, a roaming/parked indicator
 # and the Kestrel brand mark to the panel, driven by live device + agent state.
@@ -318,7 +318,7 @@ enabled = false             # e-ink "tamagotchi" face on the Waveshare 2.7" e-Pa
 # cleanly with no HAT attached (the face still renders to the web mirror). The
 # "View display" button on the Plugins page shows a live mirror of the exact
 # panel frame, so you can see the face from a phone. See
-# docs/user-guide/eink-setup.md.
+# docs/user-guide/eink-ws27-setup.md.
 variant = "auto"            # panel driver: auto (probe) | v2 | v1
 rotation = 0                # rotate the frame: 0 | 90 | 180 | 270
 refresh_seconds = 10        # render/mirror cadence (floored at 10s); panel redraws only on change
