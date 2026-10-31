@@ -9,6 +9,12 @@ Wants=NetworkManager.service
 ExecStart=/usr/local/lib/kestrel/capture-launch
 Restart=on-failure
 RestartSec=10
+# On stop, systemd's SIGTERM goes to the launcher only (mixed), which asks
+# AngryOxide to shut down cleanly with SIGINT and waits for it (up to 10 s, then
+# kills it): SIGTERM would kill AngryOxide mid-write. Anything left after the
+# launcher exits is killed; the timeout covers AngryOxide's clean stop.
+KillMode=mixed
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target

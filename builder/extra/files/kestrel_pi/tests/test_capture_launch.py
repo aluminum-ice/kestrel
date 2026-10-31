@@ -95,3 +95,47 @@ def test_a_relaunch_for_a_new_plan_keeps_the_previous_runs_files():
     assert 'if [ "$replan" = yes ] && [ -n "$prev_base" ]; then\n        clear_raw_artifacts "$prev_base"' in text
     assert '--output "$PWN_CAPTURE_RUN_DIR/$ao_base"' in text
     assert "agent_override_mtime" not in text
+
+
+# -- stopping AngryOxide cleanly --------------------------------------------
+
+def _stop_ao(tmp_path, child, seconds=1):
+    """Run stop_ao against a background ``child`` shell snippet that records
+    which signal reached it, and return (what it recorded, the launcher's log)."""
+    marker = tmp_path / "got"
+    script = ("log() { echo \"LOG: $*\"; }\n"
+              + "ao_stop_seconds=%d\n" % seconds
+              + _function("stop_ao")
+              + "env --default-signal=INT bash -c %s &\nao_pid=$!\nsleep 0.3\nstop_ao\n"
+              "wait \"$ao_pid\" 2>/dev/null\n"
+              % repr(child.replace("MARKER", str(marker))))
+    out = _bash(script, {})
+    return (marker.read_text() if marker.exists() else ""), out.stdout
+
+
+def test_stop_ao_asks_with_sigint_and_waits_for_a_clean_exit(tmp_path):
+    # Like AngryOxide: shuts down (after a moment of cleanup) on SIGINT.
+    got, log = _stop_ao(tmp_path, "trap 'sleep 0.3; echo INT > MARKER; exit 0' INT; "
+                                  "trap 'echo TERM > MARKER; exit 0' TERM; "
+                                  "while :; do sleep 0.1; done")
+    assert got.strip() == "INT"
+    assert "killing" not in log
+
+
+def test_stop_ao_kills_a_process_that_ignores_sigint(tmp_path):
+    got, log = _stop_ao(tmp_path, "trap '' INT; while :; do sleep 0.1; done", seconds=1)
+    assert got == ""
+    assert "didn't stop within 1s of SIGINT; killing it" in log
+
+
+def test_angryoxide_is_never_sent_sigterm_and_the_unit_signals_only_the_launcher():
+    with open(LAUNCH, encoding="utf-8") as handle:
+        launcher = handle.read()
+    assert 'kill -TERM "$ao_pid"' not in launcher
+    # Started with SIGINT reset, since & leaves it ignored in a script.
+    assert 'env --default-signal=INT "$ANGRYOXIDE"' in launcher
+    assert launcher.count("stop_ao") >= 4          # roll, replan, stop, definition
+    unit = os.path.join(FILES, "systemd", "kestrel-capture.service")
+    with open(unit, encoding="utf-8") as handle:
+        text = handle.read()
+    assert "KillMode=mixed" in text and "TimeoutStopSec=" in text

@@ -25,11 +25,35 @@ ao_pid=
 stopping=no
 
 cleanup() {
-    [ -n "$collector_pid" ] && kill "$collector_pid" 2>/dev/null || true
+    if [ -n "$collector_pid" ]; then
+        kill "$collector_pid" 2>/dev/null || true
+        wait "$collector_pid" 2>/dev/null || true
+    fi
     # Hand the dongle back to NetworkManager.
     [ -n "$iface" ] && nmcli device set "$iface" managed yes >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+
+# AngryOxide shuts down cleanly only on SIGINT: in headless mode its Ctrl-C
+# handler is its only one, and on it AngryOxide restores the adapter's MAC,
+# closes its capture file and has its database writer flush and commit what is
+# queued. SIGTERM kills it outright and leaves a half-written database
+# transaction (a kismet-journal) behind. So ask with SIGINT, give it a bounded
+# time, and only then kill it. Returns once it has exited.
+ao_stop_seconds=${PWN_AO_STOP_SECONDS:-10}
+stop_ao() {
+    [ -n "${ao_pid:-}" ] || return 0
+    kill -INT "$ao_pid" 2>/dev/null || return 0
+    waited=0
+    while kill -0 "$ao_pid" 2>/dev/null && [ "$waited" -lt "$((ao_stop_seconds * 10))" ]; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    if kill -0 "$ao_pid" 2>/dev/null; then
+        log "AngryOxide didn't stop within ${ao_stop_seconds}s of SIGINT; killing it"
+        kill -KILL "$ao_pid" 2>/dev/null || true
+    fi
+}
 
 # Interruptible sleep: a stop signal lands promptly instead of after the full
 # interval (a backgrounded sleep that `wait` can be interrupted out of).
@@ -233,9 +257,12 @@ build_args() {
     done < <("$PWN_CONFIG_GET" capture.angryoxide.extra_args "")
 }
 
-# On stop, break the supervisor loop and let the EXIT trap stop the collector
-# and hand the dongle back to NetworkManager.
-trap 'stopping=yes; if [ -n "${ao_pid:-}" ]; then kill -TERM "$ao_pid" 2>/dev/null || true; fi' INT TERM
+# On stop, ask AngryOxide to shut down cleanly (SIGINT, see stop_ao), break
+# the supervisor loop - which waits for it - and let the EXIT trap stop the
+# collector and hand the dongle back to NetworkManager. The unit's
+# KillMode=mixed sends systemd's SIGTERM to this launcher only, so AngryOxide
+# hears only the SIGINT.
+trap 'stopping=yes; if [ -n "${ao_pid:-}" ]; then kill -INT "$ao_pid" 2>/dev/null || true; fi' INT TERM
 
 # Prepare directories and the whitelist file from config (once; the collector
 # and whitelist persist across AngryOxide relaunches). The run dir is root's
@@ -352,7 +379,9 @@ while :; do
     log "starting: $ANGRYOXIDE ${args[*]}"
     ao_started=$(date +%s)
     ao_override_sum=$(agent_override_sum)
-    "$ANGRYOXIDE" "${args[@]}" &
+    # A command started with & from a script inherits SIGINT ignored, so reset
+    # it: stop_ao's SIGINT is how AngryOxide is asked to shut down cleanly.
+    env --default-signal=INT "$ANGRYOXIDE" "${args[@]}" &
     ao_pid=$!
     rolling=no
     replan=no
@@ -365,7 +394,7 @@ while :; do
         if agent_active && [ "$(agent_override_sum)" != "$ao_override_sum" ]; then
             log "agent updated the scan plan; relaunching AngryOxide"
             replan=yes
-            kill -TERM "$ao_pid" 2>/dev/null || true
+            stop_ao
             break
         fi
         [ "$max_run_mb" -gt 0 ] || continue
@@ -373,10 +402,13 @@ while :; do
         if [ -n "${rb:-}" ] && [ "$rb" -ge "$max_run_bytes" ]; then
             log "raw capture files at $(( rb / 1048576 ))MB (cap ${max_run_mb}MB); rolling capture, keeping hashlines"
             rolling=yes
-            kill -TERM "$ao_pid" 2>/dev/null || true
+            stop_ao
             break
         fi
     done
+    # A stop request already sent SIGINT (the trap); make sure AngryOxide is
+    # gone within the bound before collecting its status.
+    [ "$stopping" = yes ] && stop_ao
     ao_rc=0
     wait "$ao_pid" 2>/dev/null || ao_rc=$?
     ao_pid=
