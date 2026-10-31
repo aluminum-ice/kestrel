@@ -36,11 +36,13 @@ unique lines, never truncates. Nothing is deleted except by the housekeeping you
 configure (below).
 
 Whether you get one file per network, one file per access point, or one combined
-file is the `[capture.output] mode` setting (`per-ssid`, `per-ap` or `single`) —
-see [the config reference](config-reference.md). Choose `per-ap` when you need
-one file to mean exactly one physical AP: network names are heavily reused (every
+file is the `[capture.output] mode` setting (`per-ap`, `per-ssid` or `single`) —
+see [the config reference](config-reference.md). The default, `per-ap`, makes one
+file mean exactly one physical AP: network names are heavily reused (every
 `AndroidAP`, every POS/printer default), so `per-ssid` can pile unrelated APs into
-one file, whereas `per-ap` keys on the BSSID and keeps them apart.
+one file, whereas `per-ap` keys on the BSSID and keeps them apart. (Devices
+flashed before 1.0.11 shipped `per-ssid`, and an in-place update keeps the mode
+your `config.toml` has; set `per-ap` there to switch.)
 
 ## Seeing what you've got
 

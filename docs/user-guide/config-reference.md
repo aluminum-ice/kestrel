@@ -46,7 +46,7 @@ is covered at the end.
 
 | Key | Values | Default | What it does |
 | --- | --- | --- | --- |
-| `mode` | `per-ssid` / `per-ap` / `single` | `per-ssid` | One file per network (`per-ssid`), one file per access point keyed on BSSID so unrelated APs sharing a name never merge (`per-ap`), or one combined file (`single`). All are only ever appended to. |
+| `mode` | `per-ap` / `per-ssid` / `single` | `per-ap` | One file per access point keyed on BSSID so unrelated APs sharing a name never merge (`per-ap`), one file per network (`per-ssid`), or one combined file (`single`). Devices flashed before 1.0.11 shipped `per-ssid` and keep it after an in-place update. All are only ever appended to. |
 | `single_file` | filename | `all.hc22000` | The combined file's name when `mode = single`: a plain file name in the store (letters, digits, `.`, `_`, `-`; no `/`, no leading `.`). Anything else is refused, and the collector falls back to `all.hc22000`. |
 
 ## `[capture.angryoxide]` — the capture engine

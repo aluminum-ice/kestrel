@@ -1648,7 +1648,7 @@ def _nets(*essids):
 
 
 def test_networks_page_lists_and_counts(monkeypatch, tmp_path):
-    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"},
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ssid",
                         networks=_nets("HomeWiFi", "CoffeeShop", ""))
     body = client.get("/networks").get_data(as_text=True)
     assert "Captured networks" in body
@@ -1658,7 +1658,7 @@ def test_networks_page_lists_and_counts(monkeypatch, tmp_path):
 
 
 def test_networks_page_search_filters_by_essid(monkeypatch, tmp_path):
-    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"},
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ssid",
                         networks=_nets("HomeWiFi", "CoffeeShop", "HomeOffice"))
     body = client.get("/networks?q=home").get_data(as_text=True)
     assert "HomeWiFi" in body and "HomeOffice" in body
@@ -1668,7 +1668,8 @@ def test_networks_page_search_filters_by_essid(monkeypatch, tmp_path):
 
 def test_networks_page_paginates_and_keeps_query(monkeypatch, tmp_path):
     many = _nets(*["net-%03d" % i for i in range(250)])
-    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"}, networks=many)
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ssid",
+                        networks=many)
     first = client.get("/networks").get_data(as_text=True)
     assert "net-000" in first and "net-099" in first
     assert "net-100" not in first             # 100 per page
@@ -1707,6 +1708,15 @@ def test_networks_default_view_follows_per_ap_mode(monkeypatch, tmp_path):
     assert "AA:BB:CC:00:00:01" in body and "AA:BB:CC:00:00:02" in body
     # Two radios sharing a name are two access points (radios), not merged.
     assert "2 access point(s) captured" in body
+
+
+def test_networks_opens_the_by_ap_view_when_no_mode_is_set(monkeypatch, tmp_path):
+    # per-ap is the default layout, so with no [capture.output] mode the page
+    # opens on the by-AP view too.
+    client, _ = _client(
+        monkeypatch, tmp_path, {"auth": "none"},
+        access_points=_aps(("poswifi", "AA:BB:CC:00:00:01")))
+    assert "Captured access points" in client.get("/networks").get_data(as_text=True)
 
 
 def test_networks_default_view_follows_per_ssid_mode(monkeypatch, tmp_path):
@@ -2086,7 +2096,7 @@ def test_dashboard_navcard_shows_network_and_ap_counts(monkeypatch, tmp_path):
 
 
 def test_networks_has_last_seen_column_and_sort_toggle(monkeypatch, tmp_path):
-    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"},
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ssid",
                         networks=_nets("HomeWiFi"))
     body = client.get("/networks").get_data(as_text=True)
     assert "<th>last seen</th>" in body
@@ -2099,7 +2109,8 @@ def test_networks_sort_recent_orders_by_last_seen(monkeypatch, tmp_path):
     # Names chosen so alphabetical and recency disagree.
     rows = [{"essid": "Alpha", "bssids": 1, "handshakes": 1, "last_seen": 100},
             {"essid": "Zeta", "bssids": 1, "handshakes": 1, "last_seen": 9_000}]
-    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"}, networks=rows)
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ssid",
+                        networks=rows)
     by_name = client.get("/networks").get_data(as_text=True)
     assert by_name.index("Alpha") < by_name.index("Zeta")        # default: name
     by_recent = client.get("/networks?sort=recent").get_data(as_text=True)

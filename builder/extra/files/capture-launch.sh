@@ -214,7 +214,7 @@ build_args() {
     # --dwell is set last so an agent override's dwell (in dwell_sec) wins.
     args+=(--dwell "$dwell_sec")
 
-    [ "$(cfg capture.output.mode per-ssid)" = single ] && args+=(--combine)
+    [ "$(cfg capture.output.mode per-ap)" = single ] && args+=(--combine)
     # AngryOxide's TUI needs a controlling terminal. The systemd service has none,
     # so headless=false there makes AngryOxide fail to start and the unit dies.
     # Honour headless=false only when run interactively (a TTY on stdin+stdout);

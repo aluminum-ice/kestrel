@@ -103,7 +103,7 @@ CONFIG_SETTABLE = {
     "capture.scan.dwell_seconds": {"type": "int", "min": 1},
     "capture.scan.bands": {"type": "str", "maxlen": 64},
     "capture.output.mode": {
-        "type": "enum", "choices": ["per-ssid", "per-ap", "single"]},
+        "type": "enum", "choices": ["per-ap", "per-ssid", "single"]},
     "capture.output.single_file": {"type": "str", "maxlen": 128,
                                    "pattern": "[A-Za-z0-9_-][A-Za-z0-9._-]*"},
     "capture.angryoxide.headless": {"type": "bool"},
