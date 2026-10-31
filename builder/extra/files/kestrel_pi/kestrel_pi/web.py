@@ -2721,7 +2721,11 @@ def _render_status(status, control=None, message=None, error=False, addresses=No
         + cap_action + "</div>"
     )
 
-    tagline = ('<p class="tagline">plugin host &middot; v' + _esc(status.get("version"))
+    version = str(status.get("version") or "")
+    # A release reads "v1.0.11"; a build with no release version ("master")
+    # says it is a dev build.
+    shown = ("v" + version) if version[:1].isdigit() else "dev build (%s)" % (version or "unknown")
+    tagline = ('<p class="tagline">plugin host &middot; ' + _esc(shown)
                + " &middot; epoch " + _esc(status.get("epoch")) + "</p>")
     banner = ""
     if message:

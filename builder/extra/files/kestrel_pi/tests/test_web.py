@@ -119,6 +119,13 @@ def test_dashboard_labels_the_plugin_host_not_daemon():
     assert "<b>daemon</b>" not in html
 
 
+def test_dashboard_shows_the_release_version_or_a_dev_build():
+    release = web._render_status(dict(_status([]), version="1.0.11-beta.2"))
+    assert "plugin host &middot; v1.0.11-beta.2" in release
+    dev = web._render_status(dict(_status([]), version="master"))
+    assert "plugin host &middot; dev build (master)" in dev
+
+
 def test_dashboard_shows_internet_and_capture_rows():
     html = web._render_status(dict(
         _status([]),

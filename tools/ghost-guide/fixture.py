@@ -173,6 +173,15 @@ class Demo:
         self.now = time.time()
         self.tag = tag
         self.update_state = {}
+        # A release that reports the device's version (/etc/kestrel/version)
+        # reads it from VERSION_FILE: point that at the release's tag, so the
+        # dashboard header shows the release being documented.
+        if hasattr(kestrel_pi, "VERSION_FILE"):
+            os.makedirs(workdir, exist_ok=True)
+            version_file = os.path.join(workdir, "version")
+            with open(version_file, "w", encoding="utf-8") as handle:
+                handle.write("%s\n" % tag)
+            kestrel_pi.VERSION_FILE = version_file
 
         with open(os.path.join(files_dir, "config.toml"), "rb") as handle:
             shipped = tomllib.load(handle)

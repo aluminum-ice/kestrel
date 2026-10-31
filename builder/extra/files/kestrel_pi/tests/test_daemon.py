@@ -503,3 +503,31 @@ def test_geo_service_is_registered(tmp_path):
     d = daemon_mod.Daemon(config_path=str(cfg), capture_store=str(tmp_path))
     assert "geo" in d.services.names()
     assert d.services.get("geo") is d.geo
+
+
+def test_status_reports_the_device_release_version(tmp_path, monkeypatch):
+    # The device's release version (/etc/kestrel/version) is what the status
+    # reports, not the package's; off a device it falls back to the package.
+    import kestrel_pi
+    version_file = tmp_path / "version"
+    version_file.write_text("1.0.11-beta.2\n")
+    monkeypatch.setattr(kestrel_pi, "VERSION_FILE", str(version_file))
+    assert kestrel_pi.device_version() == "1.0.11-beta.2"
+    monkeypatch.setattr(kestrel_pi, "VERSION_FILE", str(tmp_path / "missing"))
+    assert kestrel_pi.device_version() == ""
+
+
+def test_status_version_is_the_release_with_the_package_beside_it(tmp_path, monkeypatch):
+    import kestrel_pi
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[web]\nenabled = false\n")
+    version_file = tmp_path / "version"
+    version_file.write_text("1.0.11-beta.2\n")
+    monkeypatch.setattr(kestrel_pi, "VERSION_FILE", str(version_file))
+    d = daemon_mod.Daemon(config_path=str(cfg), capture_store=str(tmp_path))
+    status = d.status()
+    assert status["version"] == "1.0.11-beta.2"
+    assert status["package_version"] == kestrel_pi.__version__
+    # Off a device (no version file) the package version stands in.
+    monkeypatch.setattr(kestrel_pi, "VERSION_FILE", str(tmp_path / "missing"))
+    assert d.status()["version"] == kestrel_pi.__version__

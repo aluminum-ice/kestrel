@@ -19,7 +19,7 @@ import subprocess
 import threading
 import time
 
-from . import HOOK_API_VERSION, __version__
+from . import HOOK_API_VERSION, __version__, device_version
 from .agent import AGENT_DIR
 from .agent import readout as agent_readout
 from .capture import (
@@ -381,8 +381,8 @@ class Daemon:
 
     # -- lifecycle -------------------------------------------------------
     def start(self):
-        self.log.info("kestrel daemon %s (hook API %d) starting",
-                      __version__, HOOK_API_VERSION)
+        self.log.info("kestrel daemon %s (package %s, hook API %d) starting",
+                      device_version() or "unknown", __version__, HOOK_API_VERSION)
         loaded = self.loader.load_all()
         self.log.info("loaded %d plugin(s): %s", len(loaded),
                       ", ".join(r.name for r in loaded) or "none")
@@ -684,7 +684,10 @@ class Daemon:
         except Exception:  # noqa: BLE001 - a store read must never break status()
             pass
         return {
-            "version": __version__,
+            # The device's release version (the image or the last in-place
+            # update), falling back to the package version off a device.
+            "version": device_version() or __version__,
+            "package_version": __version__,
             "hook_api": HOOK_API_VERSION,
             "started": self.started,
             "epoch": self.epoch,
