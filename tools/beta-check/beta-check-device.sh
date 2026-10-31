@@ -698,7 +698,10 @@ fi
 # ---------------------------------------------------------------- dashboard status (optional)
 {
 sec "dashboard /status.json (selected fields)"
-printf '%s\n' "$web_pw" | /usr/bin/python3 -I - <<'PY' 2>&1
+# The Python goes in a file in the root-only work folder so stdin can carry the
+# password: with "python3 - <<PY" the heredoc would replace the piped password
+# and Python would read an empty line.
+cat >"$work/dashboard.py" <<'PY'
 import base64, json, sys, tomllib, urllib.error, urllib.request
 pw = sys.stdin.readline().rstrip("\n")
 with open("/etc/kestrel/config.toml", "rb") as h:
@@ -897,6 +900,7 @@ for name in ("wpa-sec", "wigle", "backup", "remote-train", "updates", "ntfy", "t
         vals = ["%s=%s" % (k, v) for k, v in widget(name).items()]
         print("widget %-13s %s" % (name, ", ".join(vals)))
 PY
+printf '%s\n' "$web_pw" | /usr/bin/python3 -I "$work/dashboard.py" 2>&1
 } >>"$raw" 2>&1
 web_pw=""
 
