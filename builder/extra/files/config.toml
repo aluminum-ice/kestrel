@@ -77,13 +77,12 @@ max_run_mb = 512
 # The "what's in RF range?" readout on the dashboard and e-ink face: how many
 # distinct radios the capture has seen recently, so a quiet spot and a
 # target-rich one don't look the same. Derived best-effort from AngryOxide's
-# kismet DB (its packets table) by the collector, and only live while capture is
+# pcapng capture file by the collector, and only live while capture is
 # running (the radio must be scanning to see anything). Off => no count is shown.
 enabled = true
 # Window, in seconds, for "recently seen", counted over the most recent capture
-# data (anchored to the newest packet, not wall-clock) so AngryOxide's bursty DB
-# flush reads as "recent" rather than empty. A density reading, not an instant
-# count.
+# data (anchored to the newest frame, not wall-clock) so a quiet moment reads as
+# "recent" rather than empty. A density reading, not an instant count.
 window_s = 300
 # How old the newest capture data may be before the readout is shown as "as of N
 # ago" and, past this, dropped back to "unknown" rather than shown as current.

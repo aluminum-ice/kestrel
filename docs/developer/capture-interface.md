@@ -19,7 +19,9 @@ it flushes in bursts rather than live, so the v2 query (distinct recent
 `devices`, split into `aps_recent`/`clients_recent`, keyed off wall-clock) read
 empty or wrong. v3 derives a single `radios_recent` count from the `packets`
 table, anchored to the DB's own newest packet, and adds `data_ts` so a consumer
-can judge the data's freshness. `aps_recent`/`clients_recent` are gone; a v2
+can judge the data's freshness. (Since 1.0.11 the collector reads the same count
+from AngryOxide's pcapng instead of the kismet DB; the shape is unchanged, see
+`radios_recent` below.) `aps_recent`/`clients_recent` are gone; a v2
 consumer that read them must move to `radios_recent`.
 
 Version 4 adds the best-effort per-AP seen index (`capture-seen.json`, under
@@ -102,27 +104,31 @@ This file is the normative reference.
   small file the collector writes into the store each poll, so a consumer can
   show how busy the RF environment is without touching the transient run dir.
   Best-effort: it is present only while capture runs, and is derived from
-  AngryOxide's kismet DB (a run-dir artifact), so a consumer treats its
-  absence/staleness as "unknown". Shape:
+  AngryOxide's pcapng capture file (a run-dir artifact), so a consumer treats
+  its absence/staleness as "unknown". Shape:
 
   ```json
   {"updated_at": 1730000000, "window_s": 300,
    "radios_recent": 23, "data_ts": 1729999700, "scanning": true}
   ```
 
-  - `radios_recent` — distinct transmitting radios (by `sourcemac`) seen in the
-    `packets` table within `window_s` seconds **of the DB's own newest packet**
-    (`data_ts`), not of wall-clock. AngryOxide channel-hops and flushes the DB in
-    bursts, so this is a sliding-window density indicator anchored to the latest
-    data, not an instant count. It counts APs and clients together — the
-    `packets` table does not separate them — so it runs higher than an APs-only
-    count. May be absent when the kismet DB had no packets / wasn't readable that
-    poll (still `scanning`, no count).
-  - `data_ts` — epoch of the newest packet the count is drawn from. Because the
-    DB lags real time, a consumer judges freshness from `data_ts` (e.g. shows "as
-    of N ago", and past `[capture.environment] max_age_s` falls back to
-    "unknown") rather than trusting `updated_at`, which only says the collector
-    ran.
+  - `radios_recent` — distinct transmitting radios (by each frame's
+    transmitter address, 802.11 addr2) seen within `window_s` seconds **of the
+    newest captured frame** (`data_ts`), not of wall-clock. AngryOxide
+    channel-hops, so this is a sliding-window density indicator anchored to the
+    latest data, not an instant count. It counts APs and clients together, so it
+    runs higher than an APs-only count. The collector reads it from the tail of
+    the run dir's pcapng files (the current launch's and, across an agent
+    relaunch, the previous one's), parsing only the blocks added since its last
+    poll. It no longer reads AngryOxide's kismet DB: AngryOxide commits one DB row
+    per frame, which an SD card can't sustain in a busy RF environment, so the DB
+    fell minutes behind real time and the card went "unknown" while capture kept
+    working. May be absent before the first frame is written (still `scanning`,
+    no count).
+  - `data_ts` — epoch of the newest frame the count is drawn from. A consumer
+    judges freshness from `data_ts` (e.g. shows "as of N ago", and past
+    `[capture.environment] max_age_s` falls back to "unknown") rather than
+    trusting `updated_at`, which only says the collector ran.
   - `scanning` — `false` (written once on a clean stop) or a stale `updated_at`
     both mean "not scanning"; the consumer then shows "unknown", never `0`.
   - Enabled and tuned by `[capture.environment]` (`enabled`, `window_s`,

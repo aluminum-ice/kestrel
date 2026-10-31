@@ -2604,7 +2604,7 @@ def _dashboard_script(refresh, has_widgets):
 
 
 # Below this age the environment reading reads as current ("in the last N");
-# above it the card says "as of N ago" so the kismet-DB flush lag is honest.
+# above it the card says "as of N ago" so any lag in the reading is honest.
 _ENV_FRESH_WITHIN_S = 90
 
 
@@ -2625,8 +2625,8 @@ def _render_environment(env):
     ``env`` is the daemon's ``status["environment"]``: ``None`` when capture is
     off (the radio is deaf, so "unknown" - never a misleading 0), ``available``
     False while scanning before the first usable reading, else a radios count with
-    a density ``level``/``label`` and ``data_age_s`` freshness. AngryOxide flushes
-    its kismet DB in bursts, so the reading can lag; we say "as of N ago" rather
+    a density ``level``/``label`` and ``data_age_s`` freshness. The reading can
+    lag the capture a little, so we say "as of N ago" rather
     than pretend it is live, and never show a bare 0. Status is carried by the word
     and number, not colour alone."""
     def _srow(dot, key, val, meta=""):

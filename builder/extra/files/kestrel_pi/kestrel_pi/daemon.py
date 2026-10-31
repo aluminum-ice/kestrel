@@ -290,8 +290,8 @@ class Daemon:
         While capturing, returns ``{"available": False}`` until the collector has
         a usable reading, then the distinct-radios count with a density
         ``level``/``label`` from the configured thresholds and the data's
-        ``data_age_s`` freshness. AngryOxide flushes its kismet DB in bursts, so
-        the reading can lag real time; a reading older than ``max_age_s`` is
+        ``data_age_s`` freshness. The reading can trail real time (the collector
+        polls AngryOxide's capture file); a reading older than ``max_age_s`` is
         dropped back to "unknown" rather than shown as current. Pure read of the
         collector's small status file plus config; no device access here."""
         if not capture_active:

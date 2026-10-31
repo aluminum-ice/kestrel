@@ -188,7 +188,7 @@ the controller writes an **override** to `<agent dir>/scan-override.json`
   changes (a SHA-256 fingerprint, not the timestamp), because every relaunch
   restarts the scan. A relaunch for a new plan keeps the previous run's raw
   files, so the collector's in-range reading still has recent packets while
-  the new run's kismet DB fills; a capture start or a size-cap roll clears them.
+  the new run's capture file fills; a capture start or a size-cap roll clears them.
 - The override is the `pi` agent's file and the launcher is root, so the
   launcher opens it without following a symlink or blocking on a FIFO, and
   reads only a small regular file.

@@ -34,8 +34,9 @@ DENSITY_LABELS = ("Quiet", "Light", "Moderate", "Busy", "Dense")
 DEFAULT_DENSITY_THRESHOLDS = (0, 10, 30, 60)
 
 # How old the newest capture data may be before the readout stops being called a
-# current reading and degrades to "unknown". AngryOxide flushes its kismet DB in
-# bursts, so some lag is normal; past this it is no longer "nearby now".
+# current reading and degrades to "unknown". Some lag is normal (the collector
+# reads AngryOxide's capture file every poll); past this it is no longer
+# "nearby now".
 DEFAULT_ENV_MAX_AGE_S = 900
 
 
@@ -353,9 +354,9 @@ class CaptureInterface:
         written within ``stale_after`` seconds (i.e. the collector is alive);
         absent/unreadable/stale/not-scanning all return ``None`` so a consumer
         shows "unknown" rather than a stale count. A scanning file with no counts
-        yet (the DB wasn't readable) returns the dict without ``radios_recent``.
+        yet (no frame captured) returns the dict without ``radios_recent``.
         The data's own freshness (``data_ts``) is judged separately by the
-        daemon, since AngryOxide flushes its kismet DB in bursts."""
+        daemon, since the reading can trail real time."""
         try:
             with open(os.path.join(self.store_dir, STATUS_NAME),
                       "r", encoding="utf-8") as handle:
