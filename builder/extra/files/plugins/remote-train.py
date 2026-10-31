@@ -74,6 +74,10 @@ _STACK_ERROR = ".stack-error"
 # a flaky BT-PAN/Wi-Fi tether drops rsync mid-stream.
 _RSYNC_TRIES = 3
 _RSYNC_BACKOFF = 5
+# ssh exits 255 when it can't connect or log in (refused, timed out, key not
+# authorized, host key changed); any other status is the remote command's own.
+# The host scripts below never exit 255, so it stays reserved for ssh.
+_SSH_FAILED = 255
 
 
 
@@ -164,6 +168,8 @@ class RemoteTrain(Plugin):
         self._running_prev = set()            # slugs seen running at the last poll
         self._config_path = DEFAULT_CONFIG_PATH
         self._logged = set()                  # one-time notes already logged
+        self._host_state = "unknown"          # unknown / reachable / unreachable
+        self._last_contact = None             # epoch of the last SSH session that ran
 
     def on_unload(self):
         self._stop.set()
@@ -282,7 +288,13 @@ class RemoteTrain(Plugin):
         if not self.context.require_capability("network"):
             self._set_status("error: network capability not declared")
             return
-        if not self._stack_ready():
+        ready = self._stack_ready()
+        if ready is None:
+            # The host didn't answer (or refused the login): nothing to prepare
+            # or launch. Keep the last known stack state and say what's wrong.
+            self._report_unreachable()
+            return
+        if not ready:
             # A previous prep may have failed (commonly: the host is missing
             # python3-venv) - surface the reason instead of a silent "not
             # prepared yet", then (re)launch: the prep clears .stack-error on
@@ -347,6 +359,11 @@ class RemoteTrain(Plugin):
         if self._stack_state != "ready":
             return                      # a full reconcile owns stack prep
         live = self._job_state()        # slugs with a live run lock, one SSH
+        if live is None:
+            # Keep _running_prev: when the host is back, a run that finished in
+            # the meantime is still noticed and its model pulled.
+            self._report_unreachable()
+            return
         just_done = self._running_prev - live
         self._running_prev = set(live)
         for algorithm in algorithms:
@@ -359,14 +376,17 @@ class RemoteTrain(Plugin):
 
     def _job_state(self):
         """One SSH: the set of algorithm slugs with a live (non-stale) run lock
-        on the host - cheap enough to poll between full reconciles."""
-        ok, out = self._remote(
+        on the host - cheap enough to poll between full reconciles - or None
+        when the host couldn't be reached."""
+        rc, out = self._remote_rc(
             "cd %s 2>/dev/null || exit 0; for f in jobs/*.lock; do "
             "[ -e \"$f\" ] || continue; "
             "echo \"$(basename \"$f\" .lock) $(cat \"$f\" 2>/dev/null)\"; done"
             % self._q_path(), timeout=60)
+        if rc is None or rc == _SSH_FAILED:
+            return None
         live = set()
-        if not ok:
+        if rc != 0:
             return live
         cutoff = self._stale_lock_hours() * 3600.0
         now = time.time()
@@ -529,9 +549,11 @@ class RemoteTrain(Plugin):
                 "-o ServerAliveInterval=15 -o ServerAliveCountMax=4"
                 % (shlex.quote(self._key()), self._port()))
 
-    def _remote(self, script, timeout=None):
+    def _remote_rc(self, script, timeout=None):
         """Run ``script`` on the host via ``ssh ... sh -s`` (script on stdin).
-        Returns ``(ok, output)``. Used for quick, synchronous host commands."""
+        Returns ``(returncode, output)``, with ``returncode`` None when ssh
+        couldn't be run or timed out, and records whether the host was reached
+        (``_note_contact``)."""
         cmd = (["ssh"] + self._ssh_opts()
                + ["%s@%s" % (self._user(), self._host()), "sh", "-s"])
         try:
@@ -539,9 +561,28 @@ class RemoteTrain(Plugin):
                                   text=True, timeout=timeout or self._timeout(),
                                   check=False)
         except (OSError, subprocess.SubprocessError) as exc:
-            return (False, str(exc))
+            self._note_contact(False)
+            return (None, str(exc))
+        self._note_contact(proc.returncode != _SSH_FAILED)
         out = (proc.stdout or "") + (proc.stderr or "")
-        return (proc.returncode == 0, out.strip())
+        return (proc.returncode, out.strip())
+
+    def _remote(self, script, timeout=None):
+        """``_remote_rc`` as ``(ok, output)``, for quick, synchronous host
+        commands."""
+        rc, out = self._remote_rc(script, timeout)
+        return (rc == 0, out)
+
+    def _note_contact(self, reached):
+        """Record one SSH attempt's outcome, for the card and the note."""
+        state = "reachable" if reached else "unreachable"
+        with self._lock:
+            changed = self._host_state != state
+            self._host_state = state
+            if reached:
+                self._last_contact = time.time()
+        if changed:
+            self._set_health()
 
     def _rsync_up(self, local_dir, remote_dir):
         cmd = ["rsync", "-az", "--partial", "--mkpath",
@@ -578,11 +619,16 @@ class RemoteTrain(Plugin):
 
     # -- host stack (package + ML deps in an isolated venv) --------------
     def _stack_ready(self):
-        ok, _out = self._remote(
+        """True when the host's venv and ML stack are ready, False when the
+        host answered but they aren't, None when the host couldn't be reached
+        or logged in to."""
+        rc, _out = self._remote_rc(
             "test -x %s/bin/python && test -f %s/%s"
             % (self._q_venv(), self._q_path(), _STACK_READY),
             timeout=60)
-        return ok
+        if rc is None or rc == _SSH_FAILED:
+            return None
+        return rc == 0
 
     def _stack_error(self):
         """The host prep's recorded failure reason (``.stack-error``), or "".
@@ -906,6 +952,16 @@ class RemoteTrain(Plugin):
         with self._lock:
             self._status = status
 
+    def _report_unreachable(self):
+        self._set_status("can't reach or log in to the host (%s)"
+                         % self._contact_age())
+        self._set_health()
+
+    def _contact_age(self):
+        with self._lock:
+            last = self._last_contact
+        return ("last reached %s" % _ago(last)) if last else "never reached"
+
     def _set_health(self):
         missing = self._missing_config()
         if missing:
@@ -917,6 +973,11 @@ class RemoteTrain(Plugin):
                 "passwordless SSH not set up - run 'sudo kestrel "
                 "remote-train setup' to install the device key on %s"
                 % self._host())
+        elif self._host_state == "unreachable":
+            self.context.health_note = (
+                "can't reach or log in to %s over SSH (%s): check that it's on "
+                "and on the network; 'sudo kestrel remote-train status' shows "
+                "the detail" % (self._host(), self._contact_age()))
         elif not self._algorithms():
             self.context.health_note = (
                 "no algorithms selected to train (set algorithms=...)")

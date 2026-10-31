@@ -1972,6 +1972,107 @@ def test_remote_train_reconcile_surfaces_a_host_prep_failure(tmp_path):
     assert "could not create a Python venv" in plugin.context.health_note
 
 
+def _fake_ssh(monkeypatch, mod, returncode=None, raises=None):
+    """Make the plugin's ssh calls end with ``returncode`` (or raise)."""
+    def run(cmd, **_kw):
+        if raises is not None:
+            raise raises
+        return subprocess.CompletedProcess(cmd, returncode, "", "")
+    monkeypatch.setattr(mod.subprocess, "run", run)
+
+
+def test_remote_train_ssh_failure_marks_the_host_unreachable(tmp_path, monkeypatch):
+    # ssh exits 255 when it can't connect or log in.
+    plugin, mod, _ad = _make_remote_train(tmp_path)
+    _fake_ssh(monkeypatch, mod, returncode=255)
+    assert plugin._remote_rc("true")[0] == 255
+    assert plugin._host_state == "unreachable"
+    assert plugin._last_contact is None
+
+
+def test_remote_train_a_failing_command_still_counts_as_contact(tmp_path, monkeypatch):
+    # Any other status is the remote command's own: the host was reached.
+    plugin, mod, _ad = _make_remote_train(tmp_path)
+    _fake_ssh(monkeypatch, mod, returncode=1)
+    assert plugin._remote("false") == (False, "")
+    assert plugin._host_state == "reachable"
+    assert plugin._last_contact is not None
+
+
+def test_remote_train_ssh_timeout_marks_the_host_unreachable(tmp_path, monkeypatch):
+    plugin, mod, _ad = _make_remote_train(tmp_path)
+    _fake_ssh(monkeypatch, mod, raises=subprocess.TimeoutExpired(["ssh"], 60))
+    assert plugin._remote_rc("true")[0] is None
+    assert plugin._host_state == "unreachable"
+
+
+def test_remote_train_stack_ready_is_three_valued(tmp_path, monkeypatch):
+    plugin, mod, _ad = _make_remote_train(tmp_path)
+    for returncode, expected in ((0, True), (1, False), (255, None)):
+        _fake_ssh(monkeypatch, mod, returncode=returncode)
+        assert plugin._stack_ready() is expected
+    _fake_ssh(monkeypatch, mod, raises=OSError("no ssh"))
+    assert plugin._stack_ready() is None
+
+
+def test_remote_train_reconcile_skips_host_prep_when_unreachable(tmp_path):
+    # A host that's off reads as unreachable, not "installing": no prep, no
+    # pull, no launch, and the last known stack state stays on the card.
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._stack_state = "ready"
+    plugin._host_state = "unreachable"
+    plugin._stack_ready = lambda: None
+    calls = []
+    plugin._stack_error = lambda: calls.append("error") or ""
+    plugin._ensure_stack = lambda: calls.append("prep")
+    plugin._pull_and_stage = lambda algo, slug: calls.append("pull") or False
+    plugin._launch_training = lambda algo, slug: calls.append("launch") or True
+    plugin._reconcile(["DQN"])
+    assert calls == []
+    assert plugin._status == "can't reach or log in to the host (never reached)"
+    assert plugin._stack_state == "ready"
+    assert "can't reach or log in to desk" in plugin.context.health_note
+
+
+def test_remote_train_manual_request_while_unreachable_reports_it(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._stack_ready = lambda: None
+    plugin._train_now.set()
+    plugin._reconcile(["DQN"])
+    assert not plugin._train_now.is_set()
+    assert plugin._status.startswith("can't reach or log in to the host")
+
+
+def test_remote_train_refresh_keeps_run_state_when_unreachable(tmp_path):
+    # A light poll that can't reach the host must not take every running
+    # algorithm for finished (and try to pull each one).
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._stack_state = "ready"
+    plugin._running_prev = {"dqn"}
+    plugin._job_state = lambda: None
+    pulls = []
+    plugin._pull_and_stage = lambda algo, slug: pulls.append(algo) or False
+    plugin._refresh(["DQN"])
+    assert pulls == []
+    assert plugin._running_prev == {"dqn"}
+    assert plugin._status.startswith("can't reach or log in to the host")
+
+
+def test_remote_train_note_clears_when_the_host_answers_again(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._note_contact(False)
+    assert "can't reach or log in to desk" in plugin.context.health_note
+    plugin._note_contact(True)
+    assert plugin.context.health_note == ""
+
+
+def test_remote_train_unreachable_status_shows_the_last_contact(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._last_contact = time.time() - 3 * 3600 - 60
+    plugin._report_unreachable()
+    assert plugin._status == "can't reach or log in to the host (last reached 3h ago)"
+
+
 def test_remote_train_launch_script_runs_the_trainer_detached(tmp_path):
     plugin, _mod, _ad = _make_remote_train(tmp_path, timesteps=123456)
     script = plugin._train_launch_script("DQN", "dqn")
