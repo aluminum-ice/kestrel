@@ -8,7 +8,7 @@ import logging
 import os
 import types
 
-from kestrel_pi import declarations
+from kestrel_pi import declarations, load_helper
 from kestrel_pi.capture import CaptureInterface
 from kestrel_pi.connectivity import ConnectivityState
 from kestrel_pi.context import PluginContext, ServiceRegistry
@@ -18,6 +18,7 @@ PLUGIN_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..", "plugins"))
 CENSUS = os.path.join(PLUGIN_DIR, "census.py")
 LOG = logging.getLogger("test_census")
+dht = load_helper(CENSUS, "_census_dht.py")
 
 
 def _load(path, modname):
@@ -124,3 +125,62 @@ def test_census_clamps_poll_hours_and_budget(tmp_path):
     plugin, _mod = _plugin(tmp_path, poll_hours="x", daily_mb="y")
     assert plugin._poll_hours() == 4
     assert plugin._daily_bytes() == 5 * 1024 * 1024
+
+
+# -- step 2: bencode -------------------------------------------------------------
+
+
+def test_bencode_round_trips():
+    for value in (0, -7, 1 << 62, b"", b"spam", [], [1, b"x", [2]],
+                  {b"a": 1, b"b": [b"c", {b"d": b""}]}):
+        assert dht.bdecode(dht.bencode(value)) == value
+    # Dict keys are written sorted, whatever order they came in.
+    assert dht.bencode({b"z": 1, b"a": 2}) == b"d1:ai2e1:zi1ee"
+
+
+def test_bencode_refuses_what_it_cant_encode():
+    import pytest
+    for value in (True, 1.5, {"text-key": 1}, object()):
+        with pytest.raises(TypeError):
+            dht.bencode(value)
+
+
+def test_bdecode_rejects_malformed_input():
+    import pytest
+    cases = [b"", b"i01e", b"i-0e", b"ie", b"i-e", b"i1x2e", b"i%de" % (1 << 63),
+             b"5:abc", b"01:a", b"3abc", b"l", b"li1e", b"d1:ai1e", b"di1ei1ee",
+             b"d1:ai1e1:ai2ee", b"i1ei2e", b"x", b"le" + b"x",
+             b"l" * 5 + b"e" * 5,                       # deeper than 4
+             b"l" + b"i0e" * 65 + b"e",                  # more than 64 items
+             b"5:" + b"a" * 3000]                        # over max_len
+    for data in cases:
+        with pytest.raises(dht.BencodeError):
+            dht.bdecode(data)
+    with pytest.raises(dht.BencodeError):
+        dht.bdecode("not bytes")
+    # Within the caps is fine.
+    assert dht.bdecode(b"l" * 4 + b"e" * 4) == [[[[]]]]
+
+
+def test_bdecode_fuzz_only_ever_raises_bencode_error():
+    import random
+    rng = random.Random(1234)
+    seeds = [dht.bencode({b"t": b"ab", b"y": b"r",
+                          b"r": {b"id": bytes(20), b"nodes": bytes(52),
+                                 b"token": b"tok", b"seq": 5, b"v": b"x" * 40}}),
+             dht.bencode([1, [2, [3]], {b"k": b"v"}])]
+    for _ in range(10000):
+        data = bytearray(rng.choice(seeds))
+        for _m in range(rng.randint(1, 4)):
+            pos = rng.randrange(len(data))
+            op = rng.random()
+            if op < 0.4:
+                data[pos] = rng.randrange(256)
+            elif op < 0.7:
+                del data[pos]
+            else:
+                data.insert(pos, rng.choice(b"ilde0123456789:-"))
+        try:
+            dht.bdecode(bytes(data))
+        except dht.BencodeError:
+            pass
