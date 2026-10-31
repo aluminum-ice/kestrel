@@ -483,6 +483,17 @@ class Wigle(Plugin):
             ...  # no GPS: idle or geolocate-only mode
 ```
 
+The services that ship with Kestrel:
+
+| Service | Provided by | What it returns |
+| --- | --- | --- |
+| `position` | `gps` | The current fix (with signal readings), or `None` without one. |
+| `battery` | the UPS plugins (`ups-ws`, `ups-wsc`, `ups-wsd`, `ups-wse`) | The battery reading: `percent`, `status` (charging, discharging, ...), `voltage`, `current_ma`, `power_w`. |
+| `agent` | the daemon | The learning agent's published status, or `None` when it has published nothing. |
+| `recovered` | the daemon | The recovered-networks store (known passphrases). |
+| `geo` | the daemon | The network-location store. |
+| `remote-training` | `remote-train` | The training host's state, without the host's details ([remote training](remote-training.md#the-remote-training-service)). |
+
 ---
 
 ## Options and configuration

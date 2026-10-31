@@ -561,7 +561,7 @@ A synchronous training run and installing a trained model are terminal-only (the
 
 ### remote-train (offload training to a desktop)
 
-The `remote-train` plugin automates the whole desktop-training loop: it pushes the episode logs to a desktop Linux host, runs the same trainer there in an isolated venv it owns, and pulls the finished model back, adopting it only when it is genuinely fresher. It ships disabled and, as a network plugin, takes the authorized-use acknowledgment. The training host is independent of the backup host.
+The `remote-train` plugin automates the whole desktop-training loop: it pushes the episode logs to a desktop Linux host, runs the same trainer there in an isolated venv it owns, and pulls the finished model back; the agent adopts it only if it wins the same fair contest as a model trained on the device. It ships disabled and, as a network plugin, takes the authorized-use acknowledgment. The training host is independent of the backup host.
 
 **Prepare the training host first.** The host is any Linux machine with Python 3 and SSH that you leave on while training. The plugin builds its *own* virtualenv there and pip-installs the ML stack into it (it never touches the system Python), so the host needs the venv and pip modules, `rsync`, and an SSH server. On Debian/Ubuntu:
 
@@ -806,6 +806,8 @@ tail -n 40 ~/kestrel-ai/jobs/prep.log
 ```
 
 After fixing the host, the plugin retries on its own at the next cycle; to prod it at once, `sudo kestrel remote-train now`. `passwordless SSH: fails` on the status output is a different problem — redo `sudo kestrel remote-train setup` so the key is installed.
+
+If the card's **Training** line reads "can't reach or log in to the host (last reached …)", the stack isn't the problem: the desktop is off, asleep or off the network, or it no longer accepts the device's key (the Plugins page note names the host). `kestrel remote-train status` shows the SSH error. Nothing is retried until the host answers; then the card recovers within a couple of minutes.
 
 ### A plugin shows an error
 

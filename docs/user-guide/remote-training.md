@@ -77,6 +77,11 @@ almost always a missing `python3-venv` on a Debian/Ubuntu host. Install the
 packages above and run `remote-train setup` again; `remote-train status` shows the
 reason.
 
+If the card's **Training** line reads "can't reach or log in to the host (last
+reached …)", the desktop is off, asleep or off the network, or it no longer
+accepts the device's key. Nothing is retried until it answers; once it does,
+the card goes back to normal within a couple of minutes.
+
 ## Options
 
 Set these when you enable, on the Plugins page, or later with
@@ -88,7 +93,7 @@ Set these when you enable, on the Plugins page, or later with
 | `train_user` | — | The account on the host to train as. |
 | `train_path` | — | A working directory on the host (created if missing); everything the plugin uses lives under it. |
 | `train_port` | `22` | SSH port on the host. |
-| `algorithms` | all four | Which models to keep trained, a comma-separated subset of `RecurrentPPO,PPO,DQN,QR-DQN`. Set to empty to train none. |
+| `algorithms` | all four | Which models to keep trained, a comma-separated subset of `RecurrentPPO,PPO,DQN,QR-DQN`. The algorithm the agent runs is always trained, first, even when it isn't listed or the list is empty. |
 | `remote_train_min_new_episodes` | `300` | Start a run for a model only once this many new episodes have been logged since it was last trained. |
 | `timesteps` | `200000` | Training steps per run (a desktop can afford far more than the device). |
 | `interval_seconds` | `3600` | At most this often; it also runs at start, on reconnect, and on `remote-train now`. |

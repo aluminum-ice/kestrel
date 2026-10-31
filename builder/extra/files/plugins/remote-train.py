@@ -74,6 +74,17 @@ _STACK_ERROR = ".stack-error"
 # a flaky BT-PAN/Wi-Fi tether drops rsync mid-stream.
 _RSYNC_TRIES = 3
 _RSYNC_BACKOFF = 5
+# ssh exits 255 when it can't connect or log in (refused, timed out, key not
+# authorized, host key changed); any other status is the remote command's own.
+# The host scripts below never exit 255, so it stays reserved for ssh.
+_SSH_FAILED = 255
+# The last contact and the last model staged, kept across daemon restarts, in
+# the staging dir beside host-models.json (which is read as {slug: record}, so
+# it can't carry them).
+_STATUS_NAME = "remote-status.json"
+# Save the contact time at most this often: the light poll runs every couple of
+# minutes, and nothing needs it finer than that.
+_CONTACT_SAVE_SECONDS = 600
 
 
 
@@ -85,12 +96,14 @@ def _remove(path):
 
 class RemoteTrain(Plugin):
     __author__ = "kestrel"
-    __version__ = "0.1.0"
+    __version__ = "0.2.0"
     __license__ = "GPL3"
     __description__ = "Train the learning agent on a remote desktop host (opt-in)."
 
     __target_api__ = 2
     __capabilities__ = ("capture-read", "network", "ui")
+    # The training host's state, for other plugins (provide_remote_training).
+    __provides__ = ("remote-training",)
     # One row button on the Plugins page: "Train" requests a reconcile/launch
     # now (on_webhook, a POST). Shown only once the plugin is configured and
     # passwordless SSH is set up - see webhook_actions.
@@ -106,14 +119,16 @@ class RemoteTrain(Plugin):
         # Literal default (not _DEFAULT_KEY): plugins-ctl reads __options__ with
         # ast.literal_eval and never imports plugin code.
         "ssh_key": {"type": "str", "default": "/home/pi/.ssh/id_ed25519"},
-        # Which per-algorithm models to keep trained remotely: a comma-separated
-        # subset of the agent's algorithms. Defaults to all four; empty trains
-        # nothing. A string (not a TOML array) so it is settable via
-        # `plugins ... --set` and the web settings page like every scalar option.
+        # Which per-algorithm models to keep trained remotely, beyond the one
+        # the agent runs (always trained, first): a comma-separated subset of
+        # the agent's algorithms. Defaults to all four. A string (not a TOML
+        # array) so it is settable via `plugins ... --set` and the web settings
+        # page like every scalar option.
         "algorithms": {
             "type": "str", "default": "RecurrentPPO,PPO,DQN,QR-DQN",
             "help": "Comma-separated, case-sensitive. Any of: "
-                    "RecurrentPPO, PPO, DQN, QR-DQN. Empty trains nothing.",
+                    "RecurrentPPO, PPO, DQN, QR-DQN. The algorithm the agent "
+                    "runs is always trained, first, even when it isn't listed.",
         },
         # Data-driven trigger: launch a run for an algorithm only once this many
         # new episodes have accrued since its model's watermark.
@@ -141,6 +156,15 @@ class RemoteTrain(Plugin):
     # -- lifecycle -------------------------------------------------------
     def on_loaded(self):
         self.log = self.context.logger
+        self._init_state()
+        self._set_health()
+        self._worker = threading.Thread(
+            target=self._run, name="remote-train-worker", daemon=True)
+        self._worker.start()
+
+    def _init_state(self):
+        """Every piece of runtime state, set in one place: ``on_loaded`` calls
+        it, and so do the tests, which drive the plugin without its worker."""
         self._lock = threading.Lock()         # guards the readout state
         self._run_lock = threading.Lock()     # one reconcile at a time
         self._stop = threading.Event()
@@ -148,17 +172,18 @@ class RemoteTrain(Plugin):
         self._train_now = threading.Event()   # a manual "Train now" request
         self._last_run = 0.0                  # monotonic throttle marker
         self._status = "idle"                 # one-line readout summary
-        self._last_pull = None                # (algo, epoch, secs) last promote
+        self._last_pull = None                # (algo, epoch, secs) last model staged
         self._last_pull_secs = None           # train time of the last pulled model
         self._stack_err = ""                  # last host-prep failure reason
         self._stack_state = "checking"        # cached host-stack state for the card
         self._running_prev = set()            # slugs seen running at the last poll
         self._config_path = DEFAULT_CONFIG_PATH
         self._logged = set()                  # one-time notes already logged
-        self._set_health()
-        self._worker = threading.Thread(
-            target=self._run, name="remote-train-worker", daemon=True)
-        self._worker.start()
+        self._host_state = "unknown"          # unknown / reachable / unreachable
+        self._last_contact = None             # epoch of the last SSH session that ran
+        self._contact_saved = None            # monotonic time of the last status save
+        self._running = []                    # algorithms running on the host
+        self._load_status()
 
     def on_unload(self):
         self._stop.set()
@@ -248,7 +273,7 @@ class RemoteTrain(Plugin):
         algorithms = self._algorithms()
         if not algorithms:
             self._train_now.clear()
-            self._set_status("idle: no algorithms selected")
+            self._set_status("idle: no algorithm to train")
             return
         if not self._run_lock.acquire(blocking=False):
             return
@@ -277,7 +302,13 @@ class RemoteTrain(Plugin):
         if not self.context.require_capability("network"):
             self._set_status("error: network capability not declared")
             return
-        if not self._stack_ready():
+        ready = self._stack_ready()
+        if ready is None:
+            # The host didn't answer (or refused the login): nothing to prepare
+            # or launch. Keep the last known stack state and say what's wrong.
+            self._report_unreachable()
+            return
+        if not ready:
             # A previous prep may have failed (commonly: the host is missing
             # python3-venv) - surface the reason instead of a silent "not
             # prepared yet", then (re)launch: the prep clears .stack-error on
@@ -308,9 +339,7 @@ class RemoteTrain(Plugin):
             # 1) Pull a finished model and stage it for the agent to evaluate.
             staged = self._pull_and_stage(algorithm, slug)
             if staged:
-                with self._lock:
-                    self._last_pull = (algorithm, time.time(),
-                                       self._last_pull_secs)
+                self._record_pull(algorithm)
             # 2) Don't double-launch; relaunch only past the stale-lock window.
             if self._algo_running(slug):
                 running.append(algorithm)
@@ -342,26 +371,32 @@ class RemoteTrain(Plugin):
         if self._stack_state != "ready":
             return                      # a full reconcile owns stack prep
         live = self._job_state()        # slugs with a live run lock, one SSH
+        if live is None:
+            # Keep _running_prev: when the host is back, a run that finished in
+            # the meantime is still noticed and its model pulled.
+            self._report_unreachable()
+            return
         just_done = self._running_prev - live
         self._running_prev = set(live)
         for algorithm in algorithms:
             slug = model_slug(algorithm)
             if slug in just_done and self._pull_and_stage(algorithm, slug):
-                with self._lock:
-                    self._last_pull = (algorithm, time.time(),
-                                       self._last_pull_secs)
+                self._record_pull(algorithm)
         self._summarize([a for a in algorithms if model_slug(a) in live], [])
 
     def _job_state(self):
         """One SSH: the set of algorithm slugs with a live (non-stale) run lock
-        on the host - cheap enough to poll between full reconciles."""
-        ok, out = self._remote(
+        on the host - cheap enough to poll between full reconciles - or None
+        when the host couldn't be reached."""
+        rc, out = self._remote_rc(
             "cd %s 2>/dev/null || exit 0; for f in jobs/*.lock; do "
             "[ -e \"$f\" ] || continue; "
             "echo \"$(basename \"$f\" .lock) $(cat \"$f\" 2>/dev/null)\"; done"
             % self._q_path(), timeout=60)
+        if rc is None or rc == _SSH_FAILED:
+            return None
         live = set()
-        if not ok:
+        if rc != 0:
             return live
         cutoff = self._stale_lock_hours() * 3600.0
         now = time.time()
@@ -524,9 +559,11 @@ class RemoteTrain(Plugin):
                 "-o ServerAliveInterval=15 -o ServerAliveCountMax=4"
                 % (shlex.quote(self._key()), self._port()))
 
-    def _remote(self, script, timeout=None):
+    def _remote_rc(self, script, timeout=None):
         """Run ``script`` on the host via ``ssh ... sh -s`` (script on stdin).
-        Returns ``(ok, output)``. Used for quick, synchronous host commands."""
+        Returns ``(returncode, output)``, with ``returncode`` None when ssh
+        couldn't be run or timed out, and records whether the host was reached
+        (``_note_contact``)."""
         cmd = (["ssh"] + self._ssh_opts()
                + ["%s@%s" % (self._user(), self._host()), "sh", "-s"])
         try:
@@ -534,9 +571,76 @@ class RemoteTrain(Plugin):
                                   text=True, timeout=timeout or self._timeout(),
                                   check=False)
         except (OSError, subprocess.SubprocessError) as exc:
-            return (False, str(exc))
+            self._note_contact(False)
+            return (None, str(exc))
+        self._note_contact(proc.returncode != _SSH_FAILED)
         out = (proc.stdout or "") + (proc.stderr or "")
-        return (proc.returncode == 0, out.strip())
+        return (proc.returncode, out.strip())
+
+    def _remote(self, script, timeout=None):
+        """``_remote_rc`` as ``(ok, output)``, for quick, synchronous host
+        commands."""
+        rc, out = self._remote_rc(script, timeout)
+        return (rc == 0, out)
+
+    def _note_contact(self, reached):
+        """Record one SSH attempt's outcome, for the card and the note."""
+        state = "reachable" if reached else "unreachable"
+        with self._lock:
+            changed = self._host_state != state
+            self._host_state = state
+            if reached:
+                self._last_contact = time.time()
+        if changed:
+            self._set_health()
+        if reached and (self._contact_saved is None or time.monotonic()
+                        - self._contact_saved >= _CONTACT_SAVE_SECONDS):
+            self._save_status()
+
+    # -- status kept across restarts --------------------------------------
+    def _status_path(self):
+        return os.path.join(self._staging_root(), _STATUS_NAME)
+
+    def _load_status(self):
+        """Restore the last contact and the last model staged, so the card
+        survives a daemon restart. A missing or malformed file just means
+        nothing is known yet."""
+        data = self._read_json(self._status_path(), {})
+        self._last_contact = _epoch(data.get("last_contact"))
+        at = _epoch(data.get("last_model"))
+        algorithm = data.get("last_model_algorithm")
+        if at and isinstance(algorithm, str) and algorithm:
+            secs = data.get("last_model_train_seconds")
+            if isinstance(secs, bool) or not isinstance(secs, (int, float)):
+                secs = None
+            self._last_pull = (algorithm[:32], at, secs)
+            self._last_pull_secs = secs
+
+    def _save_status(self):
+        """Write the status file atomically, inside the agent's own dir."""
+        with self._lock:
+            pull = self._last_pull
+            data = {"last_contact": self._last_contact,
+                    "last_model": pull[1] if pull else None,
+                    "last_model_algorithm": pull[0] if pull else None,
+                    "last_model_train_seconds": pull[2] if pull else None}
+        path = self._status_path()
+        try:
+            os.makedirs(self._staging_root(), exist_ok=True)
+            with open(path + ".tmp", "w", encoding="utf-8") as handle:
+                json.dump(data, handle)
+            os.replace(path + ".tmp", path)
+        except OSError as exc:
+            self._note_once("status-save", "remote-train: could not save %s: %s",
+                            _STATUS_NAME, exc)
+        self._contact_saved = time.monotonic()
+
+    def _record_pull(self, algorithm):
+        """A new model was staged for the agent: remember it for the card, and
+        save it."""
+        with self._lock:
+            self._last_pull = (algorithm, time.time(), self._last_pull_secs)
+        self._save_status()
 
     def _rsync_up(self, local_dir, remote_dir):
         cmd = ["rsync", "-az", "--partial", "--mkpath",
@@ -573,11 +677,16 @@ class RemoteTrain(Plugin):
 
     # -- host stack (package + ML deps in an isolated venv) --------------
     def _stack_ready(self):
-        ok, _out = self._remote(
+        """True when the host's venv and ML stack are ready, False when the
+        host answered but they aren't, None when the host couldn't be reached
+        or logged in to."""
+        rc, _out = self._remote_rc(
             "test -x %s/bin/python && test -f %s/%s"
             % (self._q_venv(), self._q_path(), _STACK_READY),
             timeout=60)
-        return ok
+        if rc is None or rc == _SSH_FAILED:
+            return None
+        return rc == 0
 
     def _stack_error(self):
         """The host prep's recorded failure reason (``.stack-error``), or "".
@@ -730,6 +839,33 @@ class RemoteTrain(Plugin):
             "echo launched\n"
         ) % {"path": path, "slug": slug, "worker": worker}
 
+    # -- the remote-training service --------------------------------------
+    def provide_remote_training(self):
+        """The ``remote-training`` service: the training host's state as this
+        plugin last saw it, for other plugins. A new dict on every call, built
+        from cached state (no SSH). It never carries the host name, user,
+        path, port or key path. Keys may be added later; existing keys keep
+        their meaning.
+
+        - ``configured``: host, user and path are set and the SSH key exists.
+        - ``host_state``: "unknown" (not tried yet), "reachable" or
+          "unreachable" (couldn't connect or log in), from the last SSH attempt.
+        - ``stack``: the host's training software: "checking", "installing",
+          "ready" or "failed".
+        - ``last_contact``: epoch of the last SSH session that ran, or None.
+        - ``last_model``: epoch the last new model was staged for the agent, or
+          None.
+        - ``running``: algorithms with a live run on the host.
+        """
+        with self._lock:
+            state = {"host_state": self._host_state,
+                     "last_contact": self._last_contact,
+                     "last_model": self._last_pull[1] if self._last_pull else None,
+                     "running": list(self._running)}
+        state["configured"] = not self._missing_config() and self._key_ready()
+        state["stack"] = self._stack_state
+        return state
+
     # -- readout ---------------------------------------------------------
     def on_ui_setup(self, ui):
         ui.add_element("target", "-", label="Train host")
@@ -763,6 +899,8 @@ class RemoteTrain(Plugin):
 
     def _summarize(self, running, launched, manual=False,
                    has_data=True, attempted=None):
+        with self._lock:
+            self._running = list(running)
         if launched:
             self._set_status("training %s" % ", ".join(launched))
         elif running:
@@ -901,6 +1039,16 @@ class RemoteTrain(Plugin):
         with self._lock:
             self._status = status
 
+    def _report_unreachable(self):
+        self._set_status("can't reach or log in to the host (%s)"
+                         % self._contact_age())
+        self._set_health()
+
+    def _contact_age(self):
+        with self._lock:
+            last = self._last_contact
+        return ("last reached %s" % _ago(last)) if last else "never reached"
+
     def _set_health(self):
         missing = self._missing_config()
         if missing:
@@ -912,14 +1060,27 @@ class RemoteTrain(Plugin):
                 "passwordless SSH not set up - run 'sudo kestrel "
                 "remote-train setup' to install the device key on %s"
                 % self._host())
+        elif self._host_state == "unreachable":
+            self.context.health_note = (
+                "can't reach or log in to %s over SSH (%s): check that it's on "
+                "and on the network; 'sudo kestrel remote-train status' shows "
+                "the detail" % (self._host(), self._contact_age()))
         elif not self._algorithms():
             self.context.health_note = (
-                "no algorithms selected to train (set algorithms=...)")
+                "no algorithm to train: the agent's algorithm couldn't be "
+                "read from config.toml and the algorithms list is empty")
         elif self._stack_err:
             self.context.health_note = (
                 "host training stack not ready: %s" % self._stack_err)
         else:
             self.context.health_note = ""
+
+
+def _epoch(value):
+    """A positive, finite epoch from a JSON value, else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if 0 < value < float("inf") else None
 
 
 def _ago(epoch):

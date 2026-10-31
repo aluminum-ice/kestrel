@@ -1685,8 +1685,6 @@ def test_backup_card_survives_a_missing_or_junk_state_file(tmp_path):
 def _make_remote_train(tmp_path, online=True, **opts):
     """A RemoteTrain instance wired to a tmp agent dir, WITHOUT starting its
     worker thread (so tests drive its methods directly, no real SSH)."""
-    import threading as _threading
-
     mod = _load_module("remote-train.py", "remote_train_under_test")
     agent_dir = tmp_path / "agent"
     (agent_dir / "episodes").mkdir(parents=True, exist_ok=True)
@@ -1707,19 +1705,7 @@ def _make_remote_train(tmp_path, online=True, **opts):
         services=ServiceRegistry(),
         capabilities=("capture-read", "network", "ui"))
     plugin.log = plugin.context.logger
-    plugin._lock = _threading.Lock()
-    plugin._run_lock = _threading.Lock()
-    plugin._stop = _threading.Event()
-    plugin._wake = _threading.Event()
-    plugin._train_now = _threading.Event()
-    plugin._last_run = 0.0
-    plugin._status = "idle"
-    plugin._last_pull = None
-    plugin._last_pull_secs = None
-    plugin._stack_err = ""
-    plugin._stack_state = "checking"
-    plugin._running_prev = set()
-    plugin._logged = set()
+    plugin._init_state()
     # The agent runs DQN (read live from config.toml for the algorithm order).
     cfg = tmp_path / "config.toml"
     cfg.write_text('[agent]\nalgorithm = "%s"\n' % opts.pop("_agent_algorithm", "DQN"))
@@ -1986,6 +1972,258 @@ def test_remote_train_reconcile_surfaces_a_host_prep_failure(tmp_path):
     assert "could not create a Python venv" in plugin.context.health_note
 
 
+def _fake_ssh(monkeypatch, mod, returncode=None, raises=None):
+    """Make the plugin's ssh calls end with ``returncode`` (or raise)."""
+    def run(cmd, **_kw):
+        if raises is not None:
+            raise raises
+        return subprocess.CompletedProcess(cmd, returncode, "", "")
+    monkeypatch.setattr(mod.subprocess, "run", run)
+
+
+def test_remote_train_ssh_failure_marks_the_host_unreachable(tmp_path, monkeypatch):
+    # ssh exits 255 when it can't connect or log in.
+    plugin, mod, _ad = _make_remote_train(tmp_path)
+    _fake_ssh(monkeypatch, mod, returncode=255)
+    assert plugin._remote_rc("true")[0] == 255
+    assert plugin._host_state == "unreachable"
+    assert plugin._last_contact is None
+
+
+def test_remote_train_a_failing_command_still_counts_as_contact(tmp_path, monkeypatch):
+    # Any other status is the remote command's own: the host was reached.
+    plugin, mod, _ad = _make_remote_train(tmp_path)
+    _fake_ssh(monkeypatch, mod, returncode=1)
+    assert plugin._remote("false") == (False, "")
+    assert plugin._host_state == "reachable"
+    assert plugin._last_contact is not None
+
+
+def test_remote_train_ssh_timeout_marks_the_host_unreachable(tmp_path, monkeypatch):
+    plugin, mod, _ad = _make_remote_train(tmp_path)
+    _fake_ssh(monkeypatch, mod, raises=subprocess.TimeoutExpired(["ssh"], 60))
+    assert plugin._remote_rc("true")[0] is None
+    assert plugin._host_state == "unreachable"
+
+
+def test_remote_train_stack_ready_is_three_valued(tmp_path, monkeypatch):
+    plugin, mod, _ad = _make_remote_train(tmp_path)
+    for returncode, expected in ((0, True), (1, False), (255, None)):
+        _fake_ssh(monkeypatch, mod, returncode=returncode)
+        assert plugin._stack_ready() is expected
+    _fake_ssh(monkeypatch, mod, raises=OSError("no ssh"))
+    assert plugin._stack_ready() is None
+
+
+def test_remote_train_reconcile_skips_host_prep_when_unreachable(tmp_path):
+    # A host that's off reads as unreachable, not "installing": no prep, no
+    # pull, no launch, and the last known stack state stays on the card.
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._stack_state = "ready"
+    plugin._host_state = "unreachable"
+    plugin._stack_ready = lambda: None
+    calls = []
+    plugin._stack_error = lambda: calls.append("error") or ""
+    plugin._ensure_stack = lambda: calls.append("prep")
+    plugin._pull_and_stage = lambda algo, slug: calls.append("pull") or False
+    plugin._launch_training = lambda algo, slug: calls.append("launch") or True
+    plugin._reconcile(["DQN"])
+    assert calls == []
+    assert plugin._status == "can't reach or log in to the host (never reached)"
+    assert plugin._stack_state == "ready"
+    assert "can't reach or log in to desk" in plugin.context.health_note
+
+
+def test_remote_train_manual_request_while_unreachable_reports_it(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._stack_ready = lambda: None
+    plugin._train_now.set()
+    plugin._reconcile(["DQN"])
+    assert not plugin._train_now.is_set()
+    assert plugin._status.startswith("can't reach or log in to the host")
+
+
+def test_remote_train_refresh_keeps_run_state_when_unreachable(tmp_path):
+    # A light poll that can't reach the host must not take every running
+    # algorithm for finished (and try to pull each one).
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._stack_state = "ready"
+    plugin._running_prev = {"dqn"}
+    plugin._job_state = lambda: None
+    pulls = []
+    plugin._pull_and_stage = lambda algo, slug: pulls.append(algo) or False
+    plugin._refresh(["DQN"])
+    assert pulls == []
+    assert plugin._running_prev == {"dqn"}
+    assert plugin._status.startswith("can't reach or log in to the host")
+
+
+def test_remote_train_note_clears_when_the_host_answers_again(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._note_contact(False)
+    assert "can't reach or log in to desk" in plugin.context.health_note
+    plugin._note_contact(True)
+    assert plugin.context.health_note == ""
+
+
+def test_remote_train_unreachable_status_shows_the_last_contact(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._last_contact = time.time() - 3 * 3600 - 60
+    plugin._report_unreachable()
+    assert plugin._status == "can't reach or log in to the host (last reached 3h ago)"
+
+
+def test_remote_train_staged_model_survives_a_restart(tmp_path):
+    # The card's "Last model pulled" and the last contact come back after a
+    # daemon restart instead of reading "never".
+    from kestrel_pi.agent import spec
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    meta = {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
+            "data_watermark": {"latest_ts": 300.0, "episodes": 99},
+            "train_seconds": 405.0}
+    plugin._rsync_down = _fake_host(meta)
+    plugin._note_contact(True)                  # a pass reaches the host first
+    assert plugin._pull_and_stage("DQN", "dqn") is True
+    plugin._record_pull("DQN")
+    again, _mod, _ad = _make_remote_train(tmp_path)
+    assert again._last_pull[0] == "DQN" and again._last_pull[2] == 405.0
+    assert abs(again._last_pull[1] - time.time()) < 60
+    assert again._last_contact == plugin._last_contact
+    assert (_card(again, "remote-train")["pulled"]["value"]
+            == "DQN just now (trained in 6m 45s)")
+
+
+def test_remote_train_contact_is_saved_at_most_every_ten_minutes(tmp_path, monkeypatch):
+    plugin, mod, _ad = _make_remote_train(tmp_path)
+    clock = [1000.0]
+    monkeypatch.setattr(mod, "time", types.SimpleNamespace(
+        time=time.time, monotonic=lambda: clock[0], gmtime=time.gmtime,
+        strftime=time.strftime, sleep=time.sleep))
+    saves = []
+    save = plugin._save_status
+    plugin._save_status = lambda: saves.append(1) or save()
+    plugin._note_contact(True)                  # the first contact is saved
+    plugin._note_contact(True)
+    clock[0] += 599
+    plugin._note_contact(True)
+    assert len(saves) == 1
+    clock[0] += 2
+    plugin._note_contact(True)
+    assert len(saves) == 2
+    plugin._note_contact(False)                 # a failed attempt saves nothing
+    clock[0] += 3600
+    plugin._note_contact(False)
+    assert len(saves) == 2
+
+
+def test_remote_train_ignores_a_malformed_status_file(tmp_path):
+    from kestrel_pi.agent import REMOTE_STAGING_DIR
+    staging = tmp_path / "agent" / REMOTE_STAGING_DIR
+    staging.mkdir(parents=True)
+    for text in ("not json", "[]", '{"last_contact": true}',
+                 '{"last_contact": "x", "last_model": -5, "last_model_algorithm": 7}',
+                 '{"last_model": 1e400, "last_model_algorithm": "DQN"}'):
+        (staging / "remote-status.json").write_text(text)
+        plugin, _mod, _ad = _make_remote_train(tmp_path)
+        assert plugin._last_contact is None, text
+        assert plugin._last_pull is None, text
+
+
+def test_remote_train_status_file_leaves_host_models_alone(tmp_path):
+    # host-models.json is read as {slug: record}; the status lives elsewhere.
+    from kestrel_pi.agent import spec
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    meta = {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
+            "data_watermark": {"latest_ts": 300.0, "episodes": 99}}
+    plugin._rsync_down = _fake_host(meta)
+    plugin._pull_and_stage("DQN", "dqn")
+    plugin._record_pull("DQN")
+    plugin._note_contact(True)
+    assert set(plugin._host_models()) == {"dqn"}
+
+
+def test_remote_train_status_save_failure_is_logged_once(tmp_path, caplog):
+    from kestrel_pi.agent import REMOTE_STAGING_DIR
+    plugin, _mod, agent_dir = _make_remote_train(tmp_path)
+    # A file where the staging dir should be: every save fails.
+    with open(os.path.join(agent_dir, REMOTE_STAGING_DIR), "w") as handle:
+        handle.write("")
+    with caplog.at_level(logging.INFO):
+        plugin._save_status()
+        plugin._save_status()
+    assert sum("could not save" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_remote_train_declares_the_remote_training_service(tmp_path):
+    from kestrel_pi import declarations
+    _plugin, mod, _ad = _make_remote_train(tmp_path)
+    assert mod.RemoteTrain.__provides__ == ("remote-training",)
+    # Root and plugins-ctl read it statically, never importing the plugin.
+    decl = declarations.read_declarations(os.path.join(PLUGIN_DIR, "remote-train.py"))
+    assert tuple(decl["remote-train"]["provides"]) == ("remote-training",)
+
+
+def test_remote_train_service_before_any_contact(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    assert plugin.provide_remote_training() == {
+        "configured": True, "host_state": "unknown", "stack": "checking",
+        "last_contact": None, "last_model": None, "running": []}
+
+
+def test_remote_train_service_after_a_working_pass(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._note_contact(True)
+    plugin._stack_state = "ready"
+    plugin._record_pull("DQN")
+    plugin._summarize(["DQN"], ["DQN"])
+    service = plugin.provide_remote_training()
+    assert service["host_state"] == "reachable" and service["stack"] == "ready"
+    assert abs(service["last_contact"] - time.time()) < 60
+    assert abs(service["last_model"] - time.time()) < 60
+    assert service["running"] == ["DQN"]
+    service["running"].append("PPO")            # a copy: callers can't change it
+    assert plugin.provide_remote_training()["running"] == ["DQN"]
+
+
+def test_remote_train_service_when_unreachable(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    plugin._note_contact(True)
+    reached = plugin._last_contact
+    plugin._note_contact(False)
+    service = plugin.provide_remote_training()
+    assert service["host_state"] == "unreachable"
+    assert service["last_contact"] == reached
+
+
+def test_remote_train_service_not_configured(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path, train_host="")
+    assert plugin.provide_remote_training()["configured"] is False
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    os.remove(plugin.options["ssh_key"])
+    assert plugin.provide_remote_training()["configured"] is False
+
+
+def test_remote_train_service_carries_no_option_values(tmp_path):
+    key = tmp_path / "key-mark"
+    key.write_text("KEY")
+    plugin, _mod, _ad = _make_remote_train(
+        tmp_path, train_host="host-mark", train_user="user-mark",
+        train_path="/path-mark", train_port=2222, ssh_key=str(key))
+    plugin._note_contact(True)
+    plugin._record_pull("DQN")
+    text = json.dumps(plugin.provide_remote_training())
+    assert "mark" not in text and "2222" not in text
+
+
+def test_remote_train_service_through_the_registry(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    registry = ServiceRegistry()
+    assert registry.get("remote-training") is None
+    registry.provide("remote-training", plugin.provide_remote_training,
+                     owner="remote-train")
+    assert registry.get("remote-training")["configured"] is True
+
+
 def test_remote_train_launch_script_runs_the_trainer_detached(tmp_path):
     plugin, _mod, _ad = _make_remote_train(tmp_path, timesteps=123456)
     script = plugin._train_launch_script("DQN", "dqn")
@@ -2078,7 +2316,7 @@ def test_remote_train_health_note_states(tmp_path):
     plugin, _mod, _ad = _make_remote_train(tmp_path, algorithms=[],
                                            _agent_algorithm="bogus")
     plugin._set_health()
-    assert "no algorithms" in plugin.context.health_note
+    assert "no algorithm to train" in plugin.context.health_note
     # A recorded host-prep failure surfaces on the /plugins note and survives
     # the per-epoch _set_health() refresh (it reads the cached reason).
     plugin, _mod, _ad = _make_remote_train(tmp_path)

@@ -323,6 +323,39 @@ from the journal.
   watermark. There is no fixed "train every N hours" timer. So a device near its
   desktop keeps its models fresh on its own, pacing itself to how much new
   experience it's actually gathering rather than to the clock.
+- **Host unreachable:** when an SSH attempt can't connect or log in (ssh exits
+  255: refused, timed out, key no longer authorized, host key changed), the
+  card's Training line says "can't reach or log in to the host (last reached
+  3h ago)", the Host stack line keeps its last known state, and the Plugins
+  note names the host. No host prep, pull or launch is tried until the host
+  answers again; a light poll that can't reach it keeps the run state as it
+  was, so a run that finished meanwhile is still pulled afterwards.
+- **Kept across restarts:** the last contact and the last model staged are
+  saved in `<agent_dir>/.remote-staging/remote-status.json` (beside
+  `host-models.json`, which stays one record per algorithm), so "Last model
+  pulled" survives a daemon restart.
+
+## The `remote-training` service
+
+The plugin provides a `remote-training` service, so other plugins can read the
+training host's state without reading this plugin's settings or files (see
+[Inter-plugin services](plugin-development.md#inter-plugin-services)). The
+value is a new dict on every call, built from what the worker last saw (it
+never runs SSH):
+
+| Key | Meaning |
+| --- | --- |
+| `configured` | `train_host`, `train_user` and `train_path` are set and the SSH key exists. |
+| `host_state` | `"unknown"` (not tried yet), `"reachable"`, or `"unreachable"` (couldn't connect or log in), from the last SSH attempt. |
+| `stack` | The host's training software: `"checking"`, `"installing"`, `"ready"` or `"failed"`. |
+| `last_contact` | Epoch seconds of the last SSH session that ran, or `None`. |
+| `last_model` | Epoch seconds when the last new model was staged for the agent, or `None`. |
+| `running` | The algorithms with a live run on the host. |
+
+It never carries the host name, user, path, port or key path. When
+`remote-train` isn't enabled the service isn't registered, and
+`services.get("remote-training")` returns `None`. Keys may be added later;
+existing keys keep their meaning.
 
 ## Security posture
 
