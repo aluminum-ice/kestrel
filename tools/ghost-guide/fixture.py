@@ -75,7 +75,12 @@ def mac(suffix):
 def agent_status(now):
     return {
         "running": True, "policy": "learned", "algorithm": "RecurrentPPO",
-        "model_source": "local", "promotion_tally": {"local": 3, "remote": 1},
+        "model_source": "remote",
+        "promotion_tally": {"local": {"won": 3, "lost": 7},
+                            "remote": {"won": 2, "lost": 1}},
+        "last_decision": {"at": now - 2 * 3600, "result": "promoted",
+                          "winner": "remote", "trigger": "remote",
+                          "candidates": [{"source": "remote", "won": True}]},
         "training": False, "last_trained": now - 3 * 3600 - 300,
         "last_train_secs": 754, "posture": "lock-subset", "dwell": 5,
         "transmit": "active", "last_reward": 0.42,

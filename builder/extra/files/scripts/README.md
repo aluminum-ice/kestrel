@@ -17,8 +17,8 @@ scp pi@<device>:/usr/local/share/kestrel/scripts/pull-agent-diagnostics.sh .
 ## What's here
 
 Each `pull-*` script reads the device read-only over SSH and saves one report:
-a private text file for `pull-health.sh` and `pull-eink-diagnostics.sh`, a
-`.tar.gz` for the others. `gps-check.sh` is an interactive live check instead.
+a private text file for `pull-health.sh`, `pull-eink-diagnostics.sh` and
+`pull-agent-diagnostics.sh`, a `.tar.gz` for the others. `gps-check.sh` is an interactive live check instead.
 
 - `pull-health.sh` — the "grab this first" health check (it replaced
   `pull-device-diagnostics.sh` and `pull-capture-health.sh`). It opens with a
@@ -52,10 +52,25 @@ a private text file for `pull-health.sh` and `pull-eink-diagnostics.sh`, a
   profile and link state, routes, DNS, device-side reachability and the
   connectivity journal. MAC/IP-redacted on the device; never reads the Wi-Fi
   SSID or any NetworkManager secret.
-- `pull-agent-diagnostics.sh` — pull a PII-free snapshot of the learning
-  agent's model-promotion state off a field unit (read-only over SSH), so
-  quality-aware promotion can be reviewed off-device. It never pulls the model
-  `.zip` files, raw episode logs, captures, keys or config.
+- `pull-agent-diagnostics.sh [--score] [--remote-dir DIR]` — the learning
+  agent's training and model contests, to see which models trained where and
+  why each contest went the way it did:
+  - the `[agent]` and `remote-train` settings (hosts, users and paths masked);
+  - the agent's status, contest tally and last decision, every model sidecar
+    (active, local candidate, staged remote) and the remote-train records;
+  - the episode log as numbers only: counts, ages, rows per day, reward,
+    handshakes and the actions each policy picked;
+  - a timeline of trainings, remote launches, stagings and contests from the
+    journal, and each model's real-world yield while it was active.
+
+  `--score` also re-scores the models on the device (torch in a niced process,
+  only with 1.5 GB RAM free) on the held-out rows the contest uses, and on
+  random and time-ordered splits for comparison. `--remote-dir` sends the
+  training host's models (`<train_path>/agent`) along to be scored too, then
+  deletes them. Run as your login user, no sudo; no episode row, model file,
+  capture or key leaves the device. Saves one private file,
+  `kestrel-agent-diagnostics-<time>.txt` (mode 600), and refuses to save inside
+  a git checkout.
 - `pull-web-diagnostics.sh` — triage a web dashboard that won't come up (while
   SSH still works): image + `update status`, the update **run-state and
   rollback** evidence (the engine's `status.json`, the in-progress marker,

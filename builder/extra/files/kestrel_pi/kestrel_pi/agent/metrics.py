@@ -17,8 +17,11 @@ log records; two separate runs are never compared head-to-head.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
+import statistics
 
 
 def load_rows(episodes_dir):
@@ -98,79 +101,105 @@ def new_rows_since(rows, latest_ts):
     return sum(1 for r in rows if _row_ts(r) > cutoff)
 
 
-def remote_model_wins(remote_meta, local_meta):
-    """Whether a pulled remote model is worth *staging* for evaluation, comparing
-    their data watermarks (not file mtimes): the remote clears the bar only when
-    it was trained on data at least as recent as the local model's. A tie favors
-    the remote; an older remote watermark (a stale remote, while the device
-    trained locally in the meantime) does not. A model with no watermark compares
-    as the oldest data.
-
-    Quality-aware promotion (docs/developer/agent-interface.md) uses this as
-    the ``remote-train`` plugin's cheap, torch-free **pre-filter** - whether to
-    bother pulling at all. It is no longer the promotion decider; the agent
-    re-scores both models on a held-out slice (:func:`promotion_decision`)."""
-    remote_ts, _ = meta_watermark(remote_meta)
-    local_ts, _ = meta_watermark(local_meta)
-    return remote_ts >= local_ts
+# -- the held-out set no model trains on ---------------------------------
+# A row is held out when its hour block hashes into one bucket of five (about
+# 20% of rows). Deterministic, so the device and a remote training host agree
+# without talking; stable as old episode files rotate out; and whole hours, so a
+# recurrent model is scored on real sequences. Training (``train.train_from_logs``)
+# never sees a held-out row, and promotion scores every candidate on them.
+HOLDOUT_SCHEME = "block-hash-v1"
+HOLDOUT_BLOCK_SECONDS = 3600
+HOLDOUT_BUCKETS = 5
 
 
-# The smallest held-out-score lift (over baseline) that counts as a real
-# difference rather than reward-model noise, both for clearing the baseline floor
-# and for the absolute-improvement guard that stops two near-equal models
-# flip-flopping each pull. Reward magnitudes here are O(0.01-1), so 1e-3 is
-# comfortably below a genuine improvement while rejecting float dust.
+def holdout_block(ts):
+    """The hour block a timestamp falls in."""
+    return int(float(ts) // HOLDOUT_BLOCK_SECONDS)
+
+
+def is_holdout(row):
+    """Whether ``row`` belongs to the held-out set. A row with no usable ``ts``
+    is never held out (it goes to training)."""
+    try:
+        block = holdout_block(row.get("ts"))
+    except (TypeError, ValueError):
+        return False
+    digest = hashlib.sha256(b"kestrel-holdout-v1:%d" % block).hexdigest()
+    return int(digest, 16) % HOLDOUT_BUCKETS == 0
+
+
+def split_holdout(rows):
+    """``(train_rows, holdout_rows)``, each in the original order."""
+    train, held = [], []
+    for row in rows:
+        (held if is_holdout(row) else train).append(row)
+    return train, held
+
+
+def model_fingerprint(meta):
+    """A short identity for a trained model from its sidecar (algorithm, data
+    watermark and training time), so "the same model" is recognised across
+    pulls without hashing the model file. "" for a missing sidecar."""
+    if not isinstance(meta, dict) or not meta:
+        return ""
+    latest, episodes = meta_watermark(meta)
+    return "%s|%.3f|%d|%s" % (meta.get("algorithm") or "", latest, episodes,
+                              meta.get("train_seconds"))
+
+
+# The smallest held-out difference that counts as real rather than reward-model
+# noise: for clearing the baseline and for the challenger's mean improvement
+# over the incumbent. Reward magnitudes here are O(0.01-1), so 1e-3 is well
+# below a genuine improvement while rejecting float dust.
 PROMOTION_ABS_FLOOR = 1e-3
 
 
-def promotion_decision(scores, has_local, new_since_remote=0, margin=0.10,
-                       max_stale_episodes=0, abs_floor=PROMOTION_ABS_FLOOR):
-    """Decide whether to promote a staged remote model, given held-out
-    ``scores`` (``{"remote", "local", "baseline"}`` -> mean greedy r̂ from
-    :func:`train.score_candidates`). Pure (no torch/numpy), so it is unit-tested.
+def contest_decision(diffs, challenger_lift, incumbent_lift, margin=0.10,
+                     min_z=1.0, abs_floor=PROMOTION_ABS_FLOOR,
+                     has_incumbent=True, new_since=None, max_stale_episodes=0):
+    """Whether a candidate model (the challenger) should replace the active one
+    (the incumbent). The same rule for every candidate, whatever trained it.
+    Pure stdlib, so it is unit-tested directly.
 
-    Returns ``(promote: bool, reason: str)``. The env-spec gate runs earlier (the
-    caller disqualifies a spec mismatch before scoring). The rule:
+    ``diffs`` are the per-row differences ``r̂(o, challenger) - r̂(o, incumbent)``
+    over the held-out evaluation rows; the lifts are each model's mean reward
+    over the scripted baseline's on those rows. Returns ``(promote, reason)``:
 
-    - **No incumbent** (``has_local`` false): adopt the remote - the only way a
-      board that cannot train locally (a Zero 2 W) ever gets a model. Judged
-      before scoring, so it holds even on a log too thin to score.
-    - **Staleness guard:** if the device has logged more than
-      ``max_stale_episodes`` new episodes since the remote's data watermark
-      (``new_since_remote``), keep the incumbent - don't adopt a model trained on
-      data the device has since moved far past on the strength of a held-out win.
-      ``0`` disables the guard.
-    - **Baseline floor:** the remote must beat the scripted baseline's held-out
-      score by at least ``abs_floor``; otherwise keep the incumbent.
-    - **Margin:** promote only when the remote's lift over baseline is at least
-      ``(1 + margin)`` x the local's lift *and* exceeds it by at least
-      ``abs_floor`` (the absolute guard stops churn when both lifts are ~0).
-      Measuring lift over baseline keeps the test robust to reward scale/offset.
+    - **Stale:** more than ``max_stale_episodes`` rows logged since the
+      challenger's data (``new_since``) rejects it. ``0`` turns the guard off.
+    - **Baseline:** the challenger must beat the scripted baseline by
+      ``abs_floor``.
+    - **No incumbent:** then it is adopted (bootstrap).
+    - **Paired test:** the mean difference must be at least ``abs_floor`` and
+      significant, ``mean / standard error >= min_z``.
+    - **Margin:** its lift must be at least ``(1 + margin)`` times the
+      incumbent's, so two near-equal models don't swap on every run.
     """
-    if not has_local:
-        return True, "no local model yet; adopting the remote (bootstrap)"
-    remote = scores.get("remote") if scores else None
-    if remote is None:
-        return False, "no remote score"
-    if (max_stale_episodes and new_since_remote is not None
-            and new_since_remote > max_stale_episodes):
-        return False, ("remote data too stale: %d new episodes since it trained"
-                       % new_since_remote)
-    baseline = scores.get("baseline")
-    local = scores.get("local")
-    if baseline is None or local is None:
-        return False, "incomplete scores; keeping the local model"
-    remote_lift = remote - baseline
-    local_lift = local - baseline
-    if remote_lift <= abs_floor:
-        return False, "remote does not beat the scripted baseline"
-    if (remote_lift >= (1.0 + margin) * local_lift
-            and remote_lift - local_lift >= abs_floor):
-        return True, ("remote wins: lift %.4f vs local %.4f over baseline "
-                      "(>= %.0f%% margin)" % (remote_lift, local_lift,
-                                              margin * 100))
-    return False, ("local model is as good or better: lift %.4f vs remote %.4f"
-                   % (local_lift, remote_lift))
+    if (max_stale_episodes and new_since is not None
+            and new_since > max_stale_episodes):
+        return False, ("challenger data too stale: %d rows logged since it trained"
+                       % new_since)
+    if challenger_lift < abs_floor:
+        return False, ("does not beat the scripted baseline (lift %+.4f)"
+                       % challenger_lift)
+    if not has_incumbent:
+        return True, "no active model; adopting (bootstrap)"
+    diffs = [float(d) for d in diffs or ()]
+    if not diffs:
+        return False, "no held-out rows to compare on"
+    mean = statistics.fmean(diffs)
+    if mean < abs_floor:
+        return False, "not better than the active model (mean diff %+.4f)" % mean
+    stdev = statistics.pstdev(diffs) if len(diffs) > 1 else 0.0
+    z = (mean / (stdev / math.sqrt(len(diffs)))) if stdev > 0 else float("inf")
+    if z < min_z:
+        return False, "not significant (mean diff %+.4f, z %.2f)" % (mean, z)
+    if incumbent_lift > 0 and challenger_lift < (1.0 + margin) * incumbent_lift:
+        return False, ("lift %+.4f is within the %.0f%% margin of the active "
+                       "model's %+.4f" % (challenger_lift, margin * 100,
+                                          incumbent_lift))
+    return True, ("challenger wins: mean diff %+.4f, z %.2f, lift %+.4f vs %+.4f"
+                  % (mean, z, challenger_lift, incumbent_lift))
 
 
 def _policy_summary(rows):

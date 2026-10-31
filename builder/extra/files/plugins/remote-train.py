@@ -23,17 +23,21 @@ Design (see docs/developer/remote-training.md):
   ``agent/model-<slug>.zip`` + sidecar. Each reconcile pulls a finished model
   first, never double-launches a running algorithm (a lock older than
   ``stale_lock_hours`` is a crashed run and may be relaunched), and starts a
-  fresh run only when enough new episodes have accrued.
+  fresh run only when enough new episodes have accrued since the host's last
+  model of that algorithm. The algorithm the agent runs is always trained, and
+  first. The device's package is synced up before every launch and the run
+  imports it ahead of the venv's copy, so the host trains with the device's
+  current code (which keeps the held-out rows out and warm-starts from the
+  host's previous model).
 
 - **Pull-and-stage; the agent decides.** This plugin runs inside the always-on
   daemon, which must stay torch-free, so it never loads or scores a model. It
-  pulls a finished model into the agent's staging dir
-  (``<agent_dir>/.remote-staging/<slug>/``) only when a cheap watermark/spec
-  pre-filter says it is worth evaluating (``metrics.remote_model_wins``), and
-  leaves it there. The **agent process** (which already has torch for inference)
-  scores the staged model against the active one on a held-out slice and promotes
-  the genuinely better one - quality-aware promotion, see
-  docs/developer/agent-interface.md.
+  pulls a new finished model into the agent's staging dir
+  (``<agent_dir>/.remote-staging/<slug>/``) when its env-spec matches and the
+  agent hasn't judged it before (``evaluated.json``), and leaves it there. The
+  **agent process** (which already has torch for inference) runs the same
+  contest for it as for a model trained on the device - scored on held-out rows
+  no model trained on, one rule for both - see docs/developer/agent-interface.md.
 
 Opt-in: it ships captured-derived experience off-device, so it declares the
 ``network`` capability (enabling it takes the authorized-use ack) and copies as
@@ -52,11 +56,12 @@ import threading
 import time
 
 from kestrel_pi import Plugin
-from kestrel_pi.agent import (EPISODES_DIR, REMOTE_STAGING_DIR,
-                                 model_meta_name_for, model_name_for,
-                                 model_slug)
+from kestrel_pi.agent import (EPISODES_DIR, EVALUATED_NAME, HOST_MODELS_NAME,
+                                 REMOTE_STAGING_DIR, model_meta_name_for,
+                                 model_name_for, model_slug)
 from kestrel_pi.agent import metrics as metrics_mod
 from kestrel_pi.agent import policies as policies_mod
+from kestrel_pi.config import DEFAULT_CONFIG_PATH, load_config
 
 _DEFAULT_KEY = "/home/pi/.ssh/id_ed25519"
 # The ML stack installed into the host venv. torch last (the big download).
@@ -70,6 +75,13 @@ _STACK_ERROR = ".stack-error"
 _RSYNC_TRIES = 3
 _RSYNC_BACKOFF = 5
 
+
+
+def _remove(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 class RemoteTrain(Plugin):
     __author__ = "kestrel"
@@ -141,6 +153,8 @@ class RemoteTrain(Plugin):
         self._stack_err = ""                  # last host-prep failure reason
         self._stack_state = "checking"        # cached host-stack state for the card
         self._running_prev = set()            # slugs seen running at the last poll
+        self._config_path = DEFAULT_CONFIG_PATH
+        self._logged = set()                  # one-time notes already logged
         self._set_health()
         self._worker = threading.Thread(
             target=self._run, name="remote-train-worker", daemon=True)
@@ -303,11 +317,15 @@ class RemoteTrain(Plugin):
                 continue
             # 3) Launch when enough new experience has accrued, or always on a
             #    manual request - as long as there is some data to train on.
-            if manual or self._new_episodes(algorithm) >= self._min_new_episodes():
+            new_rows = self._new_episodes(algorithm)
+            if manual or new_rows >= self._min_new_episodes():
                 if manual and not has_data:
                     continue
                 attempted.append(algorithm)
                 if self._launch_training(algorithm, slug):
+                    self.log.info("remote-train: launched %s on the host (%s)",
+                                  algorithm, "manual request" if manual else
+                                  "%d new rows since the last remote model" % new_rows)
                     running.append(algorithm)
                     launched.append(algorithm)
         self._running_prev = {model_slug(a) for a in running}
@@ -364,21 +382,57 @@ class RemoteTrain(Plugin):
         return metrics_mod.load_rows(
             os.path.join(self._agent_dir(), EPISODES_DIR))
 
-    def _local_meta(self, algorithm):
-        return policies_mod.read_meta(self._agent_dir(), algorithm)
+    def _staging_root(self):
+        return os.path.join(self._agent_dir(), REMOTE_STAGING_DIR)
+
+    def _read_json(self, path, default):
+        """The JSON in ``path`` when it has ``default``'s type (a dict or a
+        list), else ``default``."""
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return default
+        return data if isinstance(data, type(default)) else default
+
+    def _host_models(self):
+        """The host's latest model per algorithm slug, as last seen on a pull:
+        ``{slug: {"fingerprint", "latest_ts", "train_seconds", "seen_at"}}``."""
+        return self._read_json(os.path.join(self._staging_root(), HOST_MODELS_NAME), {})
+
+    def _record_host_model(self, slug, meta):
+        record = self._host_models()
+        latest, _ = metrics_mod.meta_watermark(meta)
+        record[slug] = {"fingerprint": metrics_mod.model_fingerprint(meta),
+                        "latest_ts": latest,
+                        "train_seconds": meta.get("train_seconds"),
+                        "seen_at": time.time()}
+        path = os.path.join(self._staging_root(), HOST_MODELS_NAME)
+        try:
+            os.makedirs(self._staging_root(), exist_ok=True)
+            with open(path + ".tmp", "w", encoding="utf-8") as handle:
+                json.dump(record, handle)
+            os.replace(path + ".tmp", path)
+        except OSError as exc:
+            self.log.warning("remote-train: could not record the host model: %s", exc)
+
+    def _judged(self):
+        """Fingerprints of remote models the agent has already judged."""
+        return set(f for f in self._read_json(
+            os.path.join(self._staging_root(), EVALUATED_NAME), []) if isinstance(f, str))
 
     def _new_episodes(self, algorithm):
-        """New episode rows since the on-device model's data watermark - the
-        data-driven trigger's measure."""
-        latest_ts, _ = metrics_mod.meta_watermark(self._local_meta(algorithm))
-        return metrics_mod.new_rows_since(self._episode_rows(), latest_ts)
+        """New episode rows since the host's last model of ``algorithm`` (its
+        data watermark) - the launch trigger's measure. With no remote model yet,
+        every row counts. The device's own training doesn't reset it."""
+        latest = (self._host_models().get(model_slug(algorithm)) or {}).get("latest_ts", 0)
+        return metrics_mod.new_rows_since(self._episode_rows(), latest)
 
-    def _should_stage(self, remote_meta, local_meta):
-        """Whether a pulled remote model is worth *staging* for the agent to
-        evaluate: its env-spec still matches this device and its data watermark is
-        not stale against the local one. This is only a cheap, torch-free
-        pre-filter (whether to bother pulling); the agent process makes the real
-        quality-based promotion decision after scoring on a held-out slice."""
+    def _should_stage(self, remote_meta):
+        """Whether a pulled remote model should be staged for the agent's
+        contest: its env-spec matches this device and the agent hasn't already
+        judged it. Its data age doesn't matter here - the contest scores every
+        candidate on held-out rows and applies one rule to all of them."""
         try:
             from kestrel_pi.agent import spec
             remote_spec = remote_meta.get("spec_version")
@@ -386,17 +440,22 @@ class RemoteTrain(Plugin):
                 return False
         except Exception:  # noqa: BLE001 - spec import must not break a pull
             pass
-        return metrics_mod.remote_model_wins(remote_meta, local_meta)
+        return metrics_mod.model_fingerprint(remote_meta) not in self._judged()
+
+    def _note_once(self, key, message, *args):
+        if key not in self._logged:
+            self._logged.add(key)
+            self.log.info(message, *args)
 
     # -- staging (the agent owns promotion) ------------------------------
     def _pull_and_stage(self, algorithm, slug):
         """Pull the host's finished model for ``algorithm`` into the agent's
-        staging dir and leave it for the agent process to score and promote. This
-        plugin never loads a model (the daemon stays torch-free); it only pulls
-        and applies the cheap watermark/spec pre-filter. Returns True when a
-        candidate was staged for evaluation."""
-        agent_dir = self._agent_dir()
-        staging = os.path.join(agent_dir, REMOTE_STAGING_DIR, slug)
+        staging dir and leave it for the agent's contest. This plugin never loads
+        a model (the daemon stays torch-free). The sidecar comes first: an
+        unchanged model (already staged) or one the agent already judged is not
+        pulled again, so the staged file's mtime - the agent's trigger - only
+        changes for a new model. Returns True when a new candidate was staged."""
+        staging = os.path.join(self._staging_root(), slug)
         model_name = model_name_for(algorithm)
         meta_name = model_meta_name_for(algorithm)
         remote_agent = self._remote_agent_dir()
@@ -405,46 +464,50 @@ class RemoteTrain(Plugin):
         except OSError as exc:
             self.log.warning("remote-train: cannot stage: %s", exc)
             return False
-        # Pull the model + its sidecar if the host has them. Missing files just
-        # mean no finished model yet; not an error.
-        for name in (model_name, meta_name):
-            self._rsync_down("%s/%s" % (remote_agent, name),
-                             os.path.join(staging, name))
-        staged_model = os.path.join(staging, model_name)
-        staged_meta_path = os.path.join(staging, meta_name)
-        if not os.path.exists(staged_model) or not os.path.exists(staged_meta_path):
+        incoming_meta = os.path.join(staging, ".incoming-" + meta_name)
+        self._rsync_down("%s/%s" % (remote_agent, meta_name), incoming_meta)
+        remote_meta = self._read_json(incoming_meta, {})
+        _remove(incoming_meta)
+        if not remote_meta:
+            return False             # no finished model on the host yet
+        self._record_host_model(slug, remote_meta)
+        fingerprint = metrics_mod.model_fingerprint(remote_meta)
+        staged_meta = self._read_json(os.path.join(staging, meta_name), {})
+        if staged_meta and metrics_mod.model_fingerprint(staged_meta) == fingerprint:
+            return False             # already staged, waiting for the contest
+        if not self._should_stage(remote_meta):
+            self._note_once(("skip", fingerprint),
+                            "remote-train: not staging the host's %s model (%s)",
+                            algorithm, "already judged" if fingerprint in self._judged()
+                            else "env-spec mismatch")
+            return False
+        incoming_model = os.path.join(staging, ".incoming-" + model_name)
+        self._rsync_down("%s/%s" % (remote_agent, model_name), incoming_model)
+        if not os.path.isfile(incoming_model):
             return False
         try:
-            with open(staged_meta_path, "r", encoding="utf-8") as handle:
-                remote_meta = json.load(handle)
-            if not isinstance(remote_meta, dict):
-                return False
-        except (OSError, ValueError):
-            return False
-        if not self._should_stage(remote_meta, self._local_meta(algorithm)):
-            # Filtered out (stale or spec mismatch): clear the staged files so the
-            # agent never scores a candidate we've already rejected.
-            self._clear_staging(staging)
+            # Model first, then sidecar, so the agent never sees a model without
+            # its matching meta.
+            os.replace(incoming_model, os.path.join(staging, model_name))
+            with open(os.path.join(staging, meta_name) + ".tmp", "w",
+                      encoding="utf-8") as handle:
+                json.dump(remote_meta, handle)
+            os.replace(os.path.join(staging, meta_name) + ".tmp",
+                       os.path.join(staging, meta_name))
+        except OSError as exc:
+            self.log.warning("remote-train: cannot stage: %s", exc)
+            _remove(incoming_model)
             return False
         # Record the host's training time (from the sidecar) for the card's "Last
         # model pulled". The agent stamps source="remote" if it actually promotes.
         secs = remote_meta.get("train_seconds")
         self._last_pull_secs = secs if isinstance(secs, (int, float)) else None
+        latest, _ = metrics_mod.meta_watermark(remote_meta)
         self.log.info("remote-train: staged a %s model from the host for the "
-                      "agent to evaluate", algorithm)
+                      "agent's contest (data to %s, trained %s s)", algorithm,
+                      time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(latest))
+                      if latest else "unknown", secs)
         return True
-
-    def _clear_staging(self, staging):
-        """Remove a staged candidate the pre-filter rejected (best-effort)."""
-        try:
-            names = os.listdir(staging)
-        except OSError:
-            return
-        for name in names:
-            try:
-                os.remove(os.path.join(staging, name))
-            except OSError:
-                pass
 
     # -- host operations (SSH/rsync; isolated so tests can stub them) -----
     def _ssh_opts(self):
@@ -611,8 +674,17 @@ class RemoteTrain(Plugin):
         return age_h < self._stale_lock_hours()
 
     def _launch_training(self, algorithm, slug):
-        """Upload the latest episodes and launch a detached training run for
-        ``algorithm`` on the host. Returns True if the launch was accepted."""
+        """Upload the latest episodes and the device's package, then launch a
+        detached training run for ``algorithm`` on the host. The package goes up
+        before every launch, so the host always runs the device's current
+        trainer, even after an in-place update. Returns True if the launch was
+        accepted."""
+        pkg_dir = self._local_package_dir()
+        if pkg_dir:
+            ok, out = self._rsync_up(pkg_dir, "%s/pkg/kestrel_pi" % self._remote_path())
+            if not ok:
+                self.log.warning("remote-train: package upload failed: %s", out)
+                return False
         up_ok, out = self._rsync_up(
             os.path.join(self._agent_dir(), EPISODES_DIR),
             "%s/agent/%s" % (self._remote_path(), EPISODES_DIR))
@@ -628,21 +700,23 @@ class RemoteTrain(Plugin):
 
     def _train_launch_script(self, algorithm, slug):
         """A detached training launcher for one algorithm. Writes the lock
-        (start timestamp), runs the SAME trainer the device uses from the venv,
+        (start timestamp), runs the SAME trainer the device uses - the package
+        just synced to ``pkg/``, ahead of the venv's copy on ``PYTHONPATH`` -
         records a result and clears the lock on exit."""
         path = self._q_path()
         worker = (
             "set -u\n"
-            "cd %(path)s\n"
+            # Runs with CWD already at <path> (the launcher cd'd here before
+            # backgrounding this), so no cd - a relative one would fail.
             "date +%%s > jobs/%(slug)s.lock\n"
-            "if venv/bin/python -m kestrel_pi.agent.train "
+            "if PYTHONPATH=pkg venv/bin/python -m kestrel_pi.agent.train "
             "--agent-dir agent --algorithm %(algo)s --timesteps %(ts)d; then\n"
             "  echo ok > jobs/%(slug)s.result\n"
             "else\n"
             "  echo error > jobs/%(slug)s.result\n"
             "fi\n"
             "rm -f jobs/%(slug)s.lock\n"
-        ) % {"path": path, "slug": slug, "algo": shlex.quote(algorithm),
+        ) % {"slug": slug, "algo": shlex.quote(algorithm),
              "ts": self._timesteps()}
         return (
             "set -eu\n"
@@ -707,12 +781,28 @@ class RemoteTrain(Plugin):
             self._set_status("idle (models current)")
 
     # -- helpers ---------------------------------------------------------
+    def _configured_algorithm(self):
+        """The algorithm the agent runs (``[agent] algorithm``), read live so a
+        switch takes effect without a restart; None when unreadable."""
+        try:
+            agent = (load_config(self._config_path) or {}).get("agent") or {}
+        except Exception:  # noqa: BLE001 - an unreadable config trains the list only
+            return None
+        name = agent.get("algorithm") or policies_mod.DEFAULT_ALGORITHM
+        return name if policies_mod.valid_algorithm(name) else None
+
     def _algorithms(self):
+        """The algorithms to train on the host: the one the agent runs first
+        (always, even if ``algorithms`` leaves it out), then the rest of the
+        ``algorithms`` option, deduplicated."""
+        out = []
+        configured = self._configured_algorithm()
+        if configured:
+            out.append(configured)
         raw = self.options.get("algorithms") or ""
         # Normally a comma/space-separated string; tolerate a list defensively
         # (the config validator already enforces the declared str type).
         items = re.split(r"[,\s]+", raw.strip()) if isinstance(raw, str) else list(raw)
-        out = []
         for item in items:
             name = str(item).strip()
             if policies_mod.valid_algorithm(name) and name not in out:

@@ -281,21 +281,21 @@ def select_reward_model(rows, holdout=0.2, seed=0, min_rows=32, l2=1.0,
 
 
 def _scoring_reward_fn(train_rows, val_triples, l2=1.0, min_samples=8):
-    """The reward model r̂ used to *score* policies for quality-aware promotion.
+    """The reward model r̂ used to *score* policies for promotion, as
+    ``(r̂, kind)`` where ``kind`` is ``"state-conditioned"`` or ``"mean"``.
 
     Mirrors :func:`select_reward_model`'s state-conditioned-vs-mean gate but keeps
     r̂ fit on ``train_rows`` only (never refit on all rows), so the held-out
     windows the policies are scored on stay out of sample for r̂ - the fair
-    yardstick the promotion note calls for. Returns a callable ``r̂(obs, action)``
-    (numpy only)."""
+    yardstick. Returns a callable ``r̂(obs, action)`` (numpy only)."""
     per_action_mean, global_mean = _mean_model(train_rows)
     mean_fn = _mean_fn(per_action_mean, global_mean)
     if not _rows_with_obs(train_rows) or not val_triples:
-        return mean_fn
+        return mean_fn, "mean"
     candidate = fit_reward_model(train_rows, l2=l2, min_samples=min_samples)
     if _mse(mean_fn, val_triples) - _mse(candidate, val_triples) > _ADOPT_MIN_IMPROVEMENT:
-        return candidate
-    return mean_fn
+        return candidate, "state-conditioned"
+    return mean_fn, "mean"
 
 
 def score_policy(policy, val_obs, reward_fn):
@@ -320,36 +320,56 @@ def score_policy(policy, val_obs, reward_fn):
     return total / len(val_obs)
 
 
-def score_candidates(rows, policies, holdout=0.2, seed=0, min_rows=32):
-    """Score each policy in ``policies`` (``{name: policy}``) on one fixed
-    held-out slice of ``rows``, for quality-aware promotion.
+def evaluate(rows, policies, cap=2000, min_rows=64, min_ts=None):
+    """Score each policy in ``policies`` (``{name: policy}``) on the held-out
+    rows, for promotion. Every candidate, the active model and the scripted
+    baseline are judged on the same rows under the same reward model, and no
+    model trained on those rows (training leaves them out).
 
-    Draws a single deterministic train/held-out split (``seed``), fits the
-    scoring reward model r̂ on the train split (:func:`_scoring_reward_fn`), and
-    scores every policy on the *same* held-out observations under that *same* r̂,
-    so incumbent, staged-remote and baseline are judged by one yardstick on the
-    device's freshest data. Returns ``{name: score}``, or ``None`` when the logs
-    are too thin to form a reliable held-out set (fewer than ``min_rows``
-    observation-carrying windows) - the caller then keeps the incumbent rather
-    than promoting on noise. Inference-only, so it is cheap even on a small
-    board."""
+    The evaluation rows are the held-out rows with an observation (and, with
+    ``min_ts``, only those newer than it: for a model trained before rows were
+    held out, which saw them all), the newest ``cap`` of them, taken in time
+    order. Each policy steps through them greedily, its recurrent state reset at
+    every hour-block boundary, so an LSTM sees real sequences. r̂ is fit on the
+    non-held-out rows.
+
+    Returns ``{"rows", "per_row": {name: [reward...]}, "mean": {name: m},
+    "reward_model", "oldest_ts", "newest_ts"}``, or ``None`` when there are
+    fewer than ``min_rows`` evaluation rows (too thin to decide on)."""
     import numpy as np
 
-    if len(_rows_with_obs(rows)) < min_rows:
+    train_rows, held = metrics_mod.split_holdout(rows)
+    picked = []
+    for row in held:
+        triple = _rows_with_obs([row])
+        if not triple:
+            continue
+        ts = float(row.get("ts", 0) or 0)
+        if min_ts is not None and ts <= float(min_ts):
+            continue
+        picked.append((ts, triple[0]))
+    picked.sort(key=lambda p: p[0])
+    picked = picked[-int(cap):] if cap else picked
+    if len(picked) < min_rows or not _rows_with_obs(train_rows):
         return None
-    n = len(rows)
-    rng = np.random.default_rng(seed)
-    order = rng.permutation(n).tolist()
-    n_val = max(1, int(n * holdout))
-    val_rows = [rows[i] for i in order[:n_val]]
-    train_rows = [rows[i] for i in order[n_val:]]
-    val_triples = _rows_with_obs(val_rows)
-    if not val_triples or not _rows_with_obs(train_rows):
-        return None
-    reward_fn = _scoring_reward_fn(train_rows, val_triples)
-    val_obs = [obs for obs, _a, _r in val_triples]
-    return {name: score_policy(policy, val_obs, reward_fn)
-            for name, policy in policies.items()}
+    triples = [t for _ts, t in picked]
+    reward_fn, kind = _scoring_reward_fn(train_rows, triples)
+    blocks = [metrics_mod.holdout_block(ts) for ts, _t in picked]
+    per_row = {}
+    for name, policy in policies.items():
+        values = []
+        previous = None
+        for block, (obs, _action, _reward) in zip(blocks, triples):
+            if block != previous:
+                policy.reset()
+                previous = block
+            action, _state = policy.predict(np.asarray(obs, dtype=np.float32))
+            values.append(float(reward_fn(obs, int(action))))
+        per_row[name] = values
+    return {"rows": len(triples), "per_row": per_row,
+            "mean": {n: (sum(v) / len(v)) for n, v in per_row.items()},
+            "reward_model": kind, "oldest_ts": picked[0][0],
+            "newest_ts": picked[-1][0]}
 
 
 def _sample_observations(rows):
@@ -416,12 +436,48 @@ def build_replay_env(rows, episode_length=64, seed=0, reward_fn=None):
     return LogReplayEnv()
 
 
+def _warm_start(model, agent_dir, algorithm, logger):
+    """Load the existing model for ``algorithm`` in ``agent_dir`` (the device's
+    active model, or the host's previous remote model) into the freshly built
+    ``model`` as its starting weights, so a run fine-tunes it rather than
+    starting over. Weights only, as :func:`policies._load_weights` loads them.
+    Returns that model's ``source`` (or ``"unknown"``), or ``None`` when there is
+    nothing usable to start from and the run trains from scratch."""
+    path, meta = policies_mod._resolve_model(agent_dir, algorithm)
+    if not path:
+        return None
+    if meta.get("algorithm") not in (None, algorithm):
+        return None
+    if meta.get("spec_version") not in (None, spec.SPEC_VERSION):
+        logger.info("not warm-starting: the existing %s model is env-spec v%s",
+                    algorithm, meta.get("spec_version"))
+        return None
+    try:
+        model.set_parameters(path, exact_match=True,
+                             device=getattr(model, "device", "cpu"))
+    except Exception as exc:  # noqa: BLE001 - a bad file trains fresh instead
+        logger.warning("not warm-starting from %s: %s", path, exc)
+        return None
+    return meta.get("source") or "unknown"
+
+
 def train_from_logs(agent_dir=AGENT_DIR, algorithm=None, timesteps=20000,
-                    episode_length=64, logger=None):
+                    episode_length=64, logger=None, out_dir=None,
+                    warm_start=True):
     """Train ``algorithm`` on the logged episodes and write its per-algorithm
-    model (``model-<slug>.zip``) + the sidecar into ``agent_dir``, so each
-    algorithm keeps its own saved model. Returns a short summary string. Raises
-    ValueError for an unknown algorithm and ImportError when SB3 is absent."""
+    model (``model-<slug>.zip``) + the sidecar into ``out_dir`` (default
+    ``agent_dir``), so each algorithm keeps its own saved model. Returns a short
+    summary string. Raises ValueError for an unknown algorithm or no training
+    rows, and ImportError when SB3 is absent.
+
+    The held-out rows (:func:`metrics.split_holdout`) are kept out of training
+    entirely - out of the reward model and the replay env - so promotion can
+    score every model on data none of them learned from. With ``warm_start``
+    the run starts from the existing model in ``agent_dir`` (the device's active
+    model; on a remote host, its previous model) instead of from scratch. The
+    device writes into a candidate folder (``out_dir``) and promotes only after
+    a contest; a remote host writes into its own agent dir for the device to
+    pull."""
     logger = logger or log
     if not policies_mod.valid_algorithm(algorithm):
         raise ValueError("unknown algorithm: %r (one of %s)"
@@ -430,25 +486,33 @@ def train_from_logs(agent_dir=AGENT_DIR, algorithm=None, timesteps=20000,
     if not rows:
         raise ValueError("no episode logs in %s; let the agent run first"
                          % os.path.join(agent_dir, EPISODES_DIR))
+    train_rows, held = metrics_mod.split_holdout(rows)
+    if not train_rows:
+        raise ValueError("no training rows outside the held-out set yet")
     # Phase 4.5: pick the reward model (state-conditioned r̂, or the Phase 4 mean
     # model if it does not beat the mean on held-out windows) and train against
     # it. Falls back gracefully on a thin log; the spaces are unchanged either
     # way, so the written model drops straight into on-device inference.
-    reward_fn, provenance = select_reward_model(rows)
+    reward_fn, provenance = select_reward_model(train_rows)
     # Keep the fine-tune off every core so the daemon/web UI and capture stay
     # responsive while it runs (see limit_training_threads).
     limit_training_threads(logger)
-    env = build_replay_env(rows, episode_length=episode_length,
+    env = build_replay_env(train_rows, episode_length=episode_length,
                            reward_fn=reward_fn)
     model = policies_mod.make_algorithm(algorithm, env, verbose=0)
+    started_from = _warm_start(model, agent_dir, algorithm, logger) if warm_start else None
     logger.info("training %s on %d logged window(s) for %d timestep(s) "
-                "(%s reward model)", algorithm, len(rows), timesteps,
-                provenance.get("reward_model"))
+                "(%s reward model; %d held-out row(s) kept out; %s)",
+                algorithm, len(train_rows), timesteps,
+                provenance.get("reward_model"), len(held),
+                "warm start from the active %s model" % started_from
+                if started_from else "fresh")
     start = time.monotonic()
     model.learn(total_timesteps=int(timesteps))
     train_seconds = round(time.monotonic() - start, 1)
-    os.makedirs(agent_dir, exist_ok=True)
-    model_path = os.path.join(agent_dir, model_name_for(algorithm))
+    out_dir = out_dir or agent_dir
+    os.makedirs(out_dir, exist_ok=True)
+    model_path = os.path.join(out_dir, model_name_for(algorithm))
     # Write the model atomically: SB3 saves a zip in place, and a backup (or the
     # remote-train pull) can run concurrently, so os.replace keeps a reader from
     # ever seeing a half-written model. A ".tmp" suffix is non-empty, so SB3 does
@@ -456,16 +520,22 @@ def train_from_logs(agent_dir=AGENT_DIR, algorithm=None, timesteps=20000,
     tmp_model = model_path + ".tmp"
     model.save(tmp_model)
     os.replace(tmp_model, model_path)
-    # Stamp the data watermark (newest episode + row count trained on) so the
-    # model can later be compared by what it learned from, and the reward-model
-    # provenance (which model won, held-out scores) so a fleet can attribute and
-    # roll back a model - the same stamps whether this ran on-device or remotely.
-    policies_mod.write_meta(agent_dir, algorithm,
+    # Stamp the data watermark (newest episode + row count seen) so "rows logged
+    # since" stays meaningful, the reward-model provenance, and the held-out
+    # scheme the model was trained under - the same stamps whether this ran
+    # on-device or remotely.
+    policies_mod.write_meta(out_dir, algorithm,
                             watermark=metrics_mod.data_watermark(rows),
                             provenance=provenance, train_seconds=train_seconds,
-                            source="local")
-    return "wrote %s (%s, %d windows, %s reward model)" % (
-        model_path, algorithm, len(rows), provenance.get("reward_model"))
+                            source="local",
+                            extra={"holdout": metrics_mod.HOLDOUT_SCHEME,
+                                   "warm_start": started_from,
+                                   "timesteps": int(timesteps),
+                                   "train_rows": len(train_rows),
+                                   "held_out_rows": len(held)})
+    return "wrote %s (%s, %d windows, %s reward model, %s)" % (
+        model_path, algorithm, len(train_rows), provenance.get("reward_model"),
+        "warm start" if started_from else "fresh")
 
 
 def main(argv=None):
@@ -483,6 +553,11 @@ def main(argv=None):
     parser.add_argument("--config", default=None,
                         help="read [agent] algorithm from this config if "
                         "--algorithm is not given")
+    parser.add_argument("--out-dir", default=None,
+                        help="write the model here instead of --agent-dir (the "
+                        "device writes a candidate for promotion to judge)")
+    parser.add_argument("--no-warm-start", action="store_true",
+                        help="train from scratch instead of from the existing model")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
 
@@ -495,7 +570,8 @@ def main(argv=None):
         algorithm = _configured_algorithm(args.config)
     try:
         summary = train_from_logs(args.agent_dir, algorithm, args.timesteps,
-                                  args.episode_length)
+                                  args.episode_length, out_dir=args.out_dir,
+                                  warm_start=not args.no_warm_start)
     except (ValueError, ImportError) as exc:
         log.error("%s", exc)
         return 1

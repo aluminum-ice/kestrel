@@ -254,6 +254,12 @@ keep training from ever hurting the thing you actually care about — capture.
 - **`train_timesteps`** (default `3000`) — gradient steps per fine-tune. Higher
   fits harder but costs more time and power per run.
 
+Each run fine-tunes the model in use (it starts from its weights) and writes a
+**candidate**; the candidate replaces the model in use only if it does better
+on held-out rows (about a fifth of your logged hours) that no model ever trains
+on. A model pulled from a remote training host faces the same test. The agent
+card's **Model contests** and **Last contest** lines show how that goes.
+
 ### Safety clamps
 
 Two knobs cap when a run may start; both are **hard-bounded** so a careless

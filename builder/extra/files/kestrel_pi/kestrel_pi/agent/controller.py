@@ -34,10 +34,10 @@ from collections import deque
 
 from ..capture import CaptureInterface
 from ..config import DEFAULT_CONFIG_PATH, load_config, section
-from . import (AGENT_DIR, EPISODES_DIR, LAST_TRAIN_NAME, MODEL_NAME,
-               PROMOTION_TALLY_NAME, REMOTE_STAGING_DIR, STATUS_NAME,
-               TRAIN_REQUEST_NAME, model_meta_name_for, model_name_for,
-               model_slug)
+from . import (AGENT_DIR, CANDIDATES_DIR, EPISODES_DIR, EVALUATED_NAME,
+               LAST_TRAIN_NAME, MODEL_NAME, PROMOTION_TALLY_NAME,
+               REMOTE_STAGING_DIR, STATUS_NAME, TRAIN_REQUEST_NAME,
+               model_meta_name_for, model_name_for, model_slug)
 from . import metrics as metrics_mod
 from . import policies as policies_mod
 from . import spec
@@ -91,12 +91,15 @@ AGENT_DEFAULTS = {
     "compare_block_minutes": 10,
     "metrics_window_minutes": 60,
     "log_max_mb": 64,
-    # Quality-aware promotion (docs/developer/agent-interface.md): how much
-    # better (lift over baseline) a pulled remote model must score on a held-out
-    # slice to replace the incumbent, and a soft staleness guard. Code defaults
-    # (not shipped in config.toml), so a release carrying them stays app-layer.
-    "promotion_margin": 0.10,            # 10% lift over baseline
-    "promotion_max_stale_episodes": 900,  # skip a remote this far behind; 0=off
+    # Promotion (docs/developer/agent-interface.md, "Candidates and
+    # promotion"): every candidate model, trained here or on a remote host, must
+    # beat the active one on held-out rows by a significant paired difference
+    # (z) and by this margin of lift over the baseline; a candidate trained on
+    # data this far behind is skipped. Code defaults (not shipped in
+    # config.toml), so a release carrying them stays app-layer.
+    "promotion_margin": 0.10,            # 10% lift over the active model's
+    "promotion_min_z": 1.0,              # paired-difference significance
+    "promotion_max_stale_episodes": 900,  # skip a candidate this far behind; 0=off
 }
 ACTION_DEFAULTS = {
     "lock_subset_n": 3,
@@ -112,6 +115,21 @@ TRAIN_AUTO_MIN_BYTES = int(3.8 * 1024 * 1024 * 1024)
 
 
 # -- config helpers ---------------------------------------------------------
+def _empty_tally():
+    return {"local": {"won": 0, "lost": 0}, "remote": {"won": 0, "lost": 0}}
+
+
+def _count(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _round(value, places=5):
+    return round(value, places) if isinstance(value, (int, float)) else None
+
+
 def agent_config(config):
     """The merged ``[agent]`` table with its sub-tables and the capture band the
     sweep-band posture uses, resolved from ``[capture.scan] bands``."""
@@ -321,10 +339,15 @@ class AgentController:
             85.0, float(self.agent_cfg.get("train_max_temp_c", 75) or 75))
         self._train_min_free_bytes = max(
             256, int(self.agent_cfg.get("train_min_free_mb", 512) or 512)) * 1024 * 1024
-        # Quality-aware promotion knobs (clamped): the held-out lift margin a
-        # staged remote model must clear, and the soft staleness guard.
+        # Promotion knobs (clamped): the lift margin and the significance a
+        # candidate must clear on held-out rows, and the staleness guard.
         self._promotion_margin = max(
             0.0, float(self.agent_cfg.get("promotion_margin", 0.10) or 0.0))
+        try:
+            self._promotion_min_z = min(5.0, max(
+                0.0, float(self.agent_cfg.get("promotion_min_z", 1.0))))
+        except (TypeError, ValueError):
+            self._promotion_min_z = 1.0
         self._promotion_max_stale = max(
             0, int(self.agent_cfg.get("promotion_max_stale_episodes", 900) or 0))
         # New episodes logged since the last training run drives the periodic
@@ -339,10 +362,15 @@ class AgentController:
         # The running training child process (kestrel-agent-train), so stop()
         # can terminate it; None when no fine-tune is in flight.
         self._train_proc = None
-        # A lifetime tally of model adoptions by source (a locally trained model
-        # vs a promoted remote model becoming the active model), seeded from a
-        # small file so it survives a restart.
-        self._promotion_tally = {"local": 0, "remote": 0}
+        # The lifetime contest tally by source (how many local and remote
+        # candidates won or lost), seeded from a small file so it survives a
+        # restart; the last contest's outcome for the dashboard; and the
+        # deferred-contest retry (too few held-out rows the last time).
+        self._promotion_tally = _empty_tally()
+        self._last_decision = None
+        self._contest_lock = threading.Lock()
+        self._contest_deferred = False
+        self._episodes_since_contest = 0
 
         os.makedirs(self.agent_dir, exist_ok=True)
         os.makedirs(os.path.join(self.agent_dir, EPISODES_DIR), exist_ok=True)
@@ -363,6 +391,9 @@ class AgentController:
         # algorithm, which is the only one this agent process drives.
         _slug = model_slug(self.agent_cfg.get("algorithm"))
         self._staging_dir = os.path.join(self.agent_dir, REMOTE_STAGING_DIR, _slug)
+        # An on-device training run writes its model here, as a candidate.
+        self._local_candidate_dir = os.path.join(
+            self.agent_dir, CANDIDATES_DIR, "local", _slug)
         self._staged_model_path = os.path.join(
             self._staging_dir, model_name_for(self.agent_cfg.get("algorithm")))
         self._staged_meta_path = os.path.join(
@@ -448,8 +479,11 @@ class AgentController:
             "train_blocked": train_blocked,
             "last_trained": self._last_trained,
             "last_train_secs": self._last_train_secs,
-            # Lifetime adoptions by source: {"local": N, "remote": M}.
-            "promotion_tally": dict(self._promotion_tally),
+            # Lifetime contests by source: {"local": {"won", "lost"}, "remote":
+            # {...}}, plus "before_fair_promotion" adoption counts from a device
+            # that ran before contests existed.
+            "promotion_tally": json.loads(json.dumps(self._promotion_tally)),
+            "last_decision": self._last_decision,
             "session_yield": self._session_yield(),
             "decisions": len(self._recent),
             "detail": detail or "",
@@ -509,35 +543,49 @@ class AgentController:
         except OSError as exc:
             self.log.warning("could not write last-training record: %s", exc)
 
-    # -- promotion tally (local vs remote adoptions, persisted) ----------
+    # -- contest tally (wins and losses by source, persisted) -------------
     def _read_promotion_tally(self):
-        """Seed the lifetime local/remote adoption tally from its file. A
-        missing or malformed file just leaves the counts at zero (best-effort)."""
+        """Seed the lifetime contest tally from its file. A tally from before
+        contests existed (flat ``{"local": N, "remote": M}`` adoption counts) is
+        kept under ``before_fair_promotion`` and the contest counts start at 0. A
+        missing or malformed file leaves everything at zero (best-effort)."""
         try:
             with open(self._tally_path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
         except (OSError, ValueError):
             return
-        if isinstance(data, dict):
-            for key in self._promotion_tally:
-                try:
-                    self._promotion_tally[key] = max(0, int(data.get(key, 0) or 0))
-                except (TypeError, ValueError):
-                    pass
-
-    def _bump_promotion_tally(self, source):
-        """Record one model adoption by ``source`` ("local" or "remote") and
-        persist the running tally. Best-effort - a write failure just logs."""
-        if source not in self._promotion_tally:
+        if not isinstance(data, dict):
             return
-        self._promotion_tally[source] += 1
+        tally = _empty_tally()
+        old = {}
+        for source in ("local", "remote"):
+            value = data.get(source)
+            if isinstance(value, dict):
+                for key in ("won", "lost"):
+                    tally[source][key] = _count(value.get(key))
+            elif value is not None:
+                old[source] = _count(value)
+        before = data.get("before_fair_promotion")
+        if isinstance(before, dict):
+            old = {k: _count(before.get(k)) for k in ("local", "remote")}
+        if old:
+            tally["before_fair_promotion"] = {
+                "local": old.get("local", 0), "remote": old.get("remote", 0)}
+        self._promotion_tally = tally
+
+    def _bump_promotion_tally(self, source, won):
+        """Record one contest result for a ``source`` ("local" or "remote")
+        candidate and persist the tally. Best-effort - a write failure logs."""
+        if source not in ("local", "remote"):
+            return
+        self._promotion_tally[source]["won" if won else "lost"] += 1
         tmp = self._tally_path + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as handle:
                 json.dump(self._promotion_tally, handle)
             os.replace(tmp, self._tally_path)
         except OSError as exc:
-            self.log.warning("could not write promotion tally: %s", exc)
+            self.log.warning("could not write the contest tally: %s", exc)
 
     def _write_episodes_context(self):
         """Tag the episodes dir with a coarse, PII-free context (board + env
@@ -562,6 +610,7 @@ class AgentController:
         record = dict(record, ts=time.time(), policy=self._current_policy)
         self._recent.append(record)
         self._episodes_since_train += 1
+        self._episodes_since_contest += 1
         self._rotate_episodes()
         try:
             with open(self._episode_file, "a", encoding="utf-8") as handle:
@@ -666,97 +715,263 @@ class AgentController:
         except OSError:
             return None
 
-    def _maybe_promote_staged(self):
-        """Score a freshly staged remote model against the active one on a common
-        held-out slice and promote the winner (docs/developer/
-        agent-interface.md). Returns True if the active model was replaced, so the caller reloads
-        the policy. Best-effort: any error leaves the active model untouched. The
-        heavy scoring lives here, in the agent process, so the always-on daemon
-        and its plugins stay torch-free."""
+    # -- contests: every candidate model faces the same gate --------------
+    # A deferred contest (too few held-out rows) is retried once this many new
+    # episodes have been logged.
+    CONTEST_RETRY_EPISODES = 32
+    # How many judged remote fingerprints evaluated.json keeps.
+    EVALUATED_KEEP = 32
+
+    def _read_candidate(self, source, directory):
+        """The candidate model in ``directory`` for the configured algorithm, as
+        a dict (source, paths, sidecar, fingerprint), or None when there isn't a
+        complete one (model and sidecar)."""
+        algorithm = self.agent_cfg.get("algorithm")
+        model = os.path.join(directory, model_name_for(algorithm))
+        meta_path = os.path.join(directory, model_meta_name_for(algorithm))
+        if not (os.path.isfile(model) and os.path.isfile(meta_path)):
+            return None
         try:
-            with open(self._staged_meta_path, "r", encoding="utf-8") as handle:
-                staged_meta = json.load(handle)
-            if not isinstance(staged_meta, dict):
-                return False
+            with open(meta_path, "r", encoding="utf-8") as handle:
+                meta = json.load(handle)
         except (OSError, ValueError):
-            return False
-        algorithm = self.agent_cfg.get("algorithm")
-        staged_spec = staged_meta.get("spec_version")
-        if staged_spec is not None and staged_spec != spec.SPEC_VERSION:
-            self.log.info("staged %s model is env-spec v%s != v%s; not promoting",
-                          algorithm, staged_spec, spec.SPEC_VERSION)
-            return False
-        if not policies_mod.has_model_for(self.agent_dir, algorithm):
-            return self._adopt_staged(staged_meta, "no local model yet (bootstrap)")
-        try:
-            from . import train as train_mod
+            return None
+        if not isinstance(meta, dict):
+            return None
+        return {"source": source, "model": model, "meta_path": meta_path,
+                "meta": meta, "fingerprint": metrics_mod.model_fingerprint(meta)}
 
-            remote_policy, why = policies_mod.load_learned(
-                algorithm, self._staged_model_path, logger=self.log)
-            if remote_policy is None:
-                self.log.info("staged %s model did not load (%s); not promoting",
-                              algorithm, why)
-                return False
-            local_policy, why = policies_mod.load_learned(
-                algorithm,
-                policies_mod.model_path_for(self.agent_dir, algorithm),
-                logger=self.log)
-            if local_policy is None:
-                # The incumbent is unusable, so a working remote is strictly
-                # better - adopt it rather than keep falling back to the baseline.
-                return self._adopt_staged(
-                    staged_meta, "incumbent model unusable (%s)" % why)
-            baseline = policies_mod.BaselinePolicy(dwell_seconds=self._dwell_seconds)
-            rows = metrics_mod.load_rows(os.path.join(self.agent_dir, EPISODES_DIR))
-            scores = train_mod.score_candidates(
-                rows, {"local": local_policy, "remote": remote_policy,
-                       "baseline": baseline})
-        except Exception:  # noqa: BLE001 - scoring must never crash the agent
-            self.log.exception("scoring the staged %s model failed; not promoting",
-                               algorithm)
-            return False
-        if scores is None:
-            self.log.info("too few logged windows to score the staged %s model; "
-                          "keeping the local model", algorithm)
-            return False
-        new_since = metrics_mod.new_rows_since(
-            rows, metrics_mod.meta_watermark(staged_meta)[0])
-        promote, reason = metrics_mod.promotion_decision(
-            scores, has_local=True, new_since_remote=new_since,
-            margin=self._promotion_margin,
-            max_stale_episodes=self._promotion_max_stale)
-        self.log.info("promotion check (%s): %s | scores=%s", algorithm, reason,
-                      {k: round(v, 4) for k, v in scores.items()})
-        if promote:
-            return self._adopt_staged(staged_meta, reason)
-        return False
+    def _evaluated_path(self):
+        return os.path.join(self.agent_dir, REMOTE_STAGING_DIR, EVALUATED_NAME)
 
-    def _adopt_staged(self, staged_meta, reason):
-        """Move the staged model + sidecar into the active per-algorithm slot,
-        restamping the sidecar ``source`` as ``remote`` (so the dashboard shows a
-        pulled model). Atomic (``os.replace``) and refused while a training run is
-        writing the model. Returns True on success."""
-        if self._training:
-            return False
-        algorithm = self.agent_cfg.get("algorithm")
-        active_model = os.path.join(self.agent_dir, model_name_for(algorithm))
-        active_meta = os.path.join(self.agent_dir, model_meta_name_for(algorithm))
-        staged_meta = dict(staged_meta, source="remote")
+    def _read_evaluated(self):
         try:
-            with open(self._staged_meta_path, "w", encoding="utf-8") as handle:
-                json.dump(staged_meta, handle)
-            # Model first, then sidecar, so a reader never sees a model without
-            # its matching meta.
-            os.replace(self._staged_model_path, active_model)
-            os.replace(self._staged_meta_path, active_meta)
+            with open(self._evaluated_path(), "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return []
+        return [f for f in data if isinstance(f, str)] if isinstance(data, list) else []
+
+    def _record_evaluated(self, fingerprint):
+        """Remember a judged remote model's fingerprint, so the remote-train
+        plugin doesn't stage the same model again. Best-effort."""
+        if not fingerprint:
+            return
+        seen = [f for f in self._read_evaluated() if f != fingerprint]
+        seen = (seen + [fingerprint])[-self.EVALUATED_KEEP:]
+        path = self._evaluated_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path + ".tmp", "w", encoding="utf-8") as handle:
+                json.dump(seen, handle)
+            os.replace(path + ".tmp", path)
         except OSError as exc:
-            self.log.warning("promoting the staged %s model failed: %s",
-                             algorithm, exc)
+            self.log.warning("could not record a judged remote model: %s", exc)
+
+    def _discard_candidate(self, cand):
+        """Remove a judged candidate's files; a remote one is also recorded as
+        judged."""
+        for path in (cand["model"], cand["meta_path"]):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        if cand["source"] == "remote":
+            self._record_evaluated(cand["fingerprint"])
+
+    def _adopt(self, cand, contest):
+        """Move a winning candidate into the active slot, its sidecar restamped
+        with its source and the contest it won. Model first, then sidecar, so a
+        reader never sees a model without its matching meta. Returns True on
+        success."""
+        algorithm = self.agent_cfg.get("algorithm")
+        meta = dict(cand["meta"], source=cand["source"], promoted_at=time.time(),
+                    contest=contest)
+        try:
+            with open(cand["meta_path"] + ".tmp", "w", encoding="utf-8") as handle:
+                json.dump(meta, handle)
+            os.replace(cand["meta_path"] + ".tmp", cand["meta_path"])
+            os.replace(cand["model"], os.path.join(self.agent_dir,
+                                                   model_name_for(algorithm)))
+            os.replace(cand["meta_path"], os.path.join(
+                self.agent_dir, model_meta_name_for(algorithm)))
+        except OSError as exc:
+            self.log.warning("adopting the %s candidate failed: %s",
+                             cand["source"], exc)
             return False
-        self.log.info("promoted a remote %s model into the active slot: %s",
-                      algorithm, reason)
-        self._bump_promotion_tally("remote")
         return True
+
+    def _run_contest(self, trigger):
+        """Judge every waiting candidate (a local training run's, a staged remote
+        model) against the active model and promote a winner. One at a time.
+        Returns "promoted", "kept", "deferred" or "none". Best-effort: any error
+        keeps the active model. Scoring needs torch, which this process already
+        has, so the daemon and its plugins stay torch-free."""
+        with self._contest_lock:
+            try:
+                return self._contest(trigger)
+            except Exception:  # noqa: BLE001 - a contest must never crash the agent
+                self.log.exception("the model contest failed; keeping the "
+                                   "active model")
+                return "kept"
+
+    def _contest(self, trigger):
+        algorithm = self.agent_cfg.get("algorithm")
+        judged = set(self._read_evaluated())
+        cands = []
+        for source, directory in (("local", self._local_candidate_dir),
+                                  ("remote", self._staging_dir)):
+            cand = self._read_candidate(source, directory)
+            if cand is None:
+                continue
+            meta = cand["meta"]
+            if meta.get("algorithm") not in (None, algorithm):
+                self.log.info("contest: the %s candidate is a %s model, not %s; "
+                              "discarding it", source, meta.get("algorithm"), algorithm)
+                self._discard_candidate(cand)
+            elif meta.get("spec_version") not in (None, spec.SPEC_VERSION):
+                self.log.info("contest: the %s candidate is env-spec v%s, not v%s; "
+                              "discarding it", source, meta.get("spec_version"),
+                              spec.SPEC_VERSION)
+                self._discard_candidate(cand)
+            elif source == "remote" and cand["fingerprint"] in judged:
+                self._discard_candidate(cand)          # this model was judged before
+            else:
+                cands.append(cand)
+        if not cands:
+            self._contest_deferred = False
+            return "none"
+
+        from . import train as train_mod
+
+        rows = metrics_mod.load_rows(os.path.join(self.agent_dir, EPISODES_DIR))
+        incumbent = None
+        inc_meta = {}
+        inc_source = "none"
+        if policies_mod.has_model_for(self.agent_dir, algorithm):
+            inc_path, inc_meta = policies_mod._resolve_model(self.agent_dir, algorithm)
+            inc_source = inc_meta.get("source") or "unknown"
+            incumbent, why = policies_mod.load_learned(algorithm, inc_path,
+                                                       logger=self.log)
+            if incumbent is None:
+                inc_source = "unusable"
+                for cand in cands:
+                    if policies_mod.load_learned(algorithm, cand["model"],
+                                                 logger=self.log)[0] is not None:
+                        return self._finish(trigger, cands, cand, inc_source,
+                                            "the active model is unusable (%s)" % why)
+        policies = {"baseline": policies_mod.BaselinePolicy(
+            dwell_seconds=self._dwell_seconds)}
+        if incumbent is not None:
+            policies["incumbent"] = incumbent
+        loaded = []
+        for cand in cands:
+            policy, why = policies_mod.load_learned(algorithm, cand["model"],
+                                                    logger=self.log)
+            if policy is None:
+                self.log.info("contest (%s): the %s candidate did not load (%s)",
+                              trigger, cand["source"], why)
+                self._bump_promotion_tally(cand["source"], won=False)
+                self._discard_candidate(cand)
+                continue
+            policies[cand["source"]] = policy
+            loaded.append(cand)
+        if not loaded:
+            self._contest_deferred = False
+            return "kept"
+
+        # A model trained before rows were held out saw them all: score only on
+        # held-out rows newer than its data, so nobody is graded on rows it
+        # learned from.
+        min_ts = None
+        for meta in [inc_meta] + [c["meta"] for c in loaded]:
+            if meta and not meta.get("holdout"):
+                latest, _ = metrics_mod.meta_watermark(meta)
+                min_ts = latest if min_ts is None else max(min_ts, latest)
+        res = train_mod.evaluate(rows, policies, min_ts=min_ts)
+        if res is None:
+            if incumbent is None:
+                return self._finish(trigger, loaded, loaded[0], inc_source,
+                                    "no active model and too few held-out rows "
+                                    "to score yet; adopting (bootstrap)")
+            self._contest_deferred = True
+            self._episodes_since_contest = 0
+            self.log.info("contest (%s) deferred: fewer than 64 held-out rows%s "
+                          "to score on yet; the candidate(s) wait", trigger,
+                          " newer than the older model's data" if min_ts else "")
+            self._last_decision = {"at": time.time(), "trigger": trigger,
+                                   "result": "deferred", "incumbent": inc_source,
+                                   "candidates": [c["source"] for c in loaded]}
+            return "deferred"
+
+        base = res["mean"]["baseline"]
+        inc_lift = (res["mean"]["incumbent"] - base) if incumbent is not None else 0.0
+        results = []
+        for cand in loaded:
+            source = cand["source"]
+            lift = res["mean"][source] - base
+            diffs = ([a - b for a, b in zip(res["per_row"][source],
+                                            res["per_row"]["incumbent"])]
+                     if incumbent is not None else [])
+            new_since = metrics_mod.new_rows_since(
+                rows, metrics_mod.meta_watermark(cand["meta"])[0])
+            promote, reason = metrics_mod.contest_decision(
+                diffs, lift, inc_lift, margin=self._promotion_margin,
+                min_z=self._promotion_min_z, has_incumbent=incumbent is not None,
+                new_since=new_since, max_stale_episodes=self._promotion_max_stale)
+            mean_diff = (sum(diffs) / len(diffs)) if diffs else None
+            results.append({"cand": cand, "promote": promote, "reason": reason,
+                            "lift": lift, "mean_diff": mean_diff})
+            self.log.info("contest (%s): %s candidate vs active (%s): %s - %s; "
+                          "%d held-out rows, %s reward model", trigger, source,
+                          inc_source, "promote" if promote else "keep", reason,
+                          res["rows"], res["reward_model"])
+        winners = [r for r in results if r["promote"]]
+        best = max(winners, key=lambda r: (r["mean_diff"] if r["mean_diff"] is not None
+                                           else r["lift"])) if winners else None
+        return self._finish(trigger, loaded, best["cand"] if best else None,
+                            inc_source, best["reason"] if best else None,
+                            results=results, res=res, inc_lift=inc_lift)
+
+    def _finish(self, trigger, cands, winner, inc_source, reason, results=None,
+                res=None, inc_lift=None):
+        """Adopt ``winner`` (or none), discard every other candidate, tally each
+        result and record the decision for the dashboard."""
+        by_source = {r["cand"]["source"]: r for r in (results or [])}
+        contest = None
+        if winner is not None:
+            r = by_source.get(winner["source"], {})
+            contest = {"trigger": trigger, "rows": (res or {}).get("rows"),
+                       "lift": r.get("lift"), "incumbent_lift": inc_lift,
+                       "mean_diff": r.get("mean_diff"), "reason": reason}
+            if not self._adopt(winner, contest):
+                winner = None
+        for cand in cands:
+            won = winner is not None and cand is winner
+            self._bump_promotion_tally(cand["source"], won=won)
+            if not won:
+                self._discard_candidate(cand)
+        if winner is not None:
+            self.log.info("contest (%s): promoted the %s candidate into the active "
+                          "slot: %s", trigger, winner["source"], reason)
+        self._contest_deferred = False
+        self._last_decision = {
+            "at": time.time(), "trigger": trigger,
+            "result": "promoted" if winner is not None else "kept",
+            "winner": winner["source"] if winner is not None else None,
+            "incumbent": inc_source,
+            "rows": (res or {}).get("rows"),
+            "reward_model": (res or {}).get("reward_model"),
+            "candidates": [
+                {"source": c["source"],
+                 "won": winner is not None and c is winner,
+                 "reason": (by_source.get(c["source"]) or {}).get("reason")
+                 or (reason if c is winner else None),
+                 "lift": _round((by_source.get(c["source"]) or {}).get("lift")),
+                 "mean_diff": _round((by_source.get(c["source"]) or {}).get("mean_diff"))}
+                for c in cands],
+        }
+        return "promoted" if winner is not None else "kept"
 
     # -- the decide loop -------------------------------------------------
     def run(self):
@@ -826,17 +1041,21 @@ class AgentController:
                 self._write_status(True, self._current_policy, detail)
                 continue
 
-            # Quality-aware promotion: when the remote-train plugin stages a
-            # pulled model, score it against the active one on a held-out slice
-            # and adopt the winner. Only on an mtime change (a freshly staged
-            # model) and never mid-training. A successful promote rewrites the
-            # active model, so the mtime watch below reloads the policy this tick.
+            # Promotion: when the remote-train plugin stages a pulled model, run
+            # a contest (the same one a local training run triggers). Only on an
+            # mtime change (a freshly staged model) and never mid-training, and a
+            # deferred contest is retried once enough new rows are logged. A
+            # promotion rewrites the active model, so the mtime watch below
+            # reloads the policy this tick.
             if not self._training:
                 staged_mtime = self._staged_model_mtime()
                 if staged_mtime is not None and staged_mtime != self._staged_mtime:
                     self._staged_mtime = staged_mtime
-                    if self._maybe_promote_staged():
-                        self._staged_mtime = None   # staged files moved to active
+                    self._run_contest("remote")
+                elif (self._contest_deferred and self._episodes_since_contest
+                      >= self.CONTEST_RETRY_EPISODES):
+                    self._episodes_since_contest = 0
+                    self._run_contest("retry")
 
             # Adopt a model trained or dropped in after start, with no agent
             # restart: when model.zip's mtime changes (and we're not writing it
@@ -925,6 +1144,7 @@ class AgentController:
         uses), so it needs nothing on PATH and shares the venv's torch/SB3."""
         cmd = [sys.executable, "-m", "kestrel_pi.agent.train",
                "--agent-dir", self.agent_dir,
+               "--out-dir", self._local_candidate_dir,
                "--timesteps", str(self._train_timesteps),
                "--config", self.config_path]
         algorithm = self.agent_cfg.get("algorithm")
@@ -1015,11 +1235,11 @@ class AgentController:
             code = self._spawn_training()
             if code == 0:
                 self._record_trained(time.time(), time.time() - started)
-                # A completed run overwrites the active model with a freshly
-                # trained local one, so it counts as a local adoption.
-                self._bump_promotion_tally("local")
                 self.log.info("%s training finished (%.0fs)",
                               reason, self._last_train_secs or 0.0)
+                # The run wrote a candidate, not the active model: it is adopted
+                # only if it wins the contest every candidate faces.
+                self._run_contest("local")
             else:
                 # The child reports the reason (e.g. no episode logs) on its own
                 # log; a non-zero exit means no new model was written.

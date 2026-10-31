@@ -1697,7 +1697,7 @@ def _make_remote_train(tmp_path, online=True, **opts):
                "remote_train_min_new_episodes": 5, "stale_lock_hours": 6,
                "timesteps": 123456, "interval_seconds": 3600, "timeout": 1800,
                "agent_dir": str(agent_dir)}
-    options.update(opts)
+    options.update({k: v for k, v in opts.items() if not k.startswith("_")})
     plugin = mod.RemoteTrain()
     plugin.options = options
     plugin.context = PluginContext(
@@ -1719,6 +1719,11 @@ def _make_remote_train(tmp_path, online=True, **opts):
     plugin._stack_err = ""
     plugin._stack_state = "checking"
     plugin._running_prev = set()
+    plugin._logged = set()
+    # The agent runs DQN (read live from config.toml for the algorithm order).
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[agent]\nalgorithm = "%s"\n' % opts.pop("_agent_algorithm", "DQN"))
+    plugin._config_path = str(cfg)
     return plugin, mod, str(agent_dir)
 
 
@@ -1740,9 +1745,20 @@ def test_remote_train_algorithms_filters_and_dedups(tmp_path):
     plugin, _mod, _ad = _make_remote_train(
         tmp_path, algorithms=["DQN", "bogus", "DQN", "PPO"])
     assert plugin._algorithms() == ["DQN", "PPO"]
-    # Empty trains nothing.
+    # Empty still trains the algorithm the agent runs.
     plugin, _mod, _ad = _make_remote_train(tmp_path, algorithms="")
-    assert plugin._algorithms() == []
+    assert plugin._algorithms() == ["DQN"]
+
+
+def test_remote_train_trains_the_agents_algorithm_first(tmp_path):
+    # The algorithm the agent runs comes first, and is added when the option
+    # leaves it out, so the host always trains the model the device can use.
+    plugin, _mod, _ad = _make_remote_train(tmp_path, algorithms="DQN, QR-DQN",
+                                           _agent_algorithm="PPO")
+    assert plugin._algorithms() == ["PPO", "DQN", "QR-DQN"]
+    plugin, _mod, _ad = _make_remote_train(tmp_path, algorithms="DQN, PPO",
+                                           _agent_algorithm="PPO")
+    assert plugin._algorithms() == ["PPO", "DQN"]
 
 
 def test_remote_train_algorithms_default_is_all_four(tmp_path):
@@ -1752,99 +1768,115 @@ def test_remote_train_algorithms_default_is_all_four(tmp_path):
     _plugin, mod, _ad = _make_remote_train(tmp_path)
     default = mod.RemoteTrain.__options__["algorithms"]["default"]
     assert default == "RecurrentPPO,PPO,DQN,QR-DQN"
-    plugin, _mod, _ad2 = _make_remote_train(tmp_path, algorithms=default)
+    plugin, _mod, _ad2 = _make_remote_train(tmp_path, algorithms=default,
+                                            _agent_algorithm="RecurrentPPO")
     assert plugin._algorithms() == ["RecurrentPPO", "PPO", "DQN", "QR-DQN"]
 
 
-def test_remote_train_new_episodes_counts_since_the_model_watermark(tmp_path):
+def test_remote_train_new_episodes_counts_since_the_hosts_last_model(tmp_path):
+    # The trigger counts rows since the host's last model, not the device's own:
+    # on-device training no longer resets the remote's clock.
     from kestrel_pi.agent import policies
     plugin, _mod, agent_dir = _make_remote_train(tmp_path)
-    policies.write_meta(agent_dir, "DQN",
-                        watermark={"latest_ts": 100.0, "episodes": 3})
-    _write_episodes(agent_dir, [50, 100, 150, 200])   # 2 newer than 100
+    _write_episodes(agent_dir, [50, 100, 150, 200])
+    assert plugin._new_episodes("DQN") == 4           # no remote model yet: all
+    policies.write_meta(agent_dir, "DQN",              # the device's own model
+                        watermark={"latest_ts": 175.0, "episodes": 3})
+    plugin._record_host_model("dqn", {"algorithm": "DQN",
+                                      "data_watermark": {"latest_ts": 100.0}})
     assert plugin._new_episodes("DQN") == 2
 
 
 def test_remote_train_should_stage_rules(tmp_path):
-    from kestrel_pi.agent import spec
-    plugin, _mod, _ad = _make_remote_train(tmp_path)
-    local = {"data_watermark": {"latest_ts": 100.0, "episodes": 10}}
-    fresh = {"spec_version": spec.SPEC_VERSION,
-             "data_watermark": {"latest_ts": 200.0, "episodes": 50}}
-    stale = {"spec_version": spec.SPEC_VERSION,
-             "data_watermark": {"latest_ts": 90.0, "episodes": 60}}
-    mism = {"spec_version": spec.SPEC_VERSION + 1,
-            "data_watermark": {"latest_ts": 999.0, "episodes": 99}}
-    assert plugin._should_stage(fresh, local) is True
-    assert plugin._should_stage(stale, local) is False
-    assert plugin._should_stage(mism, local) is False       # spec mismatch
-
-
-def test_remote_train_pull_and_stage_leaves_a_fresher_model_for_the_agent(tmp_path):
     import json as _json
-    from kestrel_pi.agent import (REMOTE_STAGING_DIR, model_meta_name_for,
-                                     model_name_for, policies, spec)
+    from kestrel_pi.agent import EVALUATED_NAME, REMOTE_STAGING_DIR, metrics, spec
     plugin, _mod, agent_dir = _make_remote_train(tmp_path)
-    policies.write_meta(agent_dir, "DQN",
-                        watermark={"latest_ts": 100.0, "episodes": 10})
+    older = {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
+             "data_watermark": {"latest_ts": 90.0, "episodes": 60}}
+    mism = dict(older, spec_version=spec.SPEC_VERSION + 1)
+    assert plugin._should_stage(older) is True               # data age doesn't matter
+    assert plugin._should_stage(mism) is False               # spec mismatch
+    # A model the agent already judged isn't staged again.
+    judged = os.path.join(agent_dir, REMOTE_STAGING_DIR, EVALUATED_NAME)
+    os.makedirs(os.path.dirname(judged), exist_ok=True)
+    with open(judged, "w", encoding="utf-8") as handle:
+        _json.dump([metrics.model_fingerprint(older)], handle)
+    assert plugin._should_stage(older) is False
+
+
+def _fake_host(meta, model=b"REMOTE-MODEL", pulls=None):
+    import json as _json
 
     def fake_down(remote_path, local_path):
-        base = os.path.basename(local_path)
-        if base.endswith(".meta.json"):
+        if pulls is not None:
+            pulls.append(os.path.basename(remote_path))
+        if os.path.basename(local_path).endswith(".meta.json"):
             with open(local_path, "w", encoding="utf-8") as handle:
-                _json.dump({"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
-                            "data_watermark": {"latest_ts": 300.0,
-                                               "episodes": 99},
-                            "train_seconds": 405.0}, handle)
+                _json.dump(meta, handle)
         else:
             with open(local_path, "wb") as handle:
-                handle.write(b"REMOTE-MODEL")
+                handle.write(model)
         return (True, "")
+    return fake_down
 
-    plugin._rsync_down = fake_down
+
+def test_remote_train_pull_and_stage_leaves_a_model_for_the_agent(tmp_path):
+    import json as _json
+    from kestrel_pi.agent import (HOST_MODELS_NAME, REMOTE_STAGING_DIR,
+                                     model_meta_name_for, model_name_for, policies,
+                                     spec)
+    plugin, _mod, agent_dir = _make_remote_train(tmp_path)
+    # The device's own model has NEWER data: the remote is still staged now.
+    policies.write_meta(agent_dir, "DQN",
+                        watermark={"latest_ts": 500.0, "episodes": 80})
+    meta = {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
+            "data_watermark": {"latest_ts": 300.0, "episodes": 99},
+            "train_seconds": 405.0}
+    plugin._rsync_down = _fake_host(meta)
     assert plugin._pull_and_stage("DQN", "dqn") is True
     # The model + sidecar land in the staging dir, NOT the active slot - the
-    # agent promotes after scoring.
+    # agent's contest decides.
     staging = os.path.join(agent_dir, REMOTE_STAGING_DIR, "dqn")
     with open(os.path.join(staging, model_name_for("DQN")), "rb") as handle:
         assert handle.read() == b"REMOTE-MODEL"
     assert not os.path.exists(os.path.join(agent_dir, model_name_for("DQN")))
+    assert sorted(n for n in os.listdir(staging) if n.startswith(".")) == []
     # The plugin does NOT restamp source; the agent does that on promotion.
     with open(os.path.join(staging, model_meta_name_for("DQN"))) as handle:
         assert "source" not in _json.load(handle)
-    # The host's training time is captured for the card's "Last model pulled".
+    # The host's training time is captured for the card's "Last model pulled",
+    # and the host's model is recorded for the launch trigger.
     assert plugin._last_pull_secs == 405.0
+    with open(os.path.join(agent_dir, REMOTE_STAGING_DIR, HOST_MODELS_NAME)) as handle:
+        assert _json.load(handle)["dqn"]["latest_ts"] == 300.0
 
 
-def test_remote_train_pull_and_stage_clears_a_stale_model(tmp_path):
+def test_remote_train_does_not_pull_an_unchanged_or_judged_model_again(tmp_path):
     import json as _json
-    from kestrel_pi.agent import (REMOTE_STAGING_DIR, model_name_for,
-                                     policies, spec)
+    from kestrel_pi.agent import (EVALUATED_NAME, REMOTE_STAGING_DIR, metrics,
+                                     model_name_for, spec)
     plugin, _mod, agent_dir = _make_remote_train(tmp_path)
-    policies.write_meta(agent_dir, "DQN",
-                        watermark={"latest_ts": 500.0, "episodes": 80})
-    (tmp_path / "agent" / model_name_for("DQN")).write_bytes(b"LOCAL")
-
-    def fake_down(remote_path, local_path):
-        base = os.path.basename(local_path)
-        if base.endswith(".meta.json"):
-            with open(local_path, "w", encoding="utf-8") as handle:
-                _json.dump({"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
-                            "data_watermark": {"latest_ts": 200.0,
-                                               "episodes": 40}}, handle)
-        else:
-            with open(local_path, "wb") as handle:
-                handle.write(b"REMOTE-STALE")
-        return (True, "")
-
-    plugin._rsync_down = fake_down
+    meta = {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
+            "data_watermark": {"latest_ts": 300.0, "episodes": 99},
+            "train_seconds": 405.0}
+    pulls = []
+    plugin._rsync_down = _fake_host(meta, pulls=pulls)
+    assert plugin._pull_and_stage("DQN", "dqn") is True
+    staged = os.path.join(agent_dir, REMOTE_STAGING_DIR, "dqn", model_name_for("DQN"))
+    mtime = os.stat(staged).st_mtime_ns
+    # Already staged: only the sidecar is fetched, and the model is untouched.
+    pulls.clear()
     assert plugin._pull_and_stage("DQN", "dqn") is False
-    # The local model is untouched and the rejected candidate is cleared out of
-    # staging, so the agent never scores it.
-    with open(os.path.join(agent_dir, model_name_for("DQN")), "rb") as handle:
-        assert handle.read() == b"LOCAL"
-    staging = os.path.join(agent_dir, REMOTE_STAGING_DIR, "dqn")
-    assert not os.path.exists(os.path.join(staging, model_name_for("DQN")))
+    assert pulls == ["model-dqn.meta.json"]
+    assert os.stat(staged).st_mtime_ns == mtime
+    # Judged by the agent (and cleared): not staged again.
+    for name in os.listdir(os.path.dirname(staged)):
+        os.remove(os.path.join(os.path.dirname(staged), name))
+    with open(os.path.join(agent_dir, REMOTE_STAGING_DIR, EVALUATED_NAME), "w") as fh:
+        _json.dump([metrics.model_fingerprint(meta)], fh)
+    pulls.clear()
+    assert plugin._pull_and_stage("DQN", "dqn") is False
+    assert pulls == ["model-dqn.meta.json"] and not os.path.exists(staged)
 
 
 def test_remote_train_reconcile_launches_only_with_enough_new_data(tmp_path):
@@ -1962,6 +1994,27 @@ def test_remote_train_launch_script_runs_the_trainer_detached(tmp_path):
     assert "--algorithm DQN" in script
     assert "--timesteps 123456" in script
     assert "jobs/dqn.lock" in script                           # per-algo lock
+    # The run imports the package just synced to pkg/, ahead of the venv's
+    # copy, and the worker doesn't cd (the launcher already did).
+    assert "PYTHONPATH=pkg venv/bin/python -m kestrel_pi.agent.train" in script
+    worker = script.split("<<'RUN'")[1].split("RUN\n")[0]
+    assert "\ncd " not in worker
+
+
+def test_remote_train_launch_syncs_the_package_before_the_run(tmp_path):
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    calls = []
+    plugin._local_package_dir = lambda: "/opt/pkg/kestrel_pi"
+    plugin._rsync_up = lambda local, remote: (calls.append(("up", remote)) or (True, ""))
+    plugin._remote = lambda script, timeout=None: (calls.append(("run", "")) or (True, ""))
+    assert plugin._launch_training("DQN", "dqn") is True
+    assert calls[0] == ("up", "/w/pkg/kestrel_pi")
+    assert calls[1][1].endswith("/agent/episodes") and calls[2][0] == "run"
+    # A failed package sync launches nothing.
+    calls.clear()
+    plugin._rsync_up = lambda local, remote: (calls.append(("up", remote)) or (False, "x"))
+    assert plugin._launch_training("DQN", "dqn") is False
+    assert [c[0] for c in calls] == ["up"]
 
 
 def test_remote_train_prep_script_records_a_failure_reason(tmp_path):
@@ -2020,8 +2073,10 @@ def test_remote_train_health_note_states(tmp_path):
     plugin, _mod, _ad = _make_remote_train(tmp_path)
     plugin._set_health()
     assert plugin.context.health_note == ""
-    # Configured but no algorithms selected.
-    plugin, _mod, _ad = _make_remote_train(tmp_path, algorithms=[])
+    # Nothing to train: no algorithms selected and the agent's own algorithm
+    # isn't a valid one (otherwise that one is always trained).
+    plugin, _mod, _ad = _make_remote_train(tmp_path, algorithms=[],
+                                           _agent_algorithm="bogus")
     plugin._set_health()
     assert "no algorithms" in plugin.context.health_note
     # A recorded host-prep failure surfaces on the /plugins note and survives

@@ -97,8 +97,9 @@ shows "unknown", never a misleading zero.
 | `train_timesteps` | whole number ≥ 1 | `3000` | Training steps per fine-tune (short by design). |
 | `train_max_temp_c` | whole number (hard max 85) | `75` | Skip training at or above this CPU temperature. |
 | `train_min_free_mb` | whole number (hard floor 256) | `512` | Skip training below this much free memory. |
-| `promotion_margin` | number ≥ 0 | `0.10` | How much better (as lift over the scripted baseline) a pulled remote model must score on a held-out slice before it replaces the on-device model. `0.10` = 10%. |
-| `promotion_max_stale_episodes` | whole number ≥ 0 | `900` | Don't adopt a remote model trained on data this many episodes behind what the device has since logged, even if it scores well. `0` disables the guard. |
+| `promotion_margin` | number ≥ 0 | `0.10` | How much better (as lift over the scripted baseline) a new model, trained on the device or on a remote host, must score on held-out rows before it replaces the active model. `0.10` = 10%. |
+| `promotion_min_z` | number 0–5 | `1.0` | How significant that improvement must be: the mean per-row difference divided by its standard error. Not on the Advanced page; edit `config.toml`. |
+| `promotion_max_stale_episodes` | whole number ≥ 0 | `900` | Don't adopt a new model trained on data this many episodes behind what the device has since logged, even if it scores well. `0` disables the guard. |
 | `interleave_compare` | `true` / `false` | `false` | Benchmark mode: alternate the sweep and the agent for a fair comparison. |
 | `compare_block_minutes` | whole number ≥ 1 | `10` | Length of each comparison block. |
 | `metrics_window_minutes` | whole number ≥ 1 | `60` | Rolling window for the live agent-vs-sweep numbers. |
