@@ -96,17 +96,6 @@ How to use this file:
 - **Pick up when:** the next release that is already reflash-class for a larger
   reason, so this rides along at no extra reflash cost.
 
-### Confirm the collector can still read the Kismet database
-
-- **What:** the capture collector runs as `pi` and reads AngryOxide's Kismet
-  database read-only from `/var/lib/kestrel/capture-run`. If that database uses
-  SQLite WAL mode, the read-only open can fail and the dashboard's Environment
-  card stays at "scanning" while capture keeps working.
-- **Why deferred:** needs a device to check.
-- **What to do:** check on a device; if the read fails, read a copy of the
-  database instead.
-- **Pick up when:** before the next release.
-
 ## Recovered networks (`kestrel_pi.recovered`)
 
 ### Support the default `hashcat.potfile` format

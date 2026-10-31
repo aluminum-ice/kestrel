@@ -1,15 +1,16 @@
 """The capture collector's environment (in-range) readout.
 
 ``capture-collect.py`` is an installed script (hyphenated, run as ``__main__``
-on the device), so it is loaded here by path. These cover the kismet-DB query
-(distinct transmitting radios in the most recent window of packet data) and the
-small status file it writes into the store - the device-independent parts; the
-live DB schema is verified on hardware (see the design note)."""
+on the device), so it is loaded here by path. These cover reading the tail of
+AngryOxide's pcapng (distinct transmitters in the most recent window of frames,
+parsed incrementally) and the small status file it writes into the store - the
+device-independent parts. The capture files here are built from invented
+frames with placeholder addresses."""
 
 import importlib.util
 import json
 import os
-import sqlite3
+import struct
 import time
 
 import pytest
@@ -36,41 +37,59 @@ def mod(tmp_path):
     return m
 
 
-def _make_kismet(run_dir, rows, name="kestrel.kismet"):
-    """Write a minimal kismetdb-shaped ``packets`` table (the table AngryOxide
-    actually fills; it leaves ``devices`` empty). ``rows`` is
-    ``(ts_sec, sourcemac)`` tuples."""
+# -- invented pcapng files ---------------------------------------------------------
+
+def _mac(n):
+    return "00:00:5e:00:53:%02x" % n
+
+
+def _block(btype, body, endian="<"):
+    body += b"\0" * (-len(body) % 4)
+    length = len(body) + 12
+    return struct.pack(endian + "II", btype, length) + body + struct.pack(endian + "I", length)
+
+
+def _header(endian="<", tsresol=None):
+    shb = _block(0x0A0D0D0A, struct.pack(endian + "IHHq", 0x1A2B3C4D, 1, 0, -1), endian)
+    opts = b""
+    if tsresol is not None:
+        opts = struct.pack(endian + "HH", 9, 1) + bytes([tsresol]) + b"\0\0\0" \
+            + struct.pack(endian + "HH", 0, 0)
+    idb = _block(0x00000001, struct.pack(endian + "HHI", 127, 0, 0) + opts, endian)
+    return shb + idb
+
+
+def _frame(ts, transmitter, kind="data", endian="<", unit=1e-6):
+    """One Enhanced Packet Block: a radiotap header and an 802.11 frame whose
+    addr2 is ``transmitter`` (an int for _mac, or raw bytes)."""
+    fc = {"data": 0x08, "beacon": 0x80, "ack": 0xD4, "rts": 0xB4}[kind]
+    addr2 = bytes(int(x, 16) for x in _mac(transmitter).split(":")) \
+        if isinstance(transmitter, int) else transmitter
+    radiotap = struct.pack("<BBHI", 0, 0, 8, 0)
+    if kind == "ack":
+        dot11 = struct.pack("<BBH", fc, 0, 0) + b"\xff" * 6
+    else:
+        dot11 = struct.pack("<BBH", fc, 0, 0) + b"\xff" * 6 + addr2 + b"\x00" * 8
+    packet = radiotap + dot11
+    stamp = int(round(ts / unit))
+    epb = struct.pack(endian + "IIIII", 0, stamp >> 32, stamp & 0xFFFFFFFF, len(packet), len(packet))
+    return _block(0x00000006, epb + packet, endian)
+
+
+def _make_pcapng(run_dir, frames, name="kestrel.pcapng", endian="<"):
+    """Write a capture file of ``frames``, ``(ts, transmitter[, kind])``."""
     path = os.path.join(run_dir, name)
-    conn = sqlite3.connect(path)
-    conn.execute("CREATE TABLE packets (ts_sec INTEGER, sourcemac TEXT)")
-    conn.executemany("INSERT INTO packets VALUES (?, ?)", rows)
-    conn.commit()
-    conn.close()
+    with open(path, "wb") as fh:
+        fh.write(_header(endian))
+        for f in frames:
+            fh.write(_frame(*f, endian=endian) if len(f) == 3 else _frame(f[0], f[1], endian=endian))
     return path
 
 
-def test_environment_snapshot_counts_recent_distinct_radios(mod):
-    # The window is anchored to the DB's OWN newest packet, not wall-clock: the
-    # newest row here is at 1000, so a 60 s window is [940, 1000].
-    _make_kismet(mod.RUN_DIR, [
-        (1000, "aa:00"),   # newest
-        (970, "aa:01"),    # in window
-        (960, "aa:00"),    # in window, duplicate radio
-        (900, "aa:02"),    # too old
-        (995, "00:00:00:00:00:00"),  # null transmitter, excluded
-    ])
-    radios, data_ts = mod.environment_snapshot(60)
-    assert radios == 2 and data_ts == 1000
-
-
-def test_environment_snapshot_none_without_a_db(mod):
-    assert mod.environment_snapshot(60) is None
-
-
-def test_environment_snapshot_none_when_no_packets(mod):
-    # DB exists but AngryOxide hasn't flushed any packets yet.
-    _make_kismet(mod.RUN_DIR, [])
-    assert mod.environment_snapshot(60) is None
+def _append(path, frames):
+    with open(path, "ab") as fh:
+        for f in frames:
+            fh.write(_frame(*f))
 
 
 def _aged(path, seconds_ago):
@@ -78,111 +97,170 @@ def _aged(path, seconds_ago):
     os.utime(path, (stamp, stamp))
 
 
-def test_environment_snapshot_reads_the_previous_run_while_the_new_db_is_empty(mod):
-    # A relaunch for a new agent plan starts an empty DB but keeps the previous
-    # run's: the reading comes from the previous run instead of going stale.
-    old = _make_kismet(mod.RUN_DIR, [(1000, "aa:00"), (990, "aa:01")], name="kestrel-1-000001.kismet")
-    _aged(old, 120)
-    _make_kismet(mod.RUN_DIR, [], name="kestrel-2-000002.kismet")
+# -- the transmitter address ---------------------------------------------------------
+
+def test_transmitter_reads_addr2_and_skips_frames_without_one(mod):
+    data = _frame(1, 1)[8 + 20 + 8:-4]          # the 802.11 frame inside the block
+    assert mod.transmitter(data[:24]) == _mac(1)
+    beacon = _frame(1, 2, "beacon")[8 + 20 + 8:-4]
+    assert mod.transmitter(beacon[:24]) == _mac(2)
+    rts = _frame(1, 3, "rts")[8 + 20 + 8:-4]
+    assert mod.transmitter(rts[:24]) == _mac(3)
+    ack = _frame(1, 4, "ack")[8 + 20 + 8:-4]
+    assert mod.transmitter(ack) is None                          # ACK names no transmitter
+    assert mod.transmitter(b"\x08\x00") is None                  # truncated
+    group = struct.pack("<BBH", 0x08, 0, 0) + b"\xff" * 6 + b"\x01\x00\x5e\x00\x00\x01" + b"\0" * 8
+    assert mod.transmitter(group) is None                        # group address
+    null = struct.pack("<BBH", 0x08, 0, 0) + b"\xff" * 6 + b"\0" * 6 + b"\0" * 8
+    assert mod.transmitter(null) is None                         # all-zero address
+
+
+# -- environment_snapshot -------------------------------------------------------------
+
+def test_environment_snapshot_counts_recent_distinct_radios(mod):
+    # The window is anchored to the newest FRAME, not wall-clock: the newest is
+    # at 1000, so a 60 s window is [940, 1000].
+    _make_pcapng(mod.RUN_DIR, [
+        (900, 2),          # too old
+        (960, 0),          # in window
+        (970, 1),          # in window
+        (995, 5, "ack"),   # no transmitter, not counted
+        (1000, 0),         # newest, same radio as at 960
+    ])
     assert mod.environment_snapshot(60) == (2, 1000)
 
 
-def test_environment_snapshot_counts_across_dbs_from_the_newest_packet(mod):
-    old = _make_kismet(mod.RUN_DIR, [(990, "aa:01"), (995, "aa:02"), (900, "aa:09")],
-                       name="kestrel-1-000001.kismet")
-    _aged(old, 120)
-    _make_kismet(mod.RUN_DIR, [(1000, "aa:01"), (998, "aa:03")], name="kestrel-2-000002.kismet")
-    # Window [940, 1000] over both DBs: aa:01 (in both, counted once), aa:02,
-    # aa:03; aa:09 is too old.
-    assert mod.environment_snapshot(60) == (3, 1000)
-
-
-def test_environment_snapshot_reads_the_others_when_one_db_is_locked(mod, monkeypatch):
-    locked = _make_kismet(mod.RUN_DIR, [(1000, "aa:00")], name="kestrel-2-000002.kismet")
-    old = _make_kismet(mod.RUN_DIR, [(990, "aa:01")], name="kestrel-1-000001.kismet")
-    _aged(old, 120)
-    real = mod._read_kismet_db
-    monkeypatch.setattr(mod, "_read_kismet_db",
-                        lambda path, *a: mod._BUSY if path == locked else real(path, *a))
-    assert mod.environment_snapshot(60) == (1, 990)
-
-
-def test_environment_snapshot_reads_at_most_env_max_dbs(mod, monkeypatch):
-    old = _make_kismet(mod.RUN_DIR, [(1000, "aa:00")], name="kestrel-1-000001.kismet")
-    _aged(old, 120)
-    _make_kismet(mod.RUN_DIR, [], name="kestrel-2-000002.kismet")
-    monkeypatch.setattr(mod, "ENV_MAX_DBS", 1)
+def test_environment_snapshot_none_without_a_capture_file(mod):
     assert mod.environment_snapshot(60) is None
 
 
+def test_environment_snapshot_none_before_the_first_frame(mod):
+    _make_pcapng(mod.RUN_DIR, [])
+    assert mod.environment_snapshot(60) is None
+
+
+def test_environment_snapshot_reads_only_new_frames_each_poll(mod):
+    path = _make_pcapng(mod.RUN_DIR, [(1000, 0), (1001, 1)])
+    assert mod.environment_snapshot(60) == (2, 1001)
+    offset = mod._TAILS[path].offset
+    assert offset == os.path.getsize(path)
+    _append(path, [(1030, 2), (1070, 3)])
+    # Window [1010, 1070]: radios 2 and 3; 0 and 1 have aged out.
+    assert mod.environment_snapshot(60) == (2, 1070)
+    assert mod._TAILS[path].offset == os.path.getsize(path) > offset
+
+
+def test_environment_snapshot_leaves_a_partial_block_for_the_next_poll(mod):
+    path = _make_pcapng(mod.RUN_DIR, [(1000, 0)])
+    whole = _frame(1005, 1)
+    with open(path, "ab") as fh:
+        fh.write(whole[:20])                      # AngryOxide is mid-write
+    assert mod.environment_snapshot(60) == (1, 1000)
+    with open(path, "ab") as fh:
+        fh.write(whole[20:])
+    assert mod.environment_snapshot(60) == (2, 1005)
+
+
+def test_environment_snapshot_catches_up_on_a_big_file_over_several_polls(mod, monkeypatch):
+    monkeypatch.setattr(mod, "ENV_MAX_READ", 400)
+    _make_pcapng(mod.RUN_DIR, [(1000 + i, i) for i in range(20)])
+    seen = [mod.environment_snapshot(600) for _ in range(12)]
+    assert seen[0][1] < 1019                      # the first poll read only part
+    assert seen[-1] == (20, 1019)
+
+
+def test_environment_snapshot_reads_the_previous_run_while_the_new_file_is_empty(mod):
+    # A relaunch for a new agent plan starts a new, empty pcapng but keeps the
+    # previous run's: the reading comes from the previous run.
+    old = _make_pcapng(mod.RUN_DIR, [(1000, 0), (990, 1)], name="kestrel-1-000001.pcapng")
+    _aged(old, 120)
+    _make_pcapng(mod.RUN_DIR, [], name="kestrel-2-000002.pcapng")
+    assert mod.environment_snapshot(60) == (2, 1000)
+
+
+def test_environment_snapshot_counts_across_files_from_the_newest_frame(mod):
+    old = _make_pcapng(mod.RUN_DIR, [(990, 1), (995, 2), (900, 9)], name="kestrel-1-000001.pcapng")
+    _aged(old, 120)
+    _make_pcapng(mod.RUN_DIR, [(1000, 1), (998, 3)], name="kestrel-2-000002.pcapng")
+    # Window [940, 1000] over both: 1 (in both, counted once), 2, 3; 9 too old.
+    assert mod.environment_snapshot(60) == (3, 1000)
+
+
+def test_environment_snapshot_reads_at_most_env_max_files(mod, monkeypatch):
+    old = _make_pcapng(mod.RUN_DIR, [(1000, 0)], name="kestrel-1-000001.pcapng")
+    _aged(old, 120)
+    _make_pcapng(mod.RUN_DIR, [], name="kestrel-2-000002.pcapng")
+    monkeypatch.setattr(mod, "ENV_MAX_FILES", 1)
+    assert mod.environment_snapshot(60) is None
+
+
+def test_environment_snapshot_starts_over_when_a_file_is_replaced(mod):
+    path = _make_pcapng(mod.RUN_DIR, [(1000, 0), (1001, 1), (1002, 2)])
+    assert mod.environment_snapshot(60) == (3, 1002)
+    os.remove(path)                               # the launcher cleared the run dir
+    _make_pcapng(mod.RUN_DIR, [(2000, 7)])        # and a new launch wrote a new file
+    radios, newest = mod.environment_snapshot(60)
+    assert newest == 2000 and radios == 1         # the old radios are long out of window
+
+
+def test_environment_snapshot_reads_big_endian_and_other_resolutions(mod):
+    _make_pcapng(mod.RUN_DIR, [(1000, 0), (1001, 1)], endian=">")
+    assert mod.environment_snapshot(60) == (2, 1001)
+    path = os.path.join(mod.RUN_DIR, "ns.pcapng")
+    with open(path, "wb") as fh:                  # nanosecond timestamps (if_tsresol 9)
+        fh.write(_header(tsresol=9) + _frame(1002.5, 2, unit=1e-9))
+    assert mod._tsresol(struct.pack("<HH", 9, 1) + b"\x09\0\0\0", "<") == pytest.approx(1e-9)
+    assert mod.environment_snapshot(60) == (3, 1002)
+
+
+def test_environment_snapshot_ignores_a_file_that_is_not_pcapng(mod):
+    with open(os.path.join(mod.RUN_DIR, "junk.pcapng"), "wb") as fh:
+        fh.write(b"not a capture file at all")
+    assert mod.environment_snapshot(60) is None
+    assert mod.environment_snapshot(60) is None   # and doesn't keep retrying it
+
+
+# -- update_environment ---------------------------------------------------------------
+
 def test_update_environment_writes_counts(mod):
     now = int(time.time())
-    _make_kismet(mod.RUN_DIR, [(now, "aa:00"), (now, "cc:00")])
+    _make_pcapng(mod.RUN_DIR, [(now, 0), (now, 2)])
     mod.update_environment(300)
     data = json.loads(open(os.path.join(mod.STORE_DIR, mod.STATUS_NAME)).read())
     assert data["scanning"] is True and data["window_s"] == 300
     assert data["radios_recent"] == 2 and data["data_ts"] == now
 
 
-def test_update_environment_marks_scanning_when_db_unreadable(mod):
-    # No DB yet: still writes a scanning marker, but with no counts, so the UI
-    # shows "scanning" rather than a stale/wrong number.
+def test_update_environment_marks_scanning_before_any_capture(mod):
+    # No capture file yet: still writes a scanning marker, but with no counts, so
+    # the UI shows "scanning" rather than a stale/wrong number.
     mod.update_environment(300)
     data = json.loads(open(os.path.join(mod.STORE_DIR, mod.STATUS_NAME)).read())
     assert data["scanning"] is True and "radios_recent" not in data
 
 
-def test_environment_snapshot_busy_when_db_stays_locked(mod, monkeypatch):
-    # A dense environment keeps AngryOxide writing, so a read can hit a locked
-    # DB. That must not read as "no data" (which blanked the card forever); it
-    # returns the _BUSY sentinel so the caller keeps the last good count.
-    _make_kismet(mod.RUN_DIR, [(1000, "aa:00")])
-
-    def locked(*_a, **_k):
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(mod.sqlite3, "connect", locked)
-    assert mod.environment_snapshot(60, retries=1) is mod._BUSY
-
-
-def test_environment_snapshot_none_on_structural_error(mod, monkeypatch):
-    # A non-lock operational error (e.g. a missing table) is structural, not
-    # transient: give up with None rather than retrying or signalling busy.
-    _make_kismet(mod.RUN_DIR, [(1000, "aa:00")])
-
-    def broken(*_a, **_k):
-        raise sqlite3.OperationalError("no such table: packets")
-
-    monkeypatch.setattr(mod.sqlite3, "connect", broken)
-    assert mod.environment_snapshot(60) is None
-
-
-def test_update_environment_keeps_last_count_when_db_locked(mod, monkeypatch):
-    # First a good read populates the count; then the DB goes busy. The card
-    # must keep the last count (freshness ages via data_ts) instead of blanking.
-    now = int(time.time())
-    _make_kismet(mod.RUN_DIR, [(now, "aa:00"), (now, "cc:00")])
-    mod.update_environment(300)
-    monkeypatch.setattr(mod, "environment_snapshot", lambda *_a, **_k: mod._BUSY)
-    mod.update_environment(300)
-    data = json.loads(open(os.path.join(mod.STORE_DIR, mod.STATUS_NAME)).read())
-    assert data["scanning"] is True
-    assert data["radios_recent"] == 2 and data["data_ts"] == now
-
-
 def test_update_environment_keeps_last_count_across_relaunch(mod, monkeypatch):
-    # The launcher clears the run dir and starts a fresh (empty) kismet DB on
-    # every AngryOxide relaunch, so environment_snapshot returns None (no packets
-    # yet). With a prior good reading, the count must be carried through rather
+    # The launcher clears the run dir and AngryOxide starts a fresh, empty pcapng
+    # on a capture start, so environment_snapshot returns None until the first
+    # frame lands. With a prior good reading, the count is carried through rather
     # than blanked to "scanning" on every relaunch - otherwise the card flaps.
     now = int(time.time())
-    _make_kismet(mod.RUN_DIR, [(now, "aa:00"), (now, "cc:00")])
+    _make_pcapng(mod.RUN_DIR, [(now, 0), (now, 2)])
     mod.update_environment(300)
     monkeypatch.setattr(mod, "environment_snapshot", lambda *_a, **_k: None)
     mod.update_environment(300)
     data = json.loads(open(os.path.join(mod.STORE_DIR, mod.STATUS_NAME)).read())
     assert data["scanning"] is True
     assert data["radios_recent"] == 2 and data["data_ts"] == now
+
+
+def test_the_collector_never_opens_the_kismet_database(mod):
+    # The reading must not touch AngryOxide's database: it can't keep up in a
+    # busy RF environment, and a reader's lock only slows it further.
+    with open(os.path.join(mod.RUN_DIR, "kestrel.kismet"), "wb") as fh:
+        fh.write(b"SQLite format 3\0")
+    assert mod.environment_snapshot(60) is None
+    assert "sqlite3" not in open(_COLLECT).read()
 
 
 def test_status_file_is_not_a_hashline_file(mod):

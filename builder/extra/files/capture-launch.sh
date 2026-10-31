@@ -286,8 +286,8 @@ fast_failures=0
 # kismet DB, tars, logs). Their hashlines are already in the store; the per-AP
 # *.hc22000 here are left for the collector to drain. With a launch's output
 # base as $1, that launch's files are kept: a relaunch for a new agent plan
-# keeps the previous run's kismet DB so the collector's in-range reading has
-# recent packets while the new DB fills (the size cap still bounds them all).
+# keeps the previous run's pcapng so the collector's in-range reading has
+# recent frames while the new one fills (the size cap still bounds them all).
 clear_raw_artifacts() {
     if [ -n "${1:-}" ]; then
         find "$PWN_CAPTURE_RUN_DIR" -maxdepth 1 -type f ! -name '*.hc22000' ! -name "$1*" \

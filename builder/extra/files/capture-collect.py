@@ -19,8 +19,8 @@ import glob
 import json
 import os
 import re
-import sqlite3
 import stat
+import struct
 import sys
 import time
 
@@ -45,8 +45,8 @@ STATUS_NAME = "capture-status.json"
 SEEN_NAME = "capture-seen.json"
 # Distinct transmitting radios seen in the most recent ENV_WINDOW_DEFAULT seconds
 # OF CAPTURE DATA (anchored to the newest packet, not wall-clock) is the density
-# signal. AngryOxide flushes the kismet DB in bursts, so a window of a few
-# minutes reads stably rather than coming back empty. Config can override it.
+# signal. Radios transmit in bursts, so a window of a few minutes reads stably
+# rather than coming back empty. Config can override it.
 ENV_WINDOW_DEFAULT = 300
 
 try:
@@ -195,122 +195,195 @@ def seen_lines(path):
     return lines
 
 
-# At most this many kismet DBs are read, newest first. The launcher keeps the
-# current run's DB and, across a relaunch for a new agent plan, the previous
-# run's, so two is normal; the cap only bounds a run dir someone filled by hand.
-ENV_MAX_DBS = 4
+# The in-range readout is read from the tail of AngryOxide's pcapng capture
+# file, never from its kismet DB. AngryOxide inserts and commits one kismet row
+# per frame, which an SD card can't keep up with in a busy RF environment: the
+# DB falls minutes behind real time (and its rollback-journal locking can't be
+# read safely from here), while the pcapng is a plain append that keeps up. So
+# the collector remembers how far it has read each pcapng and, every poll,
+# parses only the blocks added since, counting each frame's transmitter
+# address. No locks, no database, nothing that can slow AngryOxide down.
+
+# At most this many pcapng files are read, newest first: the current launch's
+# and, across a relaunch for a new agent plan, the previous one's.
+ENV_MAX_FILES = 2
+# At most this many new bytes are parsed per file per poll, so a large file met
+# for the first time (a collector restart mid-run) is caught up over a few polls
+# instead of in one long pause.
+ENV_MAX_READ = int(os.environ.get("PWN_CAPTURE_ENV_MAX_READ", str(16 * 1024 * 1024)))
+
+_PCAPNG_SHB = 0x0A0D0D0A
+_PCAPNG_IDB = 0x00000001
+_PCAPNG_EPB = 0x00000006
+_BYTE_ORDER_MAGIC = 0x1A2B3C4D
+_LINKTYPE_80211 = 105
+_LINKTYPE_RADIOTAP = 127
+# A block longer than this is treated as corruption, not a frame.
+_MAX_BLOCK = 1 << 20
+
+# Per-file read state ({path: _Tail}) and the radios seen so far
+# ({transmitter: newest frame time}), kept for the life of the collector.
+_TAILS = {}
+_RADIOS = {}
 
 
-def _kismet_dbs():
-    """Paths of the run dir's ``*.kismet`` (kismetdb) files, newest first.
+class _Tail:
+    """How far one pcapng has been read, and what its header blocks said."""
 
-    AngryOxide writes the kismet DB (and pcapng) into the run dir under the
-    ``--output`` prefix, one per launch. They are transient (the run dir is
-    size-bounded and cleared), so this is best-effort by design."""
+    def __init__(self, ident):
+        self.ident = ident          # (st_dev, st_ino): a new file resets it
+        self.offset = 0
+        self.endian = "<"
+        self.interfaces = []        # [(linktype, seconds per timestamp unit)]
+        self.broken = False         # stop reading a file that isn't pcapng
+        self.newest = None          # newest frame time seen in this file
+
+
+def _capture_files():
+    """The run dir's ``*.pcapng`` files, newest first (at most ENV_MAX_FILES)."""
     try:
-        dbs = glob.glob(os.path.join(RUN_DIR, "*.kismet"))
+        paths = glob.glob(os.path.join(RUN_DIR, "*.pcapng"))
     except OSError:
         return []
     stamped = []
-    for path in dbs:
+    for path in paths:
         try:
             stamped.append((os.path.getmtime(path), path))
         except OSError:
             continue
     stamped.sort(reverse=True)
-    return [path for _mtime, path in stamped[:ENV_MAX_DBS]]
+    return [path for _mtime, path in stamped[:ENV_MAX_FILES]]
 
 
-# A sourcemac that carries no real transmitter (null or the all-zero address) is
-# excluded so it never inflates the density count.
-_ZERO_MAC = "00:00:00:00:00:00"
-
-# How long a read may wait for AngryOxide to release the DB lock, and how many
-# times to retry a lock before giving up. AngryOxide writes the kismet DB
-# continuously in a dense environment and briefly holds its write lock at each
-# commit; a too-short timeout made the read fail and the card sit at "scanning"
-# forever even while capture was healthy. Overridable for tests / tuning.
-ENV_DB_TIMEOUT = float(os.environ.get("PWN_CAPTURE_DB_TIMEOUT", "5.0"))
-ENV_DB_RETRIES = int(os.environ.get("PWN_CAPTURE_DB_RETRIES", "3"))
-
-# Returned by environment_snapshot when the DB exists but stayed locked for the
-# whole retry budget - distinct from None ("nothing to read yet") so the caller
-# keeps the last good reading instead of blanking the card to "scanning".
-_BUSY = object()
+def _tsresol(options, endian):
+    """Seconds per timestamp unit from an IDB's options (if_tsresol, code 9);
+    microseconds when absent."""
+    pos = 0
+    while pos + 4 <= len(options):
+        code, length = struct.unpack(endian + "HH", options[pos:pos + 4])
+        if code == 0:
+            break
+        if code == 9 and length >= 1:
+            value = options[pos + 4]
+            return 2.0 ** -(value & 0x7F) if value & 0x80 else 10.0 ** -value
+        pos += 4 + ((length + 3) & ~3)
+    return 1e-6
 
 
-def _read_kismet_db(path, timeout, attempts):
-    """``(newest_ts, {sourcemac: newest ts})`` from one kismet DB; None when it
-    has no packets or is structurally unreadable; ``_BUSY`` when AngryOxide
-    held it locked for every attempt. Opened read-only with a busy timeout, so
-    it never blocks AngryOxide's writing."""
-    for attempt in range(attempts):
-        conn = None
-        try:
-            conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=timeout)
-            newest = conn.execute("SELECT MAX(ts_sec) FROM packets").fetchone()[0]
-            if newest is None:
-                return None
-            radios = dict(conn.execute(
-                "SELECT sourcemac, MAX(ts_sec) FROM packets "
-                "WHERE sourcemac IS NOT NULL AND sourcemac != ? GROUP BY sourcemac",
-                (_ZERO_MAC,)).fetchall())
-            return int(newest), radios
-        except sqlite3.OperationalError as exc:
-            # A busy/locked DB is transient: AngryOxide holds the write lock
-            # only while committing. Back off and retry rather than give up.
-            # Any other operational error (e.g. a missing table) is structural.
-            msg = str(exc).lower()
-            if "lock" not in msg and "busy" not in msg:
-                return None
-            if attempt + 1 < attempts:
-                time.sleep(0.25 * (attempt + 1))
-        except sqlite3.Error:
-            return None
-        finally:
-            if conn is not None:
-                conn.close()
-    return _BUSY
+def transmitter(frame):
+    """The transmitter address (addr2) of an 802.11 frame, as lower-case
+    ``aa:bb:cc:dd:ee:ff``, or None for frames without one (ACK, CTS, ...), a
+    truncated frame, or a null or group address."""
+    if len(frame) < 16:
+        return None
+    ftype = (frame[0] >> 2) & 0x3
+    subtype = frame[0] >> 4
+    # Management and data frames carry addr2; of the control frames, only
+    # BlockAckReq, BlockAck, PS-Poll and RTS name their transmitter.
+    if ftype not in (0, 2) and not (ftype == 1 and subtype in (8, 9, 10, 11)):
+        return None
+    addr = frame[10:16]
+    if addr[0] & 0x01 or not any(addr):
+        return None
+    return ":".join("%02x" % b for b in addr)
 
 
-def environment_snapshot(window_s, now=None, timeout=None, retries=None):
+def _read_tail(path, tail):
+    """Parse the blocks added to ``path`` since ``tail.offset`` (at most
+    ENV_MAX_READ bytes), recording each frame's transmitter in ``_RADIOS``.
+    A partial block at the end is left for the next poll."""
+    try:
+        with open(path, "rb") as fh:
+            remaining = os.fstat(fh.fileno()).st_size - tail.offset
+            if remaining <= 0:
+                return
+            fh.seek(tail.offset)
+            # Bounded by what's there, so a poll with a few new KB doesn't
+            # allocate the whole ENV_MAX_READ.
+            data = fh.read(min(ENV_MAX_READ, remaining))
+    except OSError:
+        return
+    pos = 0
+    while pos + 12 <= len(data):
+        if tail.offset == 0 and pos == 0:
+            # The section header's byte-order magic decides how to read the rest.
+            if struct.unpack("<I", data[0:4])[0] != _PCAPNG_SHB or len(data) < 12:
+                tail.broken = True
+                return
+            magic = data[8:12]
+            if struct.unpack("<I", magic)[0] == _BYTE_ORDER_MAGIC:
+                tail.endian = "<"
+            elif struct.unpack(">I", magic)[0] == _BYTE_ORDER_MAGIC:
+                tail.endian = ">"
+            else:
+                tail.broken = True
+                return
+        btype, blen = struct.unpack(tail.endian + "II", data[pos:pos + 8])
+        if blen < 12 or blen % 4 or blen > _MAX_BLOCK:
+            tail.broken = True
+            return
+        if pos + blen > len(data):
+            break                   # the rest of this block isn't written yet
+        body = data[pos + 8:pos + blen - 4]
+        if btype == _PCAPNG_SHB:
+            tail.interfaces = []
+        elif btype == _PCAPNG_IDB and len(body) >= 8:
+            linktype = struct.unpack(tail.endian + "H", body[0:2])[0]
+            tail.interfaces.append((linktype, _tsresol(body[8:], tail.endian)))
+        elif btype == _PCAPNG_EPB and len(body) >= 20:
+            iface, ts_hi, ts_lo, cap_len = struct.unpack(tail.endian + "IIII", body[0:16])
+            if iface < len(tail.interfaces):
+                linktype, unit = tail.interfaces[iface]
+                packet = body[20:20 + cap_len]
+                if linktype == _LINKTYPE_RADIOTAP and len(packet) >= 4:
+                    packet = packet[struct.unpack("<H", packet[2:4])[0]:]
+                elif linktype != _LINKTYPE_80211:
+                    packet = b""
+                when = ((ts_hi << 32) | ts_lo) * unit
+                mac = transmitter(packet)
+                if mac is not None and when > _RADIOS.get(mac, -1):
+                    _RADIOS[mac] = when
+                if when > (tail.newest or -1):
+                    tail.newest = when
+        pos += blen
+    tail.offset += pos
+
+
+def environment_snapshot(window_s, now=None):
     """Distinct transmitting radios seen in the most recent ``window_s`` seconds
-    of capture data.
+    of capture, read from the new blocks of the run dir's pcapng files (the
+    current launch's and, across an agent relaunch, the previous one's).
 
-    AngryOxide fills the kismet DB's ``packets`` table (it leaves ``devices``
-    empty) and flushes it in bursts. This reads every kismet DB in the run dir
-    (the current run's and, across an agent relaunch, the previous run's) and
-    counts distinct ``sourcemac`` within ``window_s`` of the newest packet in
-    any of them - never wall-clock ``now`` - so a flush lag reads as "recent"
-    rather than zero, and a relaunch's empty new DB doesn't hide the minutes of
-    packets just before it. Returns ``(radios_recent, data_ts)`` where
-    ``data_ts`` is that newest packet's epoch (so the reader can judge
-    freshness); ``None`` when there is no DB or packet yet, or every DB is
-    structurally unreadable; or the ``_BUSY`` sentinel when no DB could be read
-    and at least one stayed locked for the whole retry budget. ``now`` is
-    accepted for tests but unused."""
-    if timeout is None:
-        timeout = ENV_DB_TIMEOUT
-    if retries is None:
-        retries = ENV_DB_RETRIES
-    attempts = max(1, retries)
-    newest, seen, busy = None, {}, False
-    for path in _kismet_dbs():
-        result = _read_kismet_db(path, timeout, attempts)
-        if result is _BUSY:
-            busy = True
+    The window ends at the newest frame in any of them, never at wall-clock
+    ``now``, so a quiet moment reads as "recent" rather than zero and a
+    relaunch's new, still-empty file doesn't hide the minutes just before it.
+    Returns ``(radios_recent, data_ts)`` where ``data_ts`` is that newest
+    frame's epoch (so the reader can judge freshness), or ``None`` when there
+    is no capture file or frame yet. ``now`` is accepted for tests but unused."""
+    files = _capture_files()
+    for path in list(_TAILS):
+        if path not in files and not os.path.exists(path):
+            del _TAILS[path]
+    newest = None
+    for path in files:
+        try:
+            st = os.stat(path)
+        except OSError:
             continue
-        if result is None:
-            continue
-        db_newest, radios = result
-        newest = db_newest if newest is None else max(newest, db_newest)
-        for mac, ts in radios.items():
-            if ts is not None and ts > seen.get(mac, -1):
-                seen[mac] = ts
+        tail = _TAILS.get(path)
+        if tail is None or tail.ident != (st.st_dev, st.st_ino) or st.st_size < tail.offset:
+            tail = _TAILS[path] = _Tail((st.st_dev, st.st_ino))   # new or replaced file
+        if not tail.broken and st.st_size > tail.offset:
+            _read_tail(path, tail)
+        if tail.newest is not None:
+            newest = tail.newest if newest is None else max(newest, tail.newest)
     if newest is None:
-        return _BUSY if busy else None
+        return None
     cutoff = newest - window_s
-    return sum(1 for ts in seen.values() if ts >= cutoff), newest
+    # Forget radios long out of any window, so the map stays small.
+    for mac in [m for m, ts in _RADIOS.items() if ts < newest - 2 * window_s]:
+        del _RADIOS[mac]
+    return sum(1 for ts in _RADIOS.values() if ts >= cutoff), int(newest)
 
 
 def write_status(payload):
@@ -392,27 +465,25 @@ def stamp_seen(seen_times, bssids, now):
 
 def update_environment(window_s):
     """Refresh the in-range readout once. Writes ``radios_recent`` and
-    ``data_ts`` (the newest-packet epoch, so the reader can judge freshness)
-    when the kismet DB is readable. When the read does not yield a fresh count -
-    the DB is momentarily locked by AngryOxide's writing (``_BUSY``), or it is
-    empty/rotated (``None``) - the previous reading is carried through (only its
-    freshness ages, via ``data_ts``), so the card does not blank to "scanning"
-    on every transient gap. The empty/rotated case follows a capture start or a
+    ``data_ts`` (the newest-frame epoch, so the reader can judge freshness) from
+    the capture files. When there is nothing to read yet - a capture start or a
     roll, when the launcher clears the run dir and AngryOxide starts a fresh
-    kismet DB (a relaunch for a new agent plan keeps the previous run's DB, which
-    environment_snapshot still reads). The carried reading still ages out to "unknown" once ``data_ts`` passes
-    the reader's ``max_age_s`` (so a capture that truly stopped is not shown as a
-    stale count). Only a cold start with no prior reading writes the
+    pcapng - the previous reading is carried through (only its freshness ages,
+    via ``data_ts``), so the card does not blank to "scanning" on every
+    relaunch. The carried reading still ages out to "unknown" once ``data_ts``
+    passes the reader's ``max_age_s`` (so a capture that truly stopped is not
+    shown as a stale count). Only a cold start with no prior reading writes the
     scanning-but-no-count marker."""
     snap = environment_snapshot(window_s)
     payload = {"updated_at": int(time.time()), "window_s": window_s,
                "scanning": True}
-    if snap is not None and snap is not _BUSY:
+    if snap is not None:
         payload["radios_recent"], payload["data_ts"] = snap
     else:
-        # No fresh count this tick (DB locked, or empty right after a relaunch):
-        # keep the last good reading rather than dropping it. Its freshness ages
-        # via data_ts, so the reader blanks it once it is genuinely too old.
+        # Nothing to read this tick (a fresh, still-empty capture file right
+        # after a relaunch): keep the last good reading rather than dropping it.
+        # Its freshness ages via data_ts, so the reader blanks it once it is
+        # genuinely too old.
         prev = read_status()
         if prev and "radios_recent" in prev and "data_ts" in prev:
             payload["radios_recent"] = prev["radios_recent"]
