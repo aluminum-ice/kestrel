@@ -153,6 +153,11 @@ image is involved.
   secret is never exposed to pull-request runs from forks — safe on a public
   repo. If the secret is unset the publish step is a **no-op**, so a release
   never fails for want of it.
+- **Pinned tools:** `build`, `twine` and the `setuptools` backend come from
+  `requirements-publish.txt`, pinned with hashes and installed with
+  `--require-hashes`; the package is built with `--no-isolation`, so nothing
+  unpinned is fetched while the token is in the environment. The file's header
+  says how to update it.
 - **Betas are skipped:** a `X.Y.Z-beta.N` release is not published to PyPI.
 - **Re-cuts are safe:** the upload uses `--skip-existing`, so re-running the
   workflow for a version already on PyPI leaves the published files untouched

@@ -47,7 +47,7 @@ The build runs on a Linux host with root, loop devices, `qemu-user-static` and
 | Tool | Version / pin | Why it's here |
 | --- | --- | --- |
 | **GNU Make** | host | Single entry point (`image`, `lint`, `test`, `clean`). Encodes the tool pins and the build order. |
-| **Packer** | **1.9.5** | Drives the image build from `builder/config.json` (a legacy JSON template). Downloaded by the Makefile into `/tmp/raspberrypi/`, not installed system-wide. |
+| **Packer** | **1.9.5** | Drives the image build from `builder/config.json` (a legacy JSON template). Downloaded by the Makefile into `/tmp/raspberrypi/`, not installed system-wide, and checked against the zip's pinned SHA-256 (`PACKER_SHA256_<goarch>`, from HashiCorp's signed `SHA256SUMS`); `tools-check` re-checks the cached binary before each build. Bump the sums with `PACKER_VERSION`. |
 | **solo-io/arm-image plugin** | source commit `e1ace42…` (tag `v0.2.8`) | Packer builder that mounts the ARM image's partitions and chroots into it. Built from pinned Go source by `make plugin`, **not** `packer plugins install` (which resolves to v0.2.7, whose partition-scan race fails builds). |
 | **Go** | host toolchain | Only to compile the arm-image plugin. Not otherwise part of the project. |
 | **QEMU user-mode** (`qemu-user-static`) | host | Runs arm64 binaries inside the chroot on an x86 host, so the playbook can execute in the image. |

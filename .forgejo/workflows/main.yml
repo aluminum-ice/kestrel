@@ -280,10 +280,12 @@ jobs:
         venv=$(mktemp -d)
         trap 'rm -rf "$venv"' EXIT
         python3 -m venv "$venv"
-        "$venv/bin/pip" install --upgrade build twine
+        # Pinned with hashes (requirements-publish.txt), the build backend
+        # included: this step holds the PyPI token.
+        "$venv/bin/pip" install --require-hashes --only-binary=:all: -r requirements-publish.txt
         cd builder/extra/files/kestrel_pi
         rm -rf dist
-        "$venv/bin/python" -m build
+        "$venv/bin/python" -m build --no-isolation
         "$venv/bin/python" -m twine upload --non-interactive --skip-existing dist/*
       env:
         TWINE_USERNAME: __token__
