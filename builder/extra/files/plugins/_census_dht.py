@@ -518,3 +518,97 @@ def bootstrap(client, pool, routers, resolve=_resolve, wait=None,
         if answered:
             return answered
     return 0
+
+
+# -- lookups -----------------------------------------------------------------------
+
+def lookup(client, pool, target, query=b"get", only_bep42=True, k=8, alpha=3,
+           max_queries=40):
+    """An iterative lookup toward ``target``: ask the nearest known nodes,
+    learn nearer ones from their replies, stop when the nearest ``k`` have
+    answered or after ``max_queries``. Census lookups use ``get``, whose
+    replies carry the write tokens a later ``put`` needs.
+
+    With ``only_bep42``, a node whose ID doesn't match its address (BEP 42) is
+    never sent the query and never returned, whether it came from the pool or
+    from a reply. Nodes that don't answer are dropped from the pool.
+
+    Returns ``([(node_id, addr, reply)], stats)``: the nearest ``k``
+    responders, nearest first, and ``{"queries", "non_bep42_queried"}``."""
+    candidates = dict(pool.closest(target, 32, only_bep42))
+    queried, answered = set(), {}
+    stats = {"queries": 0, "non_bep42_queried": 0}
+    args = {b"target": target}
+    while stats["queries"] < max_queries:
+        order = sorted(candidates, key=lambda n: distance(n, target))
+        if all(n in queried for n in order[:k]):
+            break
+        batch = [n for n in order if n not in queried][:min(alpha, max_queries - stats["queries"])]
+        if not batch:
+            break
+        for node_id in batch:
+            queried.add(node_id)
+            if not bep42_valid(node_id, candidates[node_id][0]):
+                stats["non_bep42_queried"] += 1
+        stats["queries"] += len(batch)
+        replies = client.query([(candidates[n], query, args) for n in batch])
+        for node_id, (reply, _err) in zip(batch, replies):
+            addr = candidates[node_id]
+            reply_id = reply.get(b"id") if reply else None
+            if not isinstance(reply_id, bytes) or len(reply_id) != 20:
+                candidates.pop(node_id, None)
+                pool.forget(node_id)
+                continue
+            pool.add(reply_id, addr[0], addr[1], ok=True)
+            if only_bep42 and not bep42_valid(reply_id, addr[0]):
+                candidates.pop(node_id, None)
+                continue
+            if reply_id != node_id:
+                candidates.pop(node_id, None)
+                candidates[reply_id] = addr
+                queried.add(reply_id)
+            answered[reply_id] = (addr, reply)
+            for found_id, ip, port in parse_nodes(reply.get(b"nodes")):
+                if found_id == client.node_id or not pool.accept(ip):
+                    continue
+                pool.add(found_id, ip, port)
+                if only_bep42 and not bep42_valid(found_id, ip):
+                    continue
+                if found_id not in candidates:
+                    candidates[found_id] = (ip, port)
+    nearest = sorted(answered, key=lambda n: distance(n, target))[:k]
+    return [(n, answered[n][0], answered[n][1]) for n in nearest], stats
+
+
+def refresh(client, pool, rng):
+    """Keep the pool fresh: one ``find_node`` lookup toward a random target.
+    It isn't about any census slot, so any node may serve it."""
+    target = bytes(rng.randrange(256) for _ in range(20))
+    lookup(client, pool, target, query=b"find_node", only_bep42=False, max_queries=24)
+
+
+class SlotCache:
+    """The storing nodes found for each slot today, so that later reads and
+    writes go straight to them instead of looking the slot up again."""
+
+    def __init__(self, data=None):
+        self._nodes = {}
+        for target, addrs in (data or {}).items():
+            if isinstance(target, str) and isinstance(addrs, list):
+                good = [(a[0], int(a[1])) for a in addrs
+                        if isinstance(a, list) and len(a) == 2 and isinstance(a[0], str)
+                        and isinstance(a[1], int) and 0 < a[1] < 65536]
+                if good:
+                    self._nodes[target] = good
+
+    def get(self, target):
+        return list(self._nodes.get(target.hex(), ()))
+
+    def set(self, target, addrs):
+        self._nodes[target.hex()] = [(a[0], a[1]) for a in addrs]
+
+    def drop(self, target):
+        self._nodes.pop(target.hex(), None)
+
+    def to_json(self):
+        return {t: [[ip, port] for ip, port in addrs] for t, addrs in self._nodes.items()}

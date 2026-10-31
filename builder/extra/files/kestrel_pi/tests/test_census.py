@@ -531,3 +531,181 @@ def test_bootstrap_gives_up_after_its_rounds_or_when_stopped():
                          resolve=lambda h, p: ("203.0.113.1", p),
                          wait=lambda s: stopped.append(s) or True) == 0
     assert stopped == [10]
+
+
+# -- the fake DHT --------------------------------------------------------------------
+
+class FakeDHT:
+    """An in-process DHT of nodes at RFC 5737 addresses. Each node knows a
+    random handful of others plus its nearest neighbours, answers ``ping``,
+    ``find_node``, ``get`` and ``put`` with BEP 44's storage rules (write
+    tokens, rising ``seq``, signatures, the 1000-byte limit), and records every
+    query it receives, so tests can assert who saw what."""
+
+    def __init__(self, size=300, invalid=0.3, silent=0.0, seed=1):
+        import hashlib
+        import random
+        self.rng = random.Random(seed)
+        self._hashlib = hashlib
+        addrs = ["%s.%d" % (net, host) for net in ("192.0.2", "198.51.100", "203.0.113")
+                 for host in range(1, 255)][:size]
+        self.nodes = {}
+        for ip in addrs:
+            valid = self.rng.random() >= invalid
+            nid = (dht.bep42_make_id(ip, self.rng) if valid
+                   else bytes(self.rng.randrange(256) for _ in range(20)))
+            self.nodes[(ip, 6881)] = {"id": nid, "valid": dht.bep42_valid(nid, ip),
+                                      "silent": self.rng.random() < silent,
+                                      "store": {}, "known": []}
+        everyone = list(self.nodes)
+        for addr, node in self.nodes.items():
+            near = sorted(everyone, key=lambda a: dht.distance(self.nodes[a]["id"], node["id"]))
+            node["known"] = list(dict.fromkeys(near[1:17] + self.rng.sample(everyone, 24)))
+        self.log = []                                   # (addr, method, target)
+
+    def seed_pool(self, pool, count=40):
+        for addr in self.rng.sample(list(self.nodes), count):
+            pool.add(self.nodes[addr]["id"], addr[0], addr[1])
+
+    def token(self, node_addr, requester):
+        return self._hashlib.sha1(("%s|%s" % (node_addr, requester[0])).encode()).digest()[:8]
+
+    def closest_to(self, target, count=8, include_silent=False):
+        return sorted((a for a in self.nodes if include_silent or not self.nodes[a]["silent"]),
+                      key=lambda a: dht.distance(self.nodes[a]["id"], target))[:count]
+
+    def __call__(self, packet, addr):
+        node = self.nodes.get((addr[0], addr[1]))
+        if node is None or node["silent"]:
+            return []
+        msg = dht.bdecode(packet)
+        method, args = msg[b"q"], msg[b"a"]
+        target = args.get(b"target")
+        self.log.append((addr, method, target))
+        me = (addr[0], addr[1])
+        reply = {b"id": node["id"]}
+
+        def error(code, text):
+            return [(dht.bencode({b"t": msg[b"t"], b"y": b"e", b"e": [code, text]}), addr)]
+        if method in (b"find_node", b"get"):
+            known = sorted(node["known"], key=lambda a: dht.distance(self.nodes[a]["id"], target))[:8]
+            reply[b"nodes"] = b"".join(dht.compact_node(self.nodes[a]["id"], a[0], a[1]) for a in known)
+        if method == b"get":
+            reply[b"token"] = self.token(me, ("client", 0))
+            item = node["store"].get(target)
+            if item:
+                reply.update({b"k": item["k"], b"seq": item["seq"], b"sig": item["sig"],
+                              b"v": item["v"]})
+        if method == b"put":
+            if args.get(b"token") != self.token(me, ("client", 0)):
+                return error(203, b"bad token")
+            k, seq, sig, v = args.get(b"k"), args.get(b"seq"), args.get(b"sig"), args.get(b"v")
+            if len(dht.bencode(v)) > 1000:
+                return error(205, b"message too big")
+            from cryptography.exceptions import InvalidSignature
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+            try:
+                Ed25519PublicKey.from_public_bytes(k).verify(
+                    sig, b"3:seqi%de1:v" % seq + dht.bencode(v))
+            except (InvalidSignature, ValueError):
+                return error(206, b"invalid signature")
+            key = self._hashlib.sha1(k).digest()
+            stored = node["store"].get(key)
+            if stored and (seq < stored["seq"] or (seq == stored["seq"] and v != stored["v"])):
+                return error(302, b"sequence number less than current")
+            node["store"][key] = {"k": k, "seq": seq, "sig": sig, "v": v}
+            self.log[-1] = (addr, method, key)
+        return [(dht.bencode({b"t": msg[b"t"], b"y": b"r", b"r": reply}), addr)]
+
+
+def _client(network, seed=0):
+    import random
+    clock = FakeClock()
+    rng = random.Random(seed)
+    client = dht.KrpcClient(FakeTransport(network), node_id=bytes(rng.randrange(256) for _ in range(20)),
+                            clock=clock, sleep=clock.sleep)
+    return client, dht.NodePool(accept=_test_net, clock=clock)
+
+
+# -- step 6: lookup and node caching ---------------------------------------------------
+
+def test_lookup_converges_on_the_nearest_valid_nodes():
+    import os as _os
+    net = FakeDHT(invalid=0.3, seed=11)
+    client, pool = _client(net)
+    net.seed_pool(pool)
+    hits = 0
+    for _ in range(10):
+        target = _os.urandom(20)
+        found, stats = dht.lookup(client, pool, target)
+        assert stats["queries"] <= 40 and len(found) == 8
+        best_valid = [a for a in net.closest_to(target, 40) if net.nodes[a]["valid"]][:8]
+        hits += len({a for _n, a, _r in found} & set(best_valid))
+        assert all(r.get(b"token") for _n, _a, r in found)
+    assert hits >= 60                     # most of the true nearest 8, across 10 lookups
+
+
+def test_lookup_never_sends_a_census_query_to_a_non_bep42_node():
+    import os as _os
+    net = FakeDHT(invalid=0.5, seed=12)
+    client, pool = _client(net)
+    net.seed_pool(pool, 80)               # the pool holds invalid nodes too
+    for _ in range(10):
+        target = _os.urandom(20)
+        found, stats = dht.lookup(client, pool, target)
+        assert stats["non_bep42_queried"] == 0
+        assert all(dht.bep42_valid(n, a[0]) for n, a, _r in found)
+        for addr, method, logged_target in net.log:
+            if logged_target == target:
+                assert net.nodes[addr]["valid"], "a census query reached a non-BEP 42 node"
+
+
+def test_lookup_drops_silent_nodes_from_the_pool():
+    import os as _os
+    net = FakeDHT(invalid=0.0, silent=0.3, seed=13)
+    client, pool = _client(net)
+    net.seed_pool(pool, 80)
+    forgotten = set()
+    forget = pool.forget
+    pool.forget = lambda node_id: forgotten.add(node_id) or forget(node_id)
+    for _ in range(3):
+        dht.lookup(client, pool, _os.urandom(20))
+    asked = {(addr[0], addr[1]) for _data, addr in client.transport.sent}
+    asked_silent = [a for a in asked if net.nodes[a]["silent"]]
+    assert asked_silent                    # some silent nodes were tried...
+    assert all(net.nodes[a]["id"] in forgotten for a in asked_silent)   # ...and dropped
+    # A dropped node may be heard of again from others, but never as answering.
+    assert not any(pool.nodes.get(net.nodes[a]["id"], [0, 0, 0, 0])[3] for a in asked_silent)
+
+
+def test_lookup_respects_its_query_cap():
+    import os as _os
+    net = FakeDHT(invalid=0.0, seed=14)
+    client, pool = _client(net)
+    net.seed_pool(pool)
+    _found, stats = dht.lookup(client, pool, _os.urandom(20), max_queries=7)
+    assert stats["queries"] <= 7
+    assert client.queries == stats["queries"]
+
+
+def test_refresh_may_use_any_node():
+    import random
+    net = FakeDHT(invalid=0.5, seed=15)
+    client, pool = _client(net)
+    net.seed_pool(pool, 20)
+    before = len(pool.nodes)
+    dht.refresh(client, pool, random.Random(3))
+    assert len(pool.nodes) > before
+    assert all(m == b"find_node" for _a, m, _t in net.log)
+
+
+def test_slot_cache_round_trips_and_ignores_junk():
+    cache = dht.SlotCache()
+    target = bytes(range(20))
+    cache.set(target, [("192.0.2.1", 6881), ("192.0.2.2", 1)])
+    again = dht.SlotCache(cache.to_json())
+    assert again.get(target) == [("192.0.2.1", 6881), ("192.0.2.2", 1)]
+    again.drop(target)
+    assert again.get(target) == []
+    junk = dht.SlotCache({"aa": [["192.0.2.1", 0], [5, 1], "x", ["192.0.2.3", 9]], 5: [], "bb": "x"})
+    assert junk.to_json() == {"aa": [["192.0.2.3", 9]]}
