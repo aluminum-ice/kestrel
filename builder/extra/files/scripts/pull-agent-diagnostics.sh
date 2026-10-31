@@ -445,6 +445,19 @@ local_meta = P.read_meta(AGENT_DIR, algorithm)
 local_ts, _ = M.meta_watermark(local_meta)
 host_models = load_json(os.path.join(AGENT_DIR, REMOTE_STAGING_DIR, HOST_MODELS_NAME)) or {}
 judged = load_json(os.path.join(AGENT_DIR, REMOTE_STAGING_DIR, EVALUATED_NAME)) or []
+# remote-train 0.2.0 keeps its last contact and last model here (no host details).
+rstat = load_json(os.path.join(AGENT_DIR, REMOTE_STAGING_DIR, "remote-status.json"))
+if isinstance(rstat, dict) and "_unreadable" in rstat:
+    print("remote status: unreadable (%s)" % rstat["_unreadable"])
+elif isinstance(rstat, dict):
+    def _when(key):
+        return ago(rstat[key]) if rstat.get(key) else "never"
+    print("remote status: last contact %s, last new model %s%s"
+          % (_when("last_contact"), _when("last_model"),
+             " (%s)" % rstat["last_model_algorithm"]
+             if isinstance(rstat.get("last_model_algorithm"), str) else ""))
+else:
+    print("remote status: none recorded yet (remote-train before 0.2.0, or no contact yet)")
 if FAIR:
     min_new = int(rt_cfg.get("remote_train_min_new_episodes", 300) or 300)
     print("host models last seen:", {k: {"latest": ago(v.get("latest_ts")), "seen": ago(v.get("seen_at"))}

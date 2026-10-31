@@ -77,6 +77,11 @@ almost always a missing `python3-venv` on a Debian/Ubuntu host. Install the
 packages above and run `remote-train setup` again; `remote-train status` shows the
 reason.
 
+If the card's **Training** line reads "can't reach or log in to the host (last
+reached …)", the desktop is off, asleep or off the network, or it no longer
+accepts the device's key. Nothing is retried until it answers; once it does,
+the card goes back to normal within a couple of minutes.
+
 ## Options
 
 Set these when you enable, on the Plugins page, or later with
