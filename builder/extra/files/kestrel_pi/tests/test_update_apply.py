@@ -131,6 +131,31 @@ def test_file_plan_carries_operator_scripts():
     assert modes.get(ua.SHARE_SCRIPTS_DIR + "/README.md") == 0o644
 
 
+def test_the_image_build_installs_the_same_operator_scripts(tmp_path):
+    # A flashed card and an in-place-updated one must carry the same scripts:
+    # run the playbook task's shell loop against the repo's scripts folder and
+    # compare what it installs (names and modes) with the updater's plan.
+    import re
+    import stat
+    import subprocess
+    playbook = open(os.path.join(REPO, "builder", "config.yml"), encoding="utf-8").read()
+    task = playbook.split("- name: install kestrel operator scripts", 1)[1]
+    task = task.split("\n  - name:", 1)[0]
+    loop = task.split("shell: |", 1)[1]
+    loop = "\n".join(line[6:] for line in loop.splitlines() if line.strip())
+    scripts_src = os.path.join(REPO, "builder", "extra", "files", "scripts")
+    loop = re.sub(r"\{\{.*?\}\}", "'%s'" % scripts_src, loop)
+    dest = tmp_path / "scripts"
+    dest.mkdir()
+    loop = loop.replace("/usr/local/share/kestrel/scripts/", str(dest) + "/")
+    subprocess.run(["sh", "-c", loop], check=True)
+    built = {f.name: stat.S_IMODE(f.stat().st_mode) for f in dest.iterdir()}
+    planned = {os.path.basename(d): m for _s, d, m in ua.file_plan(REPO)
+               if d.startswith(ua.SHARE_SCRIPTS_DIR + "/")}
+    assert built == planned
+    assert "pull-health.sh" in built
+
+
 def test_file_plan_excludes_operator_config():
     dests = [d for _s, d, _m in ua.file_plan(REPO)]
     assert not any(d.endswith("/config.toml") for d in dests)
