@@ -30,8 +30,12 @@ a private text file for `pull-health.sh` and `pull-eink-diagnostics.sh`, a
   - which features are on, and the plugin list;
   - capture: config (no whitelist), the authorized-use acknowledgment, the
     whitelist's size, the USB adapter, whether AngryOxide and the collector are
-    running, how recently AngryOxide's capture file was written, AngryOxide's
-    memory use, and whether the dashboard's *Environment* reading is current (it
+    running, which AngryOxide binary and version the capture service runs (the
+    stock one or a test build set with `ANGRYOXIDE`), how recently its capture
+    file was written, its memory use and how long it has been running, how far
+    its kismet database trails the capture file (one read-only query for the
+    newest row's time), and whether the dashboard's *Environment* reading is
+    current (it
     tells "capture is fine but the reading is stuck" apart from "capture
     stopped");
   - store counts, and the learning agent's state;

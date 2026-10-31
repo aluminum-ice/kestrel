@@ -29,7 +29,8 @@
 # Read-only: it never starts, stops or restarts anything, never touches the
 # management link (no nmcli, bluetoothctl, ip, rfkill, iw), and never reads
 # capture content (no hashlines, network names, BSSIDs, whitelist entries or
-# capture file names) - counts, sizes, ages and states only. Before the report
+# capture file names) - counts, sizes, ages and states only (from AngryOxide's
+# database, only the newest row's time). Before the report
 # leaves the device, MAC addresses, IP addresses, coordinates, a non-default
 # hostname, the login name and quoted text in log lines are masked. Glance at it
 # before sharing all the same.
@@ -132,6 +133,18 @@ cap_on=$(cfg capture.enabled false)
 cap_state=$(systemctl is-active kestrel-capture 2>/dev/null)
 echo "capture.enabled: $cap_on   service: $cap_state   interface setting: $(cfg capture.interface auto)"
 echo "scan mode: $(cfg capture.scan.mode '?')   dwell: $(cfg capture.scan.dwell_seconds '?')s   bands: $(cfg capture.scan.bands '?')"
+# Which AngryOxide the capture service runs: the stock one, or one set with
+# ANGRYOXIDE in the unit's environment (a systemd drop-in, to test a build).
+ao_bin=$(systemctl show kestrel-capture -p Environment --value 2>/dev/null | tr ' ' '\n' \
+  | sed -n 's/^ANGRYOXIDE=//p' | tail -1)
+if [ -n "$ao_bin" ] && [ "$ao_bin" != /usr/bin/angryoxide ]; then
+  ao_src="set by ANGRYOXIDE in the capture service (a test build?)"
+else
+  ao_bin=/usr/bin/angryoxide; ao_src="stock"
+fi
+ao_ver=$(timeout 10 "$ao_bin" --version 2>/dev/null | head -1)
+echo "AngryOxide binary: $ao_bin ($ao_src): ${ao_ver:-version unknown}"
+say INFO "${ao_ver:-AngryOxide (version unknown)} ($ao_src)"
 [ -f /etc/kestrel/capture-ack ] && echo "authorized-use acknowledgment: given" || echo "authorized-use acknowledgment: not given"
 echo "whitelist entries: $(python3 -I -c 'import tomllib;print(len(((tomllib.load(open("/etc/kestrel/config.toml","rb")).get("capture") or {}).get("whitelist")) or []))' 2>/dev/null || echo '?') (contents not read)"
 ao=$(pgrep -x angryoxide >/dev/null && echo running || echo "not running")
@@ -154,7 +167,7 @@ else
   say INFO "capture is off (enabled = $cap_on)"
 fi
 
-echo "AngryOxide's output files (run dir; files never opened, sizes and ages only):"
+echo "AngryOxide's output files (run dir; sizes and ages, plus the database's newest row time):"
 newest_cap=""
 for f in $(ls -t "$RUNDIR"/*.pcapng 2>/dev/null); do
   [ -z "$newest_cap" ] && newest_cap=$f
@@ -185,13 +198,50 @@ if [ -n "$ao_pid" ]; then
   total_kb=$(awk '/^MemTotal/ {print $2}' /proc/meminfo)
   if [ -n "$rss_kb" ] && [ -n "$total_kb" ]; then
     pct=$(( rss_kb * 100 / total_kb ))
-    echo "  AngryOxide memory: $(( rss_kb / 1024 )) MB (${pct}% of RAM)"
+    # With how long it has been running, so two checks a while apart show
+    # whether memory is flat or climbing.
+    up_min=$(( $(ps -o etimes= -p "$ao_pid" 2>/dev/null | tr -d ' ' || echo 0) / 60 ))
+    echo "  AngryOxide memory: $(( rss_kb / 1024 )) MB (${pct}% of RAM) after ${up_min} min running"
     if [ "$pct" -ge 30 ]; then
-      say WARN "AngryOxide is using ${pct}% of RAM; in a busy area its database queue grows while capture runs (restart capture to reset it)"
+      say WARN "AngryOxide is using ${pct}% of RAM after ${up_min} min; in a busy area its database queue grows while capture runs (restart capture to reset it)"
     else
-      say OK "AngryOxide memory $(( rss_kb / 1024 )) MB (${pct}% of RAM)"
+      say OK "AngryOxide memory $(( rss_kb / 1024 )) MB (${pct}% of RAM) after ${up_min} min running"
     fi
   fi
+fi
+# How far AngryOxide's kismet database trails its capture file: v0.9.3 committed
+# one row per frame and fell minutes behind in a busy area; v0.9.4 batches the
+# writes. One read-only query for the newest row's time; nothing else is read.
+newest_db=$(ls -t "$RUNDIR"/*.kismet 2>/dev/null | head -1)
+if [ -n "$newest_db" ] && [ -n "$newest_cap" ]; then
+  db_lag=$(python3 -I - "$newest_db" "$(stat -c %Y "$newest_cap")" <<'PY' 2>/dev/null
+import sqlite3, sys
+try:
+    conn = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True, timeout=2)
+    newest = conn.execute("SELECT MAX(ts_sec) FROM packets").fetchone()[0]
+    print(max(0, int(sys.argv[2]) - int(newest)) if newest is not None else "empty")
+except Exception as exc:
+    print("unreadable:%s" % type(exc).__name__)
+PY
+)
+  case "$db_lag" in
+    ''|unreadable:*)
+      echo "  AngryOxide's database: couldn't read its newest row just now (${db_lag#unreadable:})"
+      say INFO "couldn't read AngryOxide's database just now (busy, or left mid-write)" ;;
+    empty)
+      echo "  AngryOxide's database: no rows yet" ;;
+    *)
+      echo "  AngryOxide's database: newest row ${db_lag}s behind its capture file"
+      if [ "$cap_on" != true ] || [ -z "$ao_pid" ]; then
+        say INFO "the last run's database ended ${db_lag}s behind its capture file"
+      elif [ "$db_lag" -le 60 ]; then
+        say OK "AngryOxide's database keeps up (${db_lag}s behind its capture file)"
+      elif [ "$db_lag" -le 300 ]; then
+        say WARN "AngryOxide's database is ${db_lag}s behind its capture file"
+      else
+        say FAIL "AngryOxide's database is $(( db_lag / 60 )) min behind its capture file: its writes can't keep up (v0.9.4 batches them)"
+      fi ;;
+  esac
 fi
 
 echo "dashboard Environment reading (capture-status.json; counts and ages only):"
