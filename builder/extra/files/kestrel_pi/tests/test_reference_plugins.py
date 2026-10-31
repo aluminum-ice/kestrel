@@ -1685,8 +1685,6 @@ def test_backup_card_survives_a_missing_or_junk_state_file(tmp_path):
 def _make_remote_train(tmp_path, online=True, **opts):
     """A RemoteTrain instance wired to a tmp agent dir, WITHOUT starting its
     worker thread (so tests drive its methods directly, no real SSH)."""
-    import threading as _threading
-
     mod = _load_module("remote-train.py", "remote_train_under_test")
     agent_dir = tmp_path / "agent"
     (agent_dir / "episodes").mkdir(parents=True, exist_ok=True)
@@ -1707,19 +1705,7 @@ def _make_remote_train(tmp_path, online=True, **opts):
         services=ServiceRegistry(),
         capabilities=("capture-read", "network", "ui"))
     plugin.log = plugin.context.logger
-    plugin._lock = _threading.Lock()
-    plugin._run_lock = _threading.Lock()
-    plugin._stop = _threading.Event()
-    plugin._wake = _threading.Event()
-    plugin._train_now = _threading.Event()
-    plugin._last_run = 0.0
-    plugin._status = "idle"
-    plugin._last_pull = None
-    plugin._last_pull_secs = None
-    plugin._stack_err = ""
-    plugin._stack_state = "checking"
-    plugin._running_prev = set()
-    plugin._logged = set()
+    plugin._init_state()
     # The agent runs DQN (read live from config.toml for the algorithm order).
     cfg = tmp_path / "config.toml"
     cfg.write_text('[agent]\nalgorithm = "%s"\n' % opts.pop("_agent_algorithm", "DQN"))

@@ -141,6 +141,15 @@ class RemoteTrain(Plugin):
     # -- lifecycle -------------------------------------------------------
     def on_loaded(self):
         self.log = self.context.logger
+        self._init_state()
+        self._set_health()
+        self._worker = threading.Thread(
+            target=self._run, name="remote-train-worker", daemon=True)
+        self._worker.start()
+
+    def _init_state(self):
+        """Every piece of runtime state, set in one place: ``on_loaded`` calls
+        it, and so do the tests, which drive the plugin without its worker."""
         self._lock = threading.Lock()         # guards the readout state
         self._run_lock = threading.Lock()     # one reconcile at a time
         self._stop = threading.Event()
@@ -148,17 +157,13 @@ class RemoteTrain(Plugin):
         self._train_now = threading.Event()   # a manual "Train now" request
         self._last_run = 0.0                  # monotonic throttle marker
         self._status = "idle"                 # one-line readout summary
-        self._last_pull = None                # (algo, epoch, secs) last promote
+        self._last_pull = None                # (algo, epoch, secs) last model staged
         self._last_pull_secs = None           # train time of the last pulled model
         self._stack_err = ""                  # last host-prep failure reason
         self._stack_state = "checking"        # cached host-stack state for the card
         self._running_prev = set()            # slugs seen running at the last poll
         self._config_path = DEFAULT_CONFIG_PATH
         self._logged = set()                  # one-time notes already logged
-        self._set_health()
-        self._worker = threading.Thread(
-            target=self._run, name="remote-train-worker", daemon=True)
-        self._worker.start()
 
     def on_unload(self):
         self._stop.set()
