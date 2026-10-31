@@ -609,15 +609,16 @@
     # Workstation-side helper scripts, shipped read-only so a unit carries a
     # version-matched copy (builder/extra/files/scripts/README.md). They run on
     # the operator's machine, not the device, and keep their suffix on install.
+    # Every file in the folder, .sh executable and the rest 0644: the same rule
+    # the in-place updater applies (update-apply.py), so a flashed card and an
+    # updated one carry the same scripts.
     shell: |
       set -e
-      {% for item in files %}
-      install -m {{ item.mode }} {{ (playbook_dir ~ '/files/scripts/' ~ item.src) | quote }} /usr/local/share/kestrel/scripts/{{ item.src }}
-      {% endfor %}
-    vars:
-      files:
-        - { src: pull-agent-diagnostics.sh, mode: '0755' }
-        - { src: README.md, mode: '0644' }
+      for f in {{ (playbook_dir ~ '/files/scripts') | quote }}/*; do
+        [ -f "$f" ] || continue
+        case "$f" in *.sh) mode=0755 ;; *) mode=0644 ;; esac
+        install -m "$mode" "$f" /usr/local/share/kestrel/scripts/
+      done
 
   - name: install the kestrel config tool
     copy:
