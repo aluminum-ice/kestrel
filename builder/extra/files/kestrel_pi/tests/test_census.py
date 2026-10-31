@@ -19,6 +19,7 @@ PLUGIN_DIR = os.path.normpath(
 CENSUS = os.path.join(PLUGIN_DIR, "census.py")
 LOG = logging.getLogger("test_census")
 dht = load_helper(CENSUS, "_census_dht.py")
+proto = load_helper(CENSUS, "_census_proto.py")
 
 
 def _load(path, modname):
@@ -809,3 +810,196 @@ def test_put_reports_a_lower_seq_and_refuses_a_frozen_slot():
         dht.put_item(client, frozen, sk, pk, b"d", 5_000_001, ceiling=1_000_000)
     with pytest.raises(ValueError):
         dht.put_item(client, fetched, sk, pk, b"x" * 1000, 11)
+
+
+# -- step 8: the census format ---------------------------------------------------------------
+
+DAY = "2026-11-14"
+
+
+def _entry(rng, hour=5, version="1.0.12", agent=(3, 1, 4), contests=(3, 7, 1, 0), bits=8):
+    token = bytes(rng.randrange(256) for _ in range(8))
+    nonce = proto.find_pow(DAY, token, rng, bits=bits)
+    return proto.Entry(token, hour, proto.encode_version(version),
+                       proto.encode_agent(*agent), contests, nonce)
+
+
+def test_slot_keys_are_public_and_distinct():
+    a = proto.slot_key(DAY, 5)
+    assert proto.slot_key(DAY, 5)[1:] == a[1:]                   # anyone derives them
+    assert a[2] == dht.item_target(a[1])
+    others = {proto.slot_key(DAY, 6)[2], proto.slot_key(DAY, 5, alt=1)[2],
+              proto.slot_key("2026-11-15", 5)[2]}
+    assert a[2] not in others and len(others) == 3
+
+
+def test_version_encoding():
+    enc, dec = proto.encode_version, proto.decode_version
+    for text in ("1.0.11", "1.0.12-beta.3", "0.1.0", "7.15.63", "1.0.12-beta.6"):
+        assert dec(enc(text)) == text
+    assert dec(enc("1.0.12-beta.9")) == "1.0.12-beta.7+"
+    for text in ("master", "", None, "2.0", "8.0.0", "1.16.0", "1.0.64", "1.0.11-rc.1",
+                 "1.0.11-beta.0", "v1.0.11", " 1.0.11 x"):
+        assert enc(text) == 0, text
+    assert dec(0) == "unknown"
+    order = sorted([enc(v) for v in ("1.0.11", "1.0.12-beta.2", "master", "1.0.12",
+                                     "1.0.12-beta.3", "1.0.9")], key=proto.version_sort_key)
+    assert [dec(v) for v in order] == ["1.0.12", "1.0.12-beta.3", "1.0.12-beta.2",
+                                       "1.0.11", "1.0.9", "unknown"]
+
+
+def test_agent_byte_round_trips():
+    for state in range(4):
+        for algorithm in range(8):
+            for remote in range(8):
+                assert proto.decode_agent(proto.encode_agent(state, algorithm, remote)) == (
+                    state, algorithm, remote)
+
+
+def test_entries_round_trip_and_clamp_counts():
+    import random
+    rng = random.Random(1)
+    entry = _entry(rng, contests=(0, 300, -2, 255))
+    data = entry.encode()
+    assert len(data) == proto.ENTRY_SIZE
+    back = proto.Entry.decode(data)
+    assert back.contests == (0, 255, 0, 255) and back.token == entry.token
+    assert proto.MAX_ENTRIES * proto.ENTRY_SIZE + 4 <= dht.MAX_VALUE
+
+
+def test_proof_of_work():
+    import random
+    rng = random.Random(2)
+    token = bytes(8)
+    nonce = proto.find_pow(DAY, token, rng, bits=8)
+    assert proto.pow_ok(DAY, token, nonce, bits=8)
+    # The work is bound to the day (this nonce happens not to pass for the next).
+    assert not proto.pow_ok("2026-11-15", token, nonce, bits=8)
+    assert proto.find_pow(DAY, token, rng, bits=30, batch=1000,
+                          should_stop=lambda: True) is None
+    # The real difficulty, once.
+    nonce = proto.find_pow(DAY, token, rng)
+    assert proto.pow_ok(DAY, token, nonce) and not proto.pow_ok(DAY, bytes([1]) + token[1:], nonce)
+
+
+def test_parse_value_keeps_good_entries_only():
+    import random
+    rng = random.Random(3)
+    good, older = _entry(rng, hour=7), _entry(rng, hour=6)
+    newer_of_older = proto.Entry(older.token, 8, older.version, older.agent,
+                                 older.contests, older.nonce)
+    bad_pow = proto.Entry(bytes(8), 7, 0, 0, (0, 0, 0, 0), b"\xff" * 4)
+    bad_hour = proto.Entry(good.token, 24, 0, 0, (0, 0, 0, 0), good.nonce)
+    value = b"".join(e.encode() for e in (good, older, newer_of_older, bad_pow, bad_hour)) + b"xx"
+    entries, rejected = proto.parse_value(value, DAY, bits=8)
+    assert set(entries) == {good.token, older.token}
+    assert entries[older.token].hour == 8
+    assert rejected == 3                       # bad PoW, bad hour, the stray bytes
+    assert proto.parse_value(None, DAY) == ({}, 1)
+
+
+def test_merge_keeps_this_hour_and_the_last():
+    import random
+    rng = random.Random(4)
+    now = _entry(rng, hour=10)
+    last = _entry(rng, hour=9)
+    stale = _entry(rng, hour=7)
+    own = _entry(rng, hour=10)
+    own_old = proto.Entry(own.token, 8, 0, 0, (0, 0, 0, 0), own.nonce)
+    copies = [b"".join(e.encode() for e in (now, stale, own_old)), last.encode()]
+    value, count = proto.merge(copies, own, DAY, 10, bits=8)
+    entries, _bad = proto.parse_value(value, DAY, bits=8)
+    assert count == 3 and set(entries) == {now.token, last.token, own.token}
+    assert entries[own.token] == own
+
+
+def test_merge_reports_a_full_slot():
+    import random
+    rng = random.Random(5)
+    many = [_entry(rng, hour=10) for _ in range(proto.MAX_ENTRIES)]
+    value, count = proto.merge([b"".join(e.encode() for e in many)], _entry(rng, hour=10),
+                               DAY, 10, bits=8)
+    assert value is None and count == proto.MAX_ENTRIES + 1
+
+
+def test_new_seq_is_random_within_the_minute_and_above_what_is_stored():
+    import random
+    rng = random.Random(6)
+    seqs = {proto.new_seq(600, -1, rng) for _ in range(50)}
+    assert min(seqs) >= 60000 and max(seqs) <= 60099 and len(seqs) > 20
+    assert proto.new_seq(600, 70000, rng) == 70001
+
+
+def _census_net(seed):
+    import random
+    net = FakeDHT(invalid=0.2, seed=seed)
+    client, pool = _client(net, seed=seed)
+    net.seed_pool(pool)
+    return net, client, pool, random.Random(seed)
+
+
+def test_publish_writes_and_a_second_writer_keeps_the_first():
+    net, client, pool, rng = _census_net(31)
+    first, second = _entry(rng, hour=10), _entry(rng, hour=10)
+    done = proto.publish(dht, client, pool, None, DAY, 7, first, 600, rng, bits=8)
+    assert done.alt == 0 and done.confirms >= 6 and done.count == 1
+    holders, mine = proto.holds_entry(dht, client, pool, None, DAY, 7, 0, first.token, bits=8)
+    assert mine >= 3 and mine == holders
+    # Another device, with its own pool, adds itself; both entries survive.
+    other, opool = _client(net, seed=99)
+    net.seed_pool(opool)
+    done = proto.publish(dht, other, opool, None, DAY, 7, second, 601, rng, bits=8)
+    assert done.alt == 0 and done.count == 2
+    entries, _bad = proto.read_slot(dht, client, pool, None, DAY, 7, bits=8)
+    assert set(entries) == {first.token, second.token}
+
+
+def test_publish_moves_to_an_alternate_when_full_or_frozen():
+    net, client, pool, rng = _census_net(32)
+    crowd = [_entry(rng, hour=10) for _ in range(proto.MAX_ENTRIES)]
+    private, public, _t = proto.slot_key(DAY, 3)
+    fetched = dht.get_item(client, pool, None, public)
+    dht.put_item(client, fetched, private, public, b"".join(e.encode() for e in crowd), 50)
+    own = _entry(rng, hour=10)
+    done = proto.publish(dht, client, pool, None, DAY, 3, own, 600, rng, bits=8)
+    assert done.alt == 1 and done.skipped == [(0, "full")]
+    # A slot whose stored seq is past the ceiling can't be written either.
+    private, public, _t = proto.slot_key(DAY, 4)
+    fetched = dht.get_item(client, pool, None, public)
+    dht.put_item(client, fetched, private, public, b"", proto.SEQ_CEILING + 5)
+    done = proto.publish(dht, client, pool, None, DAY, 4, own, 600, rng, bits=8)
+    assert done.alt == 1 and done.skipped == [(0, "frozen")]
+    # A reader follows a full or frozen slot to its alternate, and stops there.
+    entries, _bad = proto.read_slot(dht, client, pool, None, DAY, 3, bits=8)
+    assert own.token in entries and len(entries) == proto.MAX_ENTRIES + 1
+    before = client.queries
+    proto.read_slot(dht, client, pool, None, DAY, 9, bits=8)        # an ordinary slot
+    asked = [t for _a, _m, t in net.log[-(client.queries - before):]]
+    assert proto.slot_key(DAY, 9, alt=1)[2] not in asked
+
+
+def test_publish_retries_once_after_a_newer_seq():
+    from collections import Counter
+    net, client, pool, rng = _census_net(33)
+    calls = []
+
+    def put_item(*args, **kwargs):
+        calls.append(args[5])
+        if len(calls) == 1:
+            return 0, Counter({"e302": 8})
+        return dht.put_item(*args, **kwargs)
+    flaky = types.SimpleNamespace(get_item=dht.get_item, put_item=put_item)
+    own = _entry(rng, hour=10)
+    done = proto.publish(flaky, client, pool, None, DAY, 2, own, 600, rng, bits=8)
+    assert done.retried and len(calls) == 2 and done.confirms >= 6 and done.alt == 0
+
+
+def test_publish_skips_a_slot_with_no_reachable_nodes():
+    import random
+    net = FakeDHT(seed=34, silent=1.0)
+    client, pool = _client(net)
+    net.seed_pool(pool)
+    rng = random.Random(34)
+    done = proto.publish(dht, client, pool, None, DAY, 1, _entry(rng), 600, rng, bits=8)
+    assert done.alt is None
+    assert [why for _alt, why in done.skipped] == ["no nodes"] * (proto.ALTERNATES + 1)
