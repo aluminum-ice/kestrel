@@ -78,6 +78,13 @@ _RSYNC_BACKOFF = 5
 # authorized, host key changed); any other status is the remote command's own.
 # The host scripts below never exit 255, so it stays reserved for ssh.
 _SSH_FAILED = 255
+# The last contact and the last model staged, kept across daemon restarts, in
+# the staging dir beside host-models.json (which is read as {slug: record}, so
+# it can't carry them).
+_STATUS_NAME = "remote-status.json"
+# Save the contact time at most this often: the light poll runs every couple of
+# minutes, and nothing needs it finer than that.
+_CONTACT_SAVE_SECONDS = 600
 
 
 
@@ -170,6 +177,8 @@ class RemoteTrain(Plugin):
         self._logged = set()                  # one-time notes already logged
         self._host_state = "unknown"          # unknown / reachable / unreachable
         self._last_contact = None             # epoch of the last SSH session that ran
+        self._contact_saved = None            # monotonic time of the last status save
+        self._load_status()
 
     def on_unload(self):
         self._stop.set()
@@ -325,9 +334,7 @@ class RemoteTrain(Plugin):
             # 1) Pull a finished model and stage it for the agent to evaluate.
             staged = self._pull_and_stage(algorithm, slug)
             if staged:
-                with self._lock:
-                    self._last_pull = (algorithm, time.time(),
-                                       self._last_pull_secs)
+                self._record_pull(algorithm)
             # 2) Don't double-launch; relaunch only past the stale-lock window.
             if self._algo_running(slug):
                 running.append(algorithm)
@@ -369,9 +376,7 @@ class RemoteTrain(Plugin):
         for algorithm in algorithms:
             slug = model_slug(algorithm)
             if slug in just_done and self._pull_and_stage(algorithm, slug):
-                with self._lock:
-                    self._last_pull = (algorithm, time.time(),
-                                       self._last_pull_secs)
+                self._record_pull(algorithm)
         self._summarize([a for a in algorithms if model_slug(a) in live], [])
 
     def _job_state(self):
@@ -583,6 +588,54 @@ class RemoteTrain(Plugin):
                 self._last_contact = time.time()
         if changed:
             self._set_health()
+        if reached and (self._contact_saved is None or time.monotonic()
+                        - self._contact_saved >= _CONTACT_SAVE_SECONDS):
+            self._save_status()
+
+    # -- status kept across restarts --------------------------------------
+    def _status_path(self):
+        return os.path.join(self._staging_root(), _STATUS_NAME)
+
+    def _load_status(self):
+        """Restore the last contact and the last model staged, so the card
+        survives a daemon restart. A missing or malformed file just means
+        nothing is known yet."""
+        data = self._read_json(self._status_path(), {})
+        self._last_contact = _epoch(data.get("last_contact"))
+        at = _epoch(data.get("last_model"))
+        algorithm = data.get("last_model_algorithm")
+        if at and isinstance(algorithm, str) and algorithm:
+            secs = data.get("last_model_train_seconds")
+            if isinstance(secs, bool) or not isinstance(secs, (int, float)):
+                secs = None
+            self._last_pull = (algorithm[:32], at, secs)
+            self._last_pull_secs = secs
+
+    def _save_status(self):
+        """Write the status file atomically, inside the agent's own dir."""
+        with self._lock:
+            pull = self._last_pull
+            data = {"last_contact": self._last_contact,
+                    "last_model": pull[1] if pull else None,
+                    "last_model_algorithm": pull[0] if pull else None,
+                    "last_model_train_seconds": pull[2] if pull else None}
+        path = self._status_path()
+        try:
+            os.makedirs(self._staging_root(), exist_ok=True)
+            with open(path + ".tmp", "w", encoding="utf-8") as handle:
+                json.dump(data, handle)
+            os.replace(path + ".tmp", path)
+        except OSError as exc:
+            self._note_once("status-save", "remote-train: could not save %s: %s",
+                            _STATUS_NAME, exc)
+        self._contact_saved = time.monotonic()
+
+    def _record_pull(self, algorithm):
+        """A new model was staged for the agent: remember it for the card, and
+        save it."""
+        with self._lock:
+            self._last_pull = (algorithm, time.time(), self._last_pull_secs)
+        self._save_status()
 
     def _rsync_up(self, local_dir, remote_dir):
         cmd = ["rsync", "-az", "--partial", "--mkpath",
@@ -986,6 +1039,13 @@ class RemoteTrain(Plugin):
                 "host training stack not ready: %s" % self._stack_err)
         else:
             self.context.health_note = ""
+
+
+def _epoch(value):
+    """A positive, finite epoch from a JSON value, else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if 0 < value < float("inf") else None
 
 
 def _ago(epoch):

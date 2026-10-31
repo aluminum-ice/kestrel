@@ -2073,6 +2073,87 @@ def test_remote_train_unreachable_status_shows_the_last_contact(tmp_path):
     assert plugin._status == "can't reach or log in to the host (last reached 3h ago)"
 
 
+def test_remote_train_staged_model_survives_a_restart(tmp_path):
+    # The card's "Last model pulled" and the last contact come back after a
+    # daemon restart instead of reading "never".
+    from kestrel_pi.agent import spec
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    meta = {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
+            "data_watermark": {"latest_ts": 300.0, "episodes": 99},
+            "train_seconds": 405.0}
+    plugin._rsync_down = _fake_host(meta)
+    plugin._note_contact(True)                  # a pass reaches the host first
+    assert plugin._pull_and_stage("DQN", "dqn") is True
+    plugin._record_pull("DQN")
+    again, _mod, _ad = _make_remote_train(tmp_path)
+    assert again._last_pull[0] == "DQN" and again._last_pull[2] == 405.0
+    assert abs(again._last_pull[1] - time.time()) < 60
+    assert again._last_contact == plugin._last_contact
+    assert (_card(again, "remote-train")["pulled"]["value"]
+            == "DQN just now (trained in 6m 45s)")
+
+
+def test_remote_train_contact_is_saved_at_most_every_ten_minutes(tmp_path, monkeypatch):
+    plugin, mod, _ad = _make_remote_train(tmp_path)
+    clock = [1000.0]
+    monkeypatch.setattr(mod, "time", types.SimpleNamespace(
+        time=time.time, monotonic=lambda: clock[0], gmtime=time.gmtime,
+        strftime=time.strftime, sleep=time.sleep))
+    saves = []
+    save = plugin._save_status
+    plugin._save_status = lambda: saves.append(1) or save()
+    plugin._note_contact(True)                  # the first contact is saved
+    plugin._note_contact(True)
+    clock[0] += 599
+    plugin._note_contact(True)
+    assert len(saves) == 1
+    clock[0] += 2
+    plugin._note_contact(True)
+    assert len(saves) == 2
+    plugin._note_contact(False)                 # a failed attempt saves nothing
+    clock[0] += 3600
+    plugin._note_contact(False)
+    assert len(saves) == 2
+
+
+def test_remote_train_ignores_a_malformed_status_file(tmp_path):
+    from kestrel_pi.agent import REMOTE_STAGING_DIR
+    staging = tmp_path / "agent" / REMOTE_STAGING_DIR
+    staging.mkdir(parents=True)
+    for text in ("not json", "[]", '{"last_contact": true}',
+                 '{"last_contact": "x", "last_model": -5, "last_model_algorithm": 7}',
+                 '{"last_model": 1e400, "last_model_algorithm": "DQN"}'):
+        (staging / "remote-status.json").write_text(text)
+        plugin, _mod, _ad = _make_remote_train(tmp_path)
+        assert plugin._last_contact is None, text
+        assert plugin._last_pull is None, text
+
+
+def test_remote_train_status_file_leaves_host_models_alone(tmp_path):
+    # host-models.json is read as {slug: record}; the status lives elsewhere.
+    from kestrel_pi.agent import spec
+    plugin, _mod, _ad = _make_remote_train(tmp_path)
+    meta = {"algorithm": "DQN", "spec_version": spec.SPEC_VERSION,
+            "data_watermark": {"latest_ts": 300.0, "episodes": 99}}
+    plugin._rsync_down = _fake_host(meta)
+    plugin._pull_and_stage("DQN", "dqn")
+    plugin._record_pull("DQN")
+    plugin._note_contact(True)
+    assert set(plugin._host_models()) == {"dqn"}
+
+
+def test_remote_train_status_save_failure_is_logged_once(tmp_path, caplog):
+    from kestrel_pi.agent import REMOTE_STAGING_DIR
+    plugin, _mod, agent_dir = _make_remote_train(tmp_path)
+    # A file where the staging dir should be: every save fails.
+    with open(os.path.join(agent_dir, REMOTE_STAGING_DIR), "w") as handle:
+        handle.write("")
+    with caplog.at_level(logging.INFO):
+        plugin._save_status()
+        plugin._save_status()
+    assert sum("could not save" in r.getMessage() for r in caplog.records) == 1
+
+
 def test_remote_train_launch_script_runs_the_trainer_detached(tmp_path):
     plugin, _mod, _ad = _make_remote_train(tmp_path, timesteps=123456)
     script = plugin._train_launch_script("DQN", "dqn")
