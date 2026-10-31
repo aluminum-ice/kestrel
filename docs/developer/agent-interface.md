@@ -39,7 +39,7 @@ the contract.
   `posture = index // 8`, `dwell = (index % 8) // 2`, `transmit = index % 2`.
   (e.g. `0` = sweep-band @ 2s active; `31` = autohunt @ 20s passive.)
 - **Postures are adapter-independent.** A posture is a *channel plan realized
-  through AngryOxide v0.9.3 launch flags only* — there is no live or per-target
+  through AngryOxide v0.9.4 launch flags only* — there is no live or per-target
   control to expose. The concrete channel(s) come from the live channel ranking
   (`spec.rank_channels`), not from the action, so the action never changes with
   the dongle. `spec.posture_to_plan(posture, ranking, bands, lock_subset_n)`
@@ -340,7 +340,7 @@ recomputed from the logs, so the dashboard and the CLI reconcile.
   meanings above. A model whose sidecar `spec_version` does not match falls back
   to the baseline instead of loading — so every v1 model falls back under v2
   until it is retrained or a v2 model is imported.
-- **Not frozen in v1**: live RF observations. AngryOxide v0.9.3 exposes no
+- **Not frozen in v1**: live RF observations. AngryOxide v0.9.4 exposes no
   stable live-status API, so the default status source returns `None` and the
   per-channel/global RF features are best-effort and may be all-zero; the
   append-only **store-delta yield still drives the reward** regardless. A future

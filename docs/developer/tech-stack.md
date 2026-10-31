@@ -171,7 +171,7 @@ arm64 wheel, and keep `torch` on a version that ships a 3.11/arm64 wheel.
 
 ### Capture engine
 
-**AngryOxide v0.9.3**, the `angryoxide-linux-aarch64-musl` static build (musl, so
+**AngryOxide v0.9.4**, the `angryoxide-linux-aarch64-musl` static build (musl, so
 no glibc-version dependency across boards), downloaded and SHA-256 verified by
 the playbook. It is the external process that does the actual 802.11 capture;
 kestrel launches and steers it.

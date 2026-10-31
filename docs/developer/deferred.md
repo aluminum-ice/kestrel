@@ -96,30 +96,6 @@ How to use this file:
 - **Pick up when:** the next release that is already reflash-class for a larger
   reason, so this rides along at no extra reflash cost.
 
-### Ship the AngryOxide build with batched database writes
-
-- **What:** AngryOxide v0.9.3 inserts and commits one kismet-database row per
-  captured frame. On an SD card that tops out around 66 rows/s, so in a busy RF
-  area the database falls minutes behind real time, and every frame costs a
-  separate synced write. The aluminum-ice AngryOxide fork now batches the
-  inserts into one transaction per drain (merged there, not yet released).
-  Kestrel no longer reads that database (the Environment count comes from the
-  pcapng, see `docs/developer/capture-interface.md`), so this is a performance
-  and SD-card-wear improvement, not a fix for anything Kestrel shows.
-- **Why deferred:** shipping a new AngryOxide build changes
-  `packages.angryoxide` (version and checksum) in `builder/config.yml`, which
-  makes the release reflash-class; the in-place update engine doesn't replace
-  `/usr/bin/angryoxide`.
-- **What to do:** test the fork's build on a Pi in a busy area (database rows/s
-  vs frames/s, its newest `ts_sec` vs wall clock, AngryOxide's memory in
-  `scripts/pull-health.sh`, a clean stop), tag a fork release so its CI builds
-  the aarch64-musl tarball, then bump `packages.angryoxide` (version, checksum)
-  and force `update_kind=reflash` for that release.
-- **Pick up when:** the next release that is already reflash-class for a larger
-  reason, or sooner if Pi Zero 2 W units are used for long captures in busy
-  areas. Until then, a lower `[capture.housekeeping] max_run_mb` makes the
-  launcher restart AngryOxide more often.
-
 ## Recovered networks (`kestrel_pi.recovered`)
 
 ### Support the default `hashcat.potfile` format

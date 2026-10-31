@@ -31,7 +31,7 @@ SPEC_VERSION = 2
 
 # -- action vocabulary ------------------------------------------------------
 # A scan posture is a structured channel plan realized purely through
-# AngryOxide v0.9.3 launch flags (see docs/developer/agent-interface.md, "Action
+# AngryOxide v0.9.4 launch flags (see docs/developer/agent-interface.md, "Action
 # space"): there is no live or per-target control to
 # expose. The concrete channel(s) a posture uses come from the live channel
 # ranking, NOT from the action, so the action stays adapter-independent.

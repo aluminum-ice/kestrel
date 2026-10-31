@@ -139,7 +139,7 @@ log_max_mb = 64             # cap on episode logs (oldest rotate out) so the age
 
 [agent.action]
 # The discrete action is posture x dwell-bucket x transmit; each piece maps only
-# to an AngryOxide v0.9.3 launch flag. There is no live or per-target control.
+# to an AngryOxide v0.9.4 launch flag. There is no live or per-target control.
 postures = ["sweep-band", "lock-subset", "pin-channel", "autohunt"]
 lock_subset_n = 3                # top-N channels for the lock-subset posture (-c list)
 dwell_buckets = [2, 5, 10, 20]   # seconds the agent may choose (maps to --dwell)

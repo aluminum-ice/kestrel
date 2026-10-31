@@ -605,7 +605,7 @@ class AgentController:
 
     # -- status source (best-effort RF; see module docstring) -----------
     def _default_status_source(self):
-        """AngryOxide v0.9.3 exposes no stable live-status API, so RF
+        """AngryOxide v0.9.4 exposes no stable live-status API, so RF
         observations are best-effort and may be empty; the store-delta yield
         still drives the reward. A future contract_version bump could add a
         live status channel here. Returns None (empty RF obs) for now."""
