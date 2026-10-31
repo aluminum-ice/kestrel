@@ -60,7 +60,7 @@ def _plugins_enabled(env):
 def test_declarations_read_statically(env):
     plugins = ctl.static_plugins()
     assert set(plugins) == {"gps", "memtemp", "session-stats", "wigle",
-                            "wpa-sec", "backup", "ups-hat", "updates",
+                            "wpa-sec", "backup", "updates",
                             "remote-train", "eink-ws213", "eink-ws27", "ups-ws", "ups-wsc", "ups-wsd", "ups-wse", "downloads", "map",
                             "ntfy", "telegram"}
     # downloads only serves the operator's own browser: no ack-gated network.
@@ -418,7 +418,7 @@ def test_power_unknown_action_is_refused(env):
 
 
 def test_power_works_regardless_of_web_auth(env):
-    # Power is device-safety automation (the ups-hat low-battery shutdown), so
+    # Power is device-safety automation (a UPS plugin's low-battery shutdown), so
     # unlike capture/plugin controls it is NOT gated on web auth at the socket;
     # the web buttons are gated at the route instead.
     cs.set_value(str(env / "config.toml"), "web", "auth", '"none"')

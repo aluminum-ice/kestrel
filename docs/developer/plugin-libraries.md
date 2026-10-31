@@ -115,8 +115,8 @@ its `LIB_API`; a test (`tests/test_load_library.py`) keeps the two in step.
 | `alerts` | `_lib_alerts.py` | 1.0 | stable | `ntfy`, `telegram` |
 | `eink_face` | `_lib_eink_face.py` | 1.1 | stable | `eink-ws27`, `eink-ws213` |
 | `hat_keys` | `_lib_hat_keys.py` | 0.1 | provisional | `eink-ws27` |
-| `ina219` | `_lib_ina219.py` | 1.1 | stable | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-hat` (deprecated) |
-| `ups` | `_lib_ups.py` | 0.3 | provisional | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-wse`, `ups-hat` (deprecated) |
+| `ina219` | `_lib_ina219.py` | 1.1 | stable | `ups-ws`, `ups-wsc`, `ups-wsd` |
+| `ups` | `_lib_ups.py` | 0.3 | provisional | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-wse` |
 
 Each library has its own section below: what it is for, a minimal plugin using
 it, its public functions and classes, the rules it enforces and what stays in

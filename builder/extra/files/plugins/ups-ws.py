@@ -9,13 +9,9 @@ device down before the pack is exhausted, protecting the SD card from an abrupt
 power loss. The UPS HAT (C) and (D) are different boards (one cell, at 0x43)
 and are not supported here.
 
-This is the ``ups-hat`` plugin under a name that says which board it drives
-(``ups-ws`` plus Waveshare's model letter: the plain "UPS HAT" has none).
-``ups-hat`` stays, deprecated, for devices that still have it enabled, and
-gives way to this plugin when both are enabled; until a release that requires a
-reflash removes it, the two files are the same code, and
-``tests/test_ups_ws.py`` fails when they differ anywhere but the lines that
-must (the docstring, ``DEPRECATED``, the class name and the description).
+It replaced the ``ups-hat`` plugin (the same code under a name that says which
+board it drives: ``ups-ws`` plus Waveshare's model letter, which the plain "UPS
+HAT" doesn't have); ``ups-hat`` was removed in 1.0.11.
 
 **It confirms the HAT is actually present before doing anything.** On each poll
 it probes the INA219 at the HAT's I2C address and round-trips the (read/write)
@@ -58,10 +54,6 @@ ina219 = load_library(__file__, "ina219", api=1)
 # The plugin's name is its file name: it starts the log lines and names the
 # poll thread.
 NAME = os.path.splitext(os.path.basename(__file__))[0]
-# A plugin kept only for devices that still have it enabled names its
-# replacement; the notice shows on the Plugins page and in the log, and the
-# plugin gives way to any other UPS plugin that is enabled.
-DEPRECATED = ""
 BOARD = "UPS HAT"
 # The 2S Li-ion pack reads ~6.0V empty to ~8.4V full; percent is linear across
 # that span (Waveshare's demo formula).
@@ -96,17 +88,13 @@ class UpsWs(Plugin):
     # -- lifecycle -------------------------------------------------------
     def on_loaded(self):
         self._setup()
-        if DEPRECATED:
-            self.log.warning("%s: %s", NAME, DEPRECATED)
-            self.context.health_note = DEPRECATED
         self.monitor.start()
 
     def _setup(self):
         """Initialise state without starting the poll thread (the tests use this
         to exercise the readout and shutdown logic with no hardware)."""
         self.log = self.context.logger
-        self._monitor = ups.Monitor(self, NAME, self._probe, self._read, PACK, board=BOARD,
-                                    yields=bool(DEPRECATED), notice=DEPRECATED)
+        self._monitor = ups.Monitor(self, NAME, self._probe, self._read, PACK, board=BOARD)
 
     @property
     def monitor(self):

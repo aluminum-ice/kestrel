@@ -31,7 +31,7 @@ so a new service is only its settings and one request. Load it with
 
 What :class:`Alerts` handles: a digest of new handshakes every
 ``digest_minutes`` (counts only unless ``include_names``), a low battery or a
-switch to battery power (needs ``ups-hat``), a newer release (the ``updates``
+switch to battery power (needs a UPS plugin), a newer release (the ``updates``
 state file), capture stopping while it is switched on, and (opt-in) the device
 coming online. When to send: ``max_per_hour``, ``quiet_hours`` (urgent alerts
 get through) and backoff after a failure. An offline queue (``QUEUE_MAX``, kept

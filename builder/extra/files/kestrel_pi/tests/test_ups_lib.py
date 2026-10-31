@@ -1,7 +1,7 @@
 """The ups and ina219 plugin libraries (``plugins/_lib_ups.py``,
 ``plugins/_lib_ina219.py``): a UPS HAT's battery readout, card, time-to-shutdown
 estimate and auto-shutdown rules, and the INA219 driver, tested once here with
-no hardware (a fake I2C bus and a fake plugin). The ups-hat plugin's wiring is
+no hardware (a fake I2C bus and a fake plugin). The ups-ws plugin's wiring is
 tested in test_reference_plugins.py."""
 
 import logging
@@ -14,9 +14,9 @@ from kestrel_pi import load_library
 from kestrel_pi.ui import StubUI, UIState
 
 PLUGIN_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "plugins"))
-UPS = load_library(os.path.join(PLUGIN_DIR, "ups-hat.py"), "ups", api=0)
+UPS = load_library(os.path.join(PLUGIN_DIR, "ups-ws.py"), "ups", api=0)
 REAL_RUN = UPS.Monitor._run          # the poll loop, before any test stubs it
-INA = load_library(os.path.join(PLUGIN_DIR, "ups-hat.py"), "ina219", api=1)
+INA = load_library(os.path.join(PLUGIN_DIR, "ups-ws.py"), "ina219", api=1)
 
 
 class FakeBus:
@@ -80,7 +80,7 @@ def _card(monitor, name="test-ups"):
 
 # -- ina219 ---------------------------------------------------------------------
 
-def test_the_16v_5a_calibration_is_what_ups_hat_always_programmed():
+def test_the_16v_5a_calibration_is_what_ups_ws_programs():
     cal = INA.CAL_16V_5A
     assert (cal.cal_value, cal.current_lsb_ma, cal.power_lsb_w) == (26868, 0.1524, 0.003048)
     assert cal.config == (0x00 << 13) | (0x01 << 11) | (0x0D << 7) | (0x0D << 3) | 0x07
@@ -325,11 +325,11 @@ def test_the_first_started_reads_and_a_second_stands_down(started):
 
 
 def test_a_deprecated_plugin_gives_way_whichever_starts_first(started):
-    old = started(_named("ups-hat", yields=True, notice="deprecated: replaced by ups-ws"))
+    old = started(_named("old-ups", yields=True, notice="deprecated: replaced by ups-ws"))
     new = started(_named("ups-ws"))
     assert old.active() is new and new.active() is new
     old._stand_down(old.active())
-    assert _card(old, "ups-hat")["status"]["value"] == "replaced by ups-ws, which is enabled"
+    assert _card(old, "old-ups")["status"]["value"] == "replaced by ups-ws, which is enabled"
     assert old.plugin.context.health_note == (
         "deprecated: replaced by ups-ws; standing down: replaced by ups-ws, which is enabled")
 
@@ -343,7 +343,7 @@ def test_a_stood_down_monitor_takes_over_when_the_active_one_stops(started):
 
 
 def test_a_lone_deprecated_plugin_still_reads(started):
-    old = started(_named("ups-hat", yields=True, notice="deprecated: replaced by ups-ws"))
+    old = started(_named("old-ups", yields=True, notice="deprecated: replaced by ups-ws"))
     assert old.active() is old
     assert old.ensure_device() is True
     assert old.plugin.context.health_note == "deprecated: replaced by ups-ws"
