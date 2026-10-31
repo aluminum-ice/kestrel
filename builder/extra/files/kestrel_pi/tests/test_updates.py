@@ -169,6 +169,22 @@ def test_min_update_from_forces_reflash(tmp_path):
     assert state["kind"] == "reflash"
 
 
+def test_a_stable_release_with_a_beta_floor_is_offered_only_from_that_beta_on(tmp_path):
+    # A stable release that needs a reflash from the previous stable one but not
+    # from the betas of its cycle carries min_update_from = the oldest of those
+    # betas: offered on it and later betas, reflash for the previous stable.
+    mod = _load()
+    manifest = {"kind": "app-layer", "min_update_from": "1.0.11-beta.1"}
+    for installed in ("1.0.11-beta.1", "1.0.11-beta.2"):
+        plugin = _plugin(tmp_path, mod, installed=installed, online=False)
+        state = plugin._compute_state(installed, _release("1.0.11", manifest), manifest)
+        assert state["offerable"] is True, (installed, state)
+    plugin = _plugin(tmp_path, mod, installed="1.0.10", online=False)
+    state = plugin._compute_state("1.0.10", _release("1.0.11", manifest), manifest)
+    assert state["offerable"] is False and state["kind"] == "reflash"
+    assert "1.0.11-beta.1" in state["reason"]
+
+
 def test_dev_build_is_never_offered(tmp_path):
     mod = _load()
     plugin = _plugin(tmp_path, mod, installed="master", online=False)

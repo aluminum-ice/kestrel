@@ -143,71 +143,20 @@ jobs:
     # compared with the previous stable one, so the betas in between can't hide
     # a build change from a device that never ran them; a beta is compared with
     # the release just below it, beta or stable (the plugin checks every beta
-    # in a beta device's gap). See docs/developer/updates-setup.md.
+    # in a beta device's gap). A stable release that is reflash against the
+    # previous stable one is still app-layer for devices on the newest betas of
+    # its cycle when nothing in the build changed since them (min_update_from).
+    # The logic is .forgejo/update_manifest.py; see docs/developer/updates-setup.md.
     - name: Build the update manifest
       run: |
         set -eu
-        api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY"
-        prev=$(curl -fsS -H "Authorization: token $TOKEN" \
-          "$api/releases?limit=50&draft=false" 2>/dev/null \
-          | python3 -c "$PREV_RELEASE_PY" "$MY_VERSION" "$PRERELEASE" \
-          2>/dev/null || echo "")
-        echo "previous release: ${prev:-none}"
-        kind="$UPDATE_KIND"
-        reason=""
-        if [ "$kind" = auto ]; then
-          if [ -z "$prev" ]; then
-            kind=reflash
-            reason="first release; flash the image"
-          else
-            changed=$(git diff --name-only "$prev" "$GITHUB_SHA" 2>/dev/null || echo "__nodiff__")
-            if printf '%s\n' "$changed" | grep -Eq '^(builder/config\.(json|yml)|Makefile|\.(forgejo|github)/workflows/)'; then
-              kind=reflash
-              reason="the base image or build changed since $prev; flash the image"
-            else
-              kind=app-layer
-            fi
-          fi
-        elif [ "$kind" = reflash ]; then
-          reason="release marked reflash-only by the maintainer"
-        fi
-        python3 - "$MY_VERSION" "$kind" "$GITHUB_SHA" "$reason" > update-manifest.json <<'PY'
-        import json, sys
-        version, kind, commit, reason = sys.argv[1:5]
-        manifest = {
-            "schema": 1,
-            "version": version,
-            "kind": kind,
-            "commit": commit,
-            "requires_reflash_reason": reason if kind == "reflash" else "",
-        }
-        print(json.dumps(manifest, indent=2))
-        PY
+        export RELEASES_API="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY"
+        python3 .forgejo/update_manifest.py "$MY_VERSION" "$PRERELEASE" \
+          "$UPDATE_KIND" "$GITHUB_SHA" > update-manifest.json
         echo "update-manifest.json:"; cat update-manifest.json
       env:
         TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
         UPDATE_KIND: ${{ inputs.update_kind }}
-        # Print the highest release below argv[1] (skipping betas when argv[2]
-        # is "false"), read from the Forgejo release list on stdin.
-        PREV_RELEASE_PY: |
-          import json, re, sys
-          def key(tag):
-              m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?", tag or "")
-              if not m:
-                  return None
-              nums = tuple(int(g) for g in m.groups()[:3])
-              return nums + ((1, 0) if m.group(4) is None else (0, int(m.group(4))))
-          here, stable = key(sys.argv[1]), sys.argv[2] == "false"
-          best = None
-          for rel in json.load(sys.stdin):
-              k = key(rel.get("tag_name"))
-              if rel.get("draft") or k is None or k >= here:
-                  continue
-              if stable and (rel.get("prerelease") or k[3] == 0):
-                  continue
-              if best is None or k > best[0]:
-                  best = (k, rel["tag_name"])
-          print(best[1] if best else "")
 
     # Build grouped release notes (New / Improvements / Fixes) from the commits
     # unique to this release, with an install-type line from the manifest.

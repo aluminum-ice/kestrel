@@ -370,7 +370,8 @@ The same checks run in the **Lint** Forgejo Actions workflow on every push and p
 │       └── deployments/      # empty; add files to copy into the image
 ├── .forgejo/
 │   ├── workflows/            # Release, Lint and Test CI (Forgejo Actions)
-│   └── gen-release-notes.py  # release-notes helper
+│   ├── gen-release-notes.py  # release-notes helper
+│   └── update_manifest.py    # builds each release's update-manifest.json
 ├── CLAUDE.md                 # guidance for Claude Code
 └── .claude/                  # Claude Code project settings and session hook
 ```

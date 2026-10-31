@@ -150,12 +150,14 @@ lint:
 	# captures or device data (CLAUDE.md, "Nothing real in the repo").
 	python3 tools/real-data-check/real_data_check.py
 
-# Framework unit tests (run on the build host or in CI, not on the device; need pytest and
-# flask/requests). Not part of `lint`/CI, which only has the lint tools.
+# Unit tests: the kestrel_pi package (needs pytest and flask/requests), the
+# real-data check and the release tooling (.forgejo). Run on the build host and
+# by the Test workflow, never on the device.
 .PHONY: test
 test:
 	cd builder/extra/files/kestrel_pi && python3 -m pytest -q
 	python3 -m pytest -q tools/real-data-check
+	python3 -m pytest -q .forgejo
 
 clean:
 	- rm -f $(PACKER) $(PACKER_ZIP) $(PISHRINK)

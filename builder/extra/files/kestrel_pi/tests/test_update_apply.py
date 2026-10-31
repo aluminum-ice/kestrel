@@ -730,6 +730,22 @@ def test_verify_accepts_a_newer_app_layer_release(tmp_path):
         "0.6.6", SHA, FORGE, "o/r")
 
 
+def test_verify_honours_a_stable_release_floored_at_a_beta(tmp_path):
+    # 1.0.11-beta.1 needed a reflash, beta.2 didn't, and 1.0.11 is app-layer
+    # from beta.1 on (min_update_from): fine from either beta (the betas in
+    # between don't count for a stable target), refused from 1.0.10.
+    releases = [_rel("1.0.11"), _rel("1.0.11-beta.2"), _rel("1.0.11-beta.1"),
+                _rel("1.0.10")]
+    manifests = {"1.0.11": dict(_app(), min_update_from="1.0.11-beta.1"),
+                 "1.0.11-beta.2": _app(),
+                 "1.0.11-beta.1": {"kind": "reflash", "commit": SHA}}
+    for installed in ("1.0.11-beta.1", "1.0.11-beta.2"):
+        out = _verify(tmp_path, "1.0.11", releases, manifests, installed=installed)
+        assert out["ok"] is True, (installed, out)
+    out = _verify(tmp_path, "1.0.11", releases, manifests, installed="1.0.10")
+    assert out["ok"] is False and "1.0.11-beta.1" in out["error"]
+
+
 def test_verify_sends_the_token_only_to_the_configured_host(tmp_path):
     calls = []
     out = _verify(tmp_path, "0.6.6",

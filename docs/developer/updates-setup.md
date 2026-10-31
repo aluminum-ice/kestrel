@@ -372,13 +372,18 @@ to apply it:
   was built from.
 - `min_update_from` *(optional)* — the oldest installed version this in-place
   update may be applied on top of. An installed version older than this is told
-  to reflash (the file layout changed too much to patch).
+  to reflash. The workflow sets it on a stable release that needs a reflash from
+  the previous stable one but not from the newest betas of its own cycle, so a
+  device that already flashed such a beta updates in place.
 - `requires_reflash_reason` *(optional)* — a short human reason shown when
   `kind` is `"reflash"`.
 
 The workflow marks a release `"reflash"` when the diff since the previous
 release (by version; for a stable release, the previous *stable* one) touched build-layer inputs (apt package lists, the base image, boot
-config, or the playbook's non-application tasks); otherwise `"app-layer"`.
+config, or the playbook's non-application tasks); otherwise `"app-layer"`. A
+stable release marked reflash that way is still `"app-layer"` with a
+`min_update_from` when nothing in the build changed after one of its betas (see
+`docs/developer/releasing.md`).
 
 ## Configuration reference
 

@@ -49,18 +49,6 @@ How to use this file:
   two overlapping backups contending), or the `run()` wrapper gains process-group
   handling for another reason.
 
-### Don't make beta testers reflash for a stable release after a reflash beta
-
-- **What:** a stable release's manifest is built against the previous stable
-  release, so if any beta in the cycle needed a reflash, the stable release is
-  reflash too — even for devices that already flashed that beta.
-- **Why deferred:** conservative and correct; it only costs beta testers an
-  unnecessary flash.
-- **What to do:** have the Release workflow also record, per stable release, the
-  oldest version it can be applied on in place (`min_update_from`, already
-  honoured by the plugin and `--verify`) computed across the betas.
-- **Pick up when:** beta cycles with reflash betas become routine.
-
 ### One implementation of the update decision
 
 - **What:** the plugin (`plugins/updates.py`, as pi) and the engine's `--verify`
