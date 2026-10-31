@@ -114,3 +114,75 @@ def _decode(buf, i, depth, max_depth, max_items):
             raise BencodeError("string runs past the end")
         return buf[start:end], end
     raise BencodeError("unknown type")
+
+
+# -- CRC32-C and BEP 42 ------------------------------------------------------------
+
+def _crc_table():
+    table = []
+    for n in range(256):
+        c = n
+        for _ in range(8):
+            c = (c >> 1) ^ 0x82F63B78 if c & 1 else c >> 1
+        table.append(c)
+    return table
+
+
+_CRC32C = _crc_table()
+
+
+def crc32c(data):
+    """CRC32-C (Castagnoli), which BEP 42 uses; ``zlib.crc32`` is a different
+    polynomial."""
+    c = 0xFFFFFFFF
+    for byte in data:
+        c = _CRC32C[(c ^ byte) & 0xFF] ^ (c >> 8)
+    return c ^ 0xFFFFFFFF
+
+
+def ip_int(ip):
+    """An IPv4 address as an integer; ValueError for anything else."""
+    import socket
+    try:
+        return int.from_bytes(socket.inet_aton(ip), "big")
+    except (OSError, TypeError):
+        raise ValueError("not an IPv4 address: %r" % (ip,)) from None
+
+
+# BEP 42 doesn't apply to these, so a node there may have any ID.
+_BEP42_EXEMPT = ((0x0A000000, 8), (0xAC100000, 12), (0xC0A80000, 16),
+                 (0xA9FE0000, 16), (0x7F000000, 8))
+
+
+def bep42_exempt(ip):
+    value = ip_int(ip)
+    return any(value >> (32 - bits) == net >> (32 - bits) for net, bits in _BEP42_EXEMPT)
+
+
+def _bep42_crc(ip, rand):
+    return crc32c(((ip_int(ip) & 0x030F3FFF) | ((rand & 7) << 29)).to_bytes(4, "big"))
+
+
+def bep42_valid(node_id, ip):
+    """Whether a node ID belongs to the IPv4 address it answered from: its
+    first 21 bits come from a CRC32-C of the masked address and the 3 random
+    bits carried in its last byte (BEP 42)."""
+    if not isinstance(node_id, bytes) or len(node_id) != 20:
+        return False
+    try:
+        if bep42_exempt(ip):
+            return True
+        crc = _bep42_crc(ip, node_id[19])
+    except ValueError:
+        return False
+    return (node_id[0] == (crc >> 24) & 0xFF and node_id[1] == (crc >> 16) & 0xFF
+            and (node_id[2] & 0xF8) == ((crc >> 8) & 0xF8))
+
+
+def bep42_make_id(ip, rng):
+    """A BEP 42-valid node ID for ``ip``, with the rest random. For tests."""
+    rand = rng.randrange(256)
+    crc = _bep42_crc(ip, rand)
+    head = bytes([(crc >> 24) & 0xFF, (crc >> 16) & 0xFF,
+                  ((crc >> 8) & 0xF8) | rng.randrange(8)])
+    return head + bytes(rng.randrange(256) for _ in range(16)) + bytes([rand])

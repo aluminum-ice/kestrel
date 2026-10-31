@@ -184,3 +184,43 @@ def test_bdecode_fuzz_only_ever_raises_bencode_error():
             dht.bdecode(bytes(data))
         except dht.BencodeError:
             pass
+
+
+# -- step 3: CRC32-C and BEP 42 ----------------------------------------------------
+
+def test_crc32c_check_value():
+    assert dht.crc32c(b"123456789") == 0xE3069283
+    assert dht.crc32c(b"") == 0
+
+
+def test_bep42_ids_made_for_an_address_validate_there_only():
+    import random
+    rng = random.Random(42)
+    for ip in ("192.0.2.1", "198.51.100.77", "203.0.113.250"):
+        for _ in range(20):
+            nid = dht.bep42_make_id(ip, rng)
+            assert len(nid) == 20 and dht.bep42_valid(nid, ip)
+            # The same ID from another address, or with a flipped prefix bit,
+            # fails (almost always: only 21 bits are checked, so allow none).
+            assert not dht.bep42_valid(bytes([nid[0] ^ 0x80]) + nid[1:], ip)
+            assert not dht.bep42_valid(nid[:2] + bytes([nid[2] ^ 0x08]) + nid[3:], ip)
+    # Only the low 3 bits of the last byte feed the check.
+    nid = dht.bep42_make_id("192.0.2.1", rng)
+    assert dht.bep42_valid(nid[:19] + bytes([nid[19] ^ 0xF8]), "192.0.2.1")
+    changed = [r for r in range(8) if r != nid[19] & 7
+               and dht._bep42_crc("192.0.2.1", r) >> 11
+               != dht._bep42_crc("192.0.2.1", nid[19]) >> 11]
+    assert changed and not dht.bep42_valid(
+        nid[:19] + bytes([(nid[19] & 0xF8) | changed[0]]), "192.0.2.1")
+
+
+def test_bep42_exempt_ranges_and_bad_input():
+    for ip in ("10.1.2.3", "172.16.0.9", "172.31.255.1", "192.168.4.4",
+               "169.254.1.1", "127.0.0.1"):
+        assert dht.bep42_exempt(ip) and dht.bep42_valid(bytes(20), ip)
+    for ip in ("172.32.0.1", "192.0.2.1", "11.0.0.1"):
+        assert not dht.bep42_exempt(ip)
+    assert not dht.bep42_valid(bytes(19), "192.0.2.1")
+    assert not dht.bep42_valid("x" * 20, "192.0.2.1")
+    assert not dht.bep42_valid(bytes(20), "not-an-ip")
+    assert not dht.bep42_valid(bytes(20), "2001:db8::1")
