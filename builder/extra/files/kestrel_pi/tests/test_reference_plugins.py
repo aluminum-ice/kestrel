@@ -2758,3 +2758,46 @@ def test_every_shipped_row_button_survives_normalization():
                 kept = normalize_actions(declared)
                 assert len(kept) == len(declared), "%s: a row button is dropped" % fname
                 assert all(a["path"] for a in kept), fname
+
+
+# -- every plugin page opens with the standard way back ----------------------
+
+_NAV = '<p><a href="/plugins">&larr; Plugins</a> &middot; <a href="/">Dashboard</a></p>'
+_NAV_TOKEN = ('<p><a href="/plugins?token=abc">&larr; Plugins</a> &middot; '
+              '<a href="/?token=abc">Dashboard</a></p>')
+
+
+def test_backup_restore_pages_link_back_to_plugins_and_the_dashboard(tmp_path):
+    plugin, _mod = _make_backup(tmp_path, ssh_key=str(tmp_path / "id"))
+    (tmp_path / "id").write_text("K")
+    plugin.context._apply = lambda change: {"ok": True}
+    plugin.context.form_csrf = "tok"
+    confirm = plugin.on_webhook("restore", _req(method="GET")).body
+    assert confirm.index(_NAV) < confirm.index("<h1>")
+    started = plugin.on_webhook("restore", _req(method="POST", form={"confirm": "yes"},
+                                               args={"token": "abc"})).body
+    assert started.index(_NAV_TOKEN) < started.index("<h1>")
+
+
+def test_wpa_sec_cracked_page_links_back_to_plugins_and_the_dashboard(tmp_path):
+    plugin = _wpa_sec_for_webhook(tmp_path, web_authed=False)
+    body = plugin.on_webhook("cracked", _req()).body
+    assert body.index(_NAV) < body.index("<h1>")
+    assert _NAV_TOKEN in plugin.on_webhook("cracked", _req(args={"token": "abc"})).body
+
+
+def test_session_stats_page_uses_the_dashboard_shell_and_links_back(tmp_path):
+    mod = _load_module("session-stats.py", "session_stats_page_under_test")
+    plugin = mod.SessionStats()
+    plugin.options = {}
+    plugin.context = _ctx(tmp_path, ("ui", "web"), name="session-stats")
+    plugin.on_loaded()
+    plugin.on_handshake(types.SimpleNamespace(bssid="AA:BB:CC:DD:EE:01"))
+    plugin.on_epoch(4, {})
+    page = plugin.on_webhook("", _req())
+    assert page.title == "Session stats"
+    assert page.body.index(_NAV) < page.body.index("<h1>Session stats</h1>")
+    assert "Handshakes: <b>1</b>" in page.body and "Epochs: <b>4</b>" in page.body
+    assert _NAV_TOKEN in plugin.on_webhook("", _req(args={"token": "abc"})).body
+    body, status, headers = plugin.on_webhook("stats.json", _req())
+    assert status == 200 and json.loads(body)["handshakes"] == 1

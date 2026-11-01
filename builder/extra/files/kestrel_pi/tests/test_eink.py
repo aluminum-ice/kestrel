@@ -215,8 +215,12 @@ def test_mirror_page_back_link_is_at_the_top(tmp_path):
     # before the heading, not at the bottom of the page.
     p = _plugin(tmp_path)
     page = p._mirror_page()
-    assert '<a href="/plugins">' in page.body
+    assert ('<p><a href="/plugins">&larr; Plugins</a> &middot; '
+            '<a href="/">Dashboard</a></p>') in page.body
     assert page.body.index('href="/plugins"') < page.body.index("<h1>")
+    # A token login keeps its token on both links.
+    page = p._mirror_page(types.SimpleNamespace(args={"token": "abc"}))
+    assert 'href="/plugins?token=abc"' in page.body and 'href="/?token=abc"' in page.body
 
 
 def test_ui_card_reports_cached_mood_and_panel_state(tmp_path):

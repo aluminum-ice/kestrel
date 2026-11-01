@@ -306,8 +306,9 @@ class WpaSec(Plugin):
                                      "<h1>Not found</h1>", status=404)
         esc = self.context.esc
         token = request.args.get("token") or ""
-        back = ('<p><a href="/plugins' + self._qs({"token": token})
-                + '">&larr; Plugins</a></p>')
+        qs = self._qs({"token": token})
+        back = ('<p><a href="' + esc("/plugins" + qs) + '">&larr; Plugins</a> &middot; '
+                '<a href="' + esc("/" + qs) + '">Dashboard</a></p>')
         if not self.context.web_authed:
             return self.context.page(
                 "recovered networks - kestrel",

@@ -174,14 +174,12 @@ class Backup(Plugin):
                                          error=True)
         # The root helper runs the (possibly slow) restore in the background.
         body = (
-            "<h1>Restoring…</h1>"
+            self._nav(request) + "<h1>Restoring…</h1>"
             "<p>Pulling the capture data and the agent model back from the "
             "backup in the background. Larger stores take a while; the "
             "dashboard's backup card and the journal show progress. Settings "
             "are not restored, so re-enable capture and plugins and re-enter "
-            "any keys once it is done.</p>"
-            + '<p><a href="/plugins' + self._qs(request) + '">'
-            "Back to Plugins</a></p>")
+            "any keys once it is done.</p>")
         return self.context.page("kestrel - restore", body)
 
     def _restore_confirm_page(self, request):
@@ -193,7 +191,7 @@ class Backup(Plugin):
         token_field = ('<input type="hidden" name="token" value="' + esc(token)
                        + '">' if token else "")
         body = (
-            "<h1>Restore from the backup?</h1>"
+            self._nav(request) + "<h1>Restore from the backup?</h1>"
             + '<div class="ack"><p>This pulls the capture store and the learning '
             "agent's model and logs back from the remote backup, overwriting any "
             "local files of the same name (nothing on the remote is changed). It "
@@ -207,6 +205,12 @@ class Backup(Plugin):
             + '<button type="submit">Restore now</button></form></div>'
             + '<p><a href="/plugins' + self._qs(request) + '">Cancel</a></p>')
         return self.context.page("kestrel - restore", body)
+
+    def _nav(self, request):
+        """The standard way back, as on the other plugin pages."""
+        esc, qs = self.context.esc, self._qs(request)
+        return ('<p><a href="' + esc("/plugins" + qs) + '">&larr; Plugins</a> &middot; '
+                '<a href="' + esc("/" + qs) + '">Dashboard</a></p>')
 
     @staticmethod
     def _qs(request):

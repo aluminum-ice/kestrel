@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from urllib.parse import urlencode
 
 from kestrel_pi import Plugin
 
@@ -90,13 +91,18 @@ class SessionStats(Plugin):
         snap = self._snapshot()
         if path == "stats.json":
             return (json.dumps(snap), 200, {"Content-Type": "application/json"})
-        body = (
-            "<!doctype html><meta charset='utf-8'><title>session-stats</title>"
-            "<h1>session-stats</h1><ul>"
-            "<li>uptime: {uptime_seconds}s</li>"
-            "<li>handshakes: {handshakes}</li>"
-            "<li>unique APs: {unique_aps}</li>"
-            "<li>epochs: {epochs}</li></ul>"
-            "<p><a href='stats.json'>stats.json</a></p>"
-        ).format(**snap)
-        return (body, 200, {"Content-Type": "text/html"})
+        # In the dashboard's own page shell, with the standard way back (a token
+        # login carries its token along).
+        esc = self.context.esc
+        token = (getattr(request, "args", None) or {}).get("token") or ""
+        qs = "?" + urlencode([("token", token)]) if token else ""
+        rows = (("Uptime", _format_uptime(snap["uptime_seconds"])),
+                ("Handshakes", snap["handshakes"]), ("Unique APs", snap["unique_aps"]),
+                ("Epochs", snap["epochs"]))
+        body = ('<p><a href="' + esc("/plugins" + qs) + '">&larr; Plugins</a> &middot; '
+                '<a href="' + esc("/" + qs) + '">Dashboard</a></p><h1>Session stats</h1>'
+                '<div class="card pad">'
+                + "".join("<p>%s: <b>%s</b></p>" % (esc(k), esc(v)) for k, v in rows)
+                + '</div><p class="muted">Since the plugin daemon last started. Also as '
+                '<a href="' + esc("stats.json" + qs) + '">JSON</a>.</p>')
+        return self.context.page("Session stats", body)
