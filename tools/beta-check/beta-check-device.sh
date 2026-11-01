@@ -275,7 +275,13 @@ PY
   # 3.8: with tether_only, the daemon's census socket is bound to the tether.
   # Counts only: no socket address is printed.
   dpid=$(systemctl show -p MainPID --value kestrel-daemon.service 2>/dev/null)
+  # A Bluetooth PAN link has no carrier state, so a working tether reads
+  # "unknown": count it as up when the interface itself is up (IFF_UP).
   tether_up=$(cat /sys/class/net/bnep0/operstate 2>/dev/null || echo absent)
+  tether_flags=$(cat /sys/class/net/bnep0/flags 2>/dev/null || echo 0)
+  if [ "$tether_up" = unknown ] && [ $((tether_flags & 1)) -eq 1 ]; then
+    tether_up=up
+  fi
   bound=$(ss -uanp 2>/dev/null | grep "pid=${dpid:-none}," | grep -c '%bnep0:' || true)
   if [ "$census_tether" != true ]; then
     check 3.8 SKIP "the census socket is bound to the tether" "tether_only is off"
