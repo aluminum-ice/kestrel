@@ -12,10 +12,12 @@ what that release really draws. When the release changes something this
 module reaches into, it fails loudly instead of rendering a misleading page.
 """
 
+import calendar
 import copy
 import json
 import logging
 import os
+import random
 import sys
 import threading
 import time
@@ -44,6 +46,8 @@ EINK_NAMES = ("eink-ws27", "eink")
 # The UPS HAT's plugin: ups-ws in the releases that ship it (ups-hat is then
 # deprecated), ups-hat before that.
 UPS_NAMES = ("ups-ws", "ups-hat")
+# The census plugin, in the releases that ship it (1.0.12 on).
+CENSUS_NAME = "census"
 
 POSITION = {"lat": 12.34567, "lon": -45.67890, "alt": 18.0, "fix": 3, "sats": 11,
             "cn0": 41.0, "strong": 9}
@@ -62,6 +66,27 @@ RECORDED_FIXES = {
     "Corner Bookshop": [(0x41, 38.71060, -9.14230)],
     "Airport Free": [(0x11, 38.71650, -9.13150), (0x12, 38.71690, -9.13090)],
 }
+# An invented census, read on a fixed clock so its shots are the same on every
+# run (the page prints clock times and dates). Today's devices, as
+# ((release, agent state, algorithm, remote-training code), how many): agent
+# states 0 no agent, 1 not running, 2 scripted sweep, 3 learned; remote codes 0
+# not enabled .. 4 working. Then the days before, oldest first, as (active,
+# most online).
+CENSUS_NOW = calendar.timegm((2026, 11, 14, 18, 32, 0, 0, 0, 0))
+CENSUS_TODAY = [
+    (("1.0.12", 3, "RecurrentPPO", 4), 4), (("1.0.12", 3, "PPO", 3), 1),
+    (("1.0.12", 2, None, 0), 3), (("1.0.12", 3, "DQN", 1), 1),
+    (("1.0.12-beta.1", 3, "RecurrentPPO", 4), 2), (("1.0.12-beta.1", 2, None, 0), 1),
+    (("1.0.11", 3, "RecurrentPPO", 0), 6), (("1.0.11", 3, "RecurrentPPO", 4), 1),
+    (("1.0.11", 3, "PPO", 2), 2), (("1.0.11", 3, "DQN", 3), 2), (("1.0.11", 3, "QR-DQN", 0), 1),
+    (("1.0.11", 2, None, 0), 4), (("1.0.11", 1, "RecurrentPPO", 3), 1),
+    (("1.0.10", 2, None, 0), 2), (("1.0.10", 3, "RecurrentPPO", 2), 1),
+    (("1.0.10", 1, "RecurrentPPO", 0), 1), (("1.0.10", 0, None, 0), 1),
+    (("1.0.9", 0, None, 0), 1),
+]
+CENSUS_HISTORY = [(13, 4), (15, 5), (17, 6), (18, 7), (21, 8), (22, 9), (24, 10),
+                  (27, 11), (29, 11), (31, 12), (33, 13)]
+
 ESTIMATED_FIXES = [(0x61, 38.71180, -9.13790), (0x21, 38.71840, -9.13520),
                    (0x71, 38.71520, -9.14620), (0x72, 38.71560, -9.14580)]
 RECOVERED = [(0x31, "Cafe Guest"), (0x41, "Corner Bookshop"), (0x51, "Harbor Hotel"),
@@ -154,6 +179,9 @@ class Demo:
         self.ups_name = next(n for n in UPS_NAMES
                              if os.path.exists(os.path.join(files_dir, "plugins", n + ".py")))
         self.enabled = (self.eink_name,) + ENABLED_PLUGINS[:4] + (self.ups_name,) + ENABLED_PLUGINS[4:]
+        self.has_census = os.path.exists(os.path.join(files_dir, "plugins", CENSUS_NAME + ".py"))
+        if self.has_census:
+            self.enabled += (CENSUS_NAME,)
         sys.path.insert(0, os.path.join(files_dir, "kestrel_pi"))
         try:
             import tomllib
@@ -264,6 +292,8 @@ class Demo:
         self._previous_tag = previous_tag
         self._release_url = release_url
         self._fill_widgets()
+        if self.has_census:
+            self._fill_census(workdir)
 
     # -- plugin readouts -------------------------------------------------------
     def _instance(self, name):
@@ -354,6 +384,58 @@ class Demo:
         self._set(self.eink_name, {"face": eink._face_glyph(mood), "mood": mood, "voice": voice,
                            "mobility": labels.get(motion, "gps?"),
                            "panel": "detected"})
+
+    def _fill_census(self, workdir):
+        """Today's invented census, a few days of history and this device's own
+        report, set where the census plugin keeps them, so its own summary, card
+        and page code draw the shots. Its worker (started in on_ready, skipped
+        here) never runs, so nothing touches the DHT, and its state folder is
+        the scratch directory, not this desktop's home."""
+        census = self._instance(CENSUS_NAME)
+        census._state_dir = lambda: os.path.join(workdir, "census-state")
+        census.on_loaded()
+        plugin_globals = type(census).on_loaded.__globals__
+        proto, utc = plugin_globals["proto"], plugin_globals["_utc"]
+        now = CENSUS_NOW
+        census._now = lambda: now
+        today, hour, _minute = utc(now)
+        rng = random.Random(1012)
+        entries, online = {}, 0
+        for (release, state, algorithm, remote), count in CENSUS_TODAY:
+            for _ in range(count):
+                last = max(0, hour - rng.choice((0, 0, 1, 1, 2, 3, 5, 7, 9)))
+                online += last >= hour - 1
+                local = [rng.randint(0, 2), rng.randint(0, 4)] if state == 3 else [0, 0]
+                remote_counts = [rng.randint(0, 1) if remote == 4 else 0,
+                                 rng.randint(0, 1) if remote in (3, 4) else 0]
+                agent = proto.encode_agent(state, proto.ALGORITHMS.get(algorithm, 0), remote)
+                entries["%016x" % rng.getrandbits(64)] = (
+                    [last, proto.encode_version(release), agent] + local + remote_counts)
+        census._seen = {today: {"entries": entries, "read_at": now - 23 * 60,
+                                "online": online, "rejected": 0}}
+        tally = proto.Tally(entries.values())
+        census._history = {today: {"active": tally.active, "online": online, "capped": 0,
+                                   "contests": tally.contests, "working": tally.working}}
+        for back, (active, most) in enumerate(reversed(CENSUS_HISTORY), start=1):
+            local_won, local_lost = rng.randint(4, 9), rng.randint(14, 30)
+            remote_won, remote_lost = rng.randint(1, 4), rng.randint(0, 3)
+            census._history[utc(now - back * 86400)[0]] = {
+                "active": active, "online": most, "capped": 0,
+                "contests": [local_won, local_lost, remote_won, remote_lost],
+                "working": [rng.randint(0, local_won), rng.randint(2, local_lost),
+                            remote_won, remote_lost]}
+        # This device's day: reported this hour and checked, remote training
+        # working at the day's first write, and the contest baseline taken at
+        # UTC midnight (so "today" is the agent's tally minus it).
+        census._day = {"day": today, "token": "%016x" % rng.getrandbits(64), "slot": 17,
+                       "alt": 0, "nonce": None, "remote": proto.REMOTE_WORKING,
+                       "baseline": [1, 5, 1, 1], "cache": {},
+                       "bytes": int(2.6 * 1024 * 1024), "wrote": hour}
+        census._paused = ""
+        census._last_write = {"at": now - 9 * 60, "ok": True, "held": (7, 8)}
+        census._last_read = {"at": now - 23 * 60, "complete": True}
+        census._summarize(now)
+        census.on_ui_update(self.daemon.ui.for_plugin(CENSUS_NAME), self.ui_state())
 
     def ui_state(self):
         d = self.daemon
