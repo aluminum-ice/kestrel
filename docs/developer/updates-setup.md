@@ -261,7 +261,8 @@ anything was installed (the pre-update backup, or the download) is safe to
 retry, while "installed … but restart failed … rolled back" means the new
 version didn't come up — collect a bundle with
 `builder/extra/files/scripts/pull-web-diagnostics.sh` before retrying the same
-release. `kestrel update status` shows the same `last run:` detail from the
+release. An update that was **interrupted** (see below) says so: the previous
+version was restored at boot, and it is safe to retry on steady power. `kestrel update status` shows the same `last run:` detail from the
 terminal.
 
 ### If the pre-update backup fails
@@ -283,7 +284,8 @@ A power cut or crash mid-update leaves the in-progress marker behind. At the
 next boot `kestrel-update-recover.service` runs before the daemon, capture and
 the agent, and restores the previous files, package and version stamp from the
 backup the marker names; `kestrel update status` then shows the update was
-rolled back. Until it has run, a new update is refused. The update never touches
+rolled back, and the dashboard's Updates card says it was cut short and is
+safe to retry. Until it has run, a new update is refused. The update never touches
 the base OS, so the system stays bootable regardless.
 
 ### Security model
