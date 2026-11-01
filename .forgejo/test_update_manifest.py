@@ -127,6 +127,28 @@ def test_build_changed_reads_the_real_diff(tmp_path, monkeypatch):
     assert um.build_changed("no-such-tag", "HEAD") is True      # unknown counts as a change
 
 
+def test_only_the_release_workflow_counts_as_a_build_input(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".forgejo" / "workflows").mkdir(parents=True)
+    for name in ("main.yml", "lint.yml"):
+        (repo / ".forgejo" / "workflows" / name).write_text("on: push\n")
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "one")
+    _git(repo, "tag", "1.0.0")
+    (repo / ".forgejo" / "workflows" / "lint.yml").write_text("on: [push]\n")
+    (repo / ".forgejo" / "workflows" / "sync-github.yml").write_text("on: release\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "ci")
+    _git(repo, "tag", "1.0.1")
+    (repo / ".forgejo" / "workflows" / "main.yml").write_text("on: workflow_dispatch\n")
+    _git(repo, "commit", "-qam", "release workflow")
+    monkeypatch.chdir(repo)
+    assert um.build_changed("1.0.0", "1.0.1") is False       # lint and a new sync workflow
+    assert um.build_changed("1.0.1", "HEAD") is True         # the workflow that builds the image
+    assert not um.BUILD_INPUTS.match(".forgejo/workflows/main.yml.bak")
+
+
 def test_fetch_releases_reads_every_page(monkeypatch):
     pages = {1: [_rel("1.0.%d" % i) for i in range(um.PAGE)], 2: [_rel("0.9.0")]}
     seen = []

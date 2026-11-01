@@ -26,7 +26,7 @@ in CLAUDE.md. Pick one.
 -->
 
 - [ ] **App-layer-safe** — changes only files the in-place update engine carries: the `kestrel_pi` package, `plugins/*.py`, systemd units, the journald drop-in, a lib script already in the engine's `LIB_SCRIPTS`, or the CLI.
-- [ ] **Reflash-class** — touches a build input the engine does not carry onto a running device: apt or pip packages, boot options / `config.txt` / `cmdline`, kernel modules, the base image or partition size, `builder/config.json`, `builder/config.yml`, the `Makefile`, `.forgejo/workflows/`, a shipped config default (`config.toml` / `default.conf`), or a brand-new lib script.
+- [ ] **Reflash-class** — touches a build input the engine does not carry onto a running device: apt or pip packages, boot options / `config.txt` / `cmdline`, kernel modules, the base image or partition size, `builder/config.json`, `builder/config.yml`, the `Makefile`, the Release workflow (`.forgejo/workflows/main.yml`), a shipped config default (`config.toml` / `default.conf`), or a brand-new lib script.
 
 ## Notes for review
 

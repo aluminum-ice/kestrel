@@ -188,9 +188,11 @@ from in-repo source regardless; PyPI only serves an external
 
 `auto` (the default) marks the release **reflash** when the diff since the
 previous release touches a build-layer input — `builder/config.json`,
-`builder/config.yml`, `Makefile`, or anything under `.forgejo/workflows/` (or
-the old `.github/workflows/`) —
-and **app-layer** otherwise. The first-ever release is always reflash.
+`builder/config.yml`, `Makefile`, or the Release workflow itself
+(`.forgejo/workflows/main.yml`, or the old `.github/workflows/main.yml`) —
+and **app-layer** otherwise. The first-ever release is always reflash. The
+other workflows (Lint, Test, the GitHub sync) never change the image, so a
+change to them alone stays app-layer.
 
 Because the whole of `builder/config.yml` trips the auto rule, a harmless
 playbook edit (say, adding a `copy` task for a file the in-place engine already
