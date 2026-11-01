@@ -5,7 +5,7 @@
 flask==3.0.2
 markdown-it-py==3.0.0
 numpy==2.5.4
-Pillow==10.2.0
+Pillow==13.0.0
 playwright==1.64.1
 pytest
 requests==2.31.0
