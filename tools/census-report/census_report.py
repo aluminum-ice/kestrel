@@ -16,8 +16,8 @@ script and the devices can't disagree about the format. It needs Python 3 and
 
     python3 tools/census-report/census_report.py [--day YYYY-MM-DD] [--csv DIR]
 
-The numbers are approximate and unverified: anyone can write to a public slot,
-and only devices with the census plugin on are counted.
+The numbers are approximate and unverified, and only devices with the census
+plugin on are counted.
 """
 
 import argparse

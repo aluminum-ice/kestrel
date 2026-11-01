@@ -14,7 +14,7 @@ slot keys, so old and new devices never mix entries in one slot.
 
 Each UTC day has **64 slots**, numbered 0-63. Each slot is a
 [BEP 44](https://www.bittorrent.org/beps/bep_0044.html) mutable item whose
-signing key anyone can derive from a public string:
+signing key is derived from a public string:
 
 ```text
 kestrel-census/1|YYYY-MM-DD|<slot>          the slot
@@ -124,7 +124,8 @@ and drops entries with an hour above 23 or a failed proof-of-work.
   most one on-device contest every half hour or so, and one per remote model.
 - Tokens are new every day, so days can't be added up into a device count.
 
-The numbers are approximate and unverified: anyone can write to a slot.
+The numbers are approximate and unverified, and count only devices that run
+the census.
 
 ## DHT behaviour
 

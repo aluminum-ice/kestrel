@@ -72,10 +72,8 @@ To keep a history, run it from cron late in each UTC day with `--csv`:
 
 ## What the numbers mean
 
-- **Approximate and unverified.** Anyone can write to a public slot, and only
-  devices with the census plugin on are counted. Entries need a small
-  proof-of-work, and contest counts a day can't hold are left out, but nothing
-  proves a report came from a real Kestrel.
+- **Approximate and unverified.** Only devices with the census plugin on are
+  counted, and contest counts a day can't hold are left out.
 - **"Reported today"** counts the devices whose entry is in a slot when the
   script reads it. An entry stays in its slot about two hours after its
   device's last write, so a device that reported early and went offline may be
