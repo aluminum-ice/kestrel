@@ -31,9 +31,11 @@ import sys
 import urllib.request
 
 # A diff touching one of these changes the build layer (the base image, the
-# playbook, the build or the CI that runs it), which an in-place update can't
-# carry onto a device.
-BUILD_INPUTS = re.compile(r"^(builder/config\.(json|yml)|Makefile|\.(forgejo|github)/workflows/)")
+# playbook, the build, or the Release workflow that runs the build), which an
+# in-place update can't carry onto a device. Other workflows (lint, tests,
+# mirroring releases) never change the image, so they don't count.
+BUILD_INPUTS = re.compile(
+    r"^(builder/config\.(json|yml)|Makefile|\.(forgejo|github)/workflows/main\.yml)$")
 PAGE = 50
 MAX_PAGES = 40
 
