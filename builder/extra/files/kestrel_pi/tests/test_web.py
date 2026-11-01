@@ -2549,6 +2549,26 @@ def test_get_route_wraps_a_PluginPage_in_the_shared_shell(monkeypatch, tmp_path)
     assert plugin.calls[0][0:2] == ("view", "GET")
 
 
+def test_plugin_pages_open_with_the_standard_links_back(monkeypatch, tmp_path):
+    # The shell, not each plugin, adds "← Plugins · Dashboard" above every
+    # plugin page, in this order and wording, so it can't drift between plugins.
+    def handler(path, request):
+        from kestrel_pi.plugins import PluginPage
+        return PluginPage("t", "<h1>Hello body</h1>")
+
+    client, _ = _action_client(monkeypatch, tmp_path, handler=handler)
+    body = client.get("/plugins/demo/view", headers=_basic()).get_data(as_text=True)
+    links = ('<p><a href="/plugins">&larr; Plugins</a> &middot; '
+             '<a href="/">Dashboard</a></p>')
+    assert links + "<h1>Hello body</h1>" in body
+    # A token login keeps its token on both links.
+    client, _ = _action_client(monkeypatch, tmp_path, handler=handler,
+                               web_cfg={"auth": "token", "token": "T0k"})
+    body = client.get("/plugins/demo/view?token=T0k").get_data(as_text=True)
+    assert ('<a href="/plugins?token=T0k">&larr; Plugins</a> &middot; '
+            '<a href="/?token=T0k">Dashboard</a>') in body
+
+
 def test_get_route_needs_no_auth_or_csrf(monkeypatch, tmp_path):
     # A GET is plain navigation to a page the plugin renders (it gates its own
     # sensitive data on web_authed), so it is reachable with auth off.

@@ -306,13 +306,10 @@ class WpaSec(Plugin):
                                      "<h1>Not found</h1>", status=404)
         esc = self.context.esc
         token = request.args.get("token") or ""
-        qs = self._qs({"token": token})
-        back = ('<p><a href="' + esc("/plugins" + qs) + '">&larr; Plugins</a> &middot; '
-                '<a href="' + esc("/" + qs) + '">Dashboard</a></p>')
         if not self.context.web_authed:
             return self.context.page(
                 "recovered networks - kestrel",
-                back + "<h1>Recovered networks</h1>"
+                "<h1>Recovered networks</h1>"
                 + '<p class="notice">These are recovered Wi-Fi passphrases, so '
                 "the list is shown only with the web login on and you signed in. "
                 "Turn on <code>[web] auth</code> to view them.</p>")
@@ -383,7 +380,7 @@ class WpaSec(Plugin):
 
         return self.context.page(
             "recovered networks - kestrel",
-            back + "<h1>Recovered networks</h1>" + search
+            "<h1>Recovered networks</h1>" + search
             + '<p class="count">' + count + "</p>"
             + "<div class='wrap'><table><thead><tr><th>network</th><th>bssid</th>"
             "<th>passphrase</th></tr></thead><tbody>" + body_rows

@@ -219,7 +219,9 @@ class Webhook(Plugin):
   `max_per_hour`, `quiet_hours` (local hours such as `22-07`) and `timeout`.
 - **Pages:** `send_test()` returns the redirect for a Send test button;
   `status_page(title, setup_rows, token)` returns the status page body, with
-  your own already-escaped `<li>` rows first.
+  your own already-escaped `<li>` rows first. It starts with the page's `<h1>`:
+  the page shell adds the "← Plugins · Dashboard" links above it, so `token` is
+  no longer used (kept so API 1.0 callers still work).
 - **Functions:** `state_dir(name)`, `message(kind, title, body, urgent=False)`,
   `handshake_digest(count, names, minutes, include_names)`,
   `in_quiet_hours(spec, hour)`, `clean_name(name)`, `read_json(path, default)`,

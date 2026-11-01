@@ -33,7 +33,6 @@ the scripted baseline fallback), arbitrated by an explicit priority ladder in
 
 import threading
 import time
-from urllib.parse import urlencode
 
 from kestrel_pi import Plugin, load_helper, load_library, webtls
 
@@ -583,7 +582,7 @@ class EinkWs213(Plugin):
         if path == "display.png":
             return self._mirror_png(request)
         if path == "display":
-            return self._mirror_page(request)
+            return self._mirror_page()
         return self.context.redirect("No such view.", error=True)
 
     def _mirror_png(self, request):
@@ -612,12 +611,8 @@ class EinkWs213(Plugin):
             return ("", 304, headers)
         return (png, 200, headers)
 
-    def _mirror_page(self, request=None):
+    def _mirror_page(self):
         esc = self.context.esc
-        # The standard way back, as on the other plugin pages (a token login
-        # carries its token along).
-        token = (getattr(request, "args", None) or {}).get("token") or ""
-        qs = "?" + urlencode([("token", token)]) if token else ""
         every = self._refresh_seconds()
         if self._standing_down:
             note = (" (%s drives the panel - this is the frame this plugin would "
@@ -626,8 +621,6 @@ class EinkWs213(Plugin):
             note = (" (no HAT attached - this is the frame it would show)"
                     if self._absent else "")
         body = (
-            '<p><a href="' + esc("/plugins" + qs) + '">&larr; Plugins</a> &middot; '
-            '<a href="' + esc("/" + qs) + '">Dashboard</a></p>'
             "<h1>E-ink display (2.13&quot;)</h1>"
             '<p class="muted">A live mirror of what is on the panel' + esc(note)
             + ". It reloads every " + str(every)

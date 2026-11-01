@@ -2760,33 +2760,28 @@ def test_every_shipped_row_button_survives_normalization():
                 assert all(a["path"] for a in kept), fname
 
 
-# -- every plugin page opens with the standard way back ----------------------
+# -- plugin pages leave the links back to the page shell -----------------------
+# The shell adds "← Plugins · Dashboard" above every plugin page (test_web.py);
+# each page starts with its own heading.
 
-_NAV = '<p><a href="/plugins">&larr; Plugins</a> &middot; <a href="/">Dashboard</a></p>'
-_NAV_TOKEN = ('<p><a href="/plugins?token=abc">&larr; Plugins</a> &middot; '
-              '<a href="/?token=abc">Dashboard</a></p>')
-
-
-def test_backup_restore_pages_link_back_to_plugins_and_the_dashboard(tmp_path):
+def test_backup_restore_pages_start_with_their_heading(tmp_path):
     plugin, _mod = _make_backup(tmp_path, ssh_key=str(tmp_path / "id"))
     (tmp_path / "id").write_text("K")
     plugin.context._apply = lambda change: {"ok": True}
     plugin.context.form_csrf = "tok"
     confirm = plugin.on_webhook("restore", _req(method="GET")).body
-    assert confirm.index(_NAV) < confirm.index("<h1>")
-    started = plugin.on_webhook("restore", _req(method="POST", form={"confirm": "yes"},
-                                               args={"token": "abc"})).body
-    assert started.index(_NAV_TOKEN) < started.index("<h1>")
+    started = plugin.on_webhook("restore", _req(method="POST", form={"confirm": "yes"})).body
+    for body in (confirm, started):
+        assert body.startswith("<h1>") and "&larr; Plugins" not in body
 
 
-def test_wpa_sec_cracked_page_links_back_to_plugins_and_the_dashboard(tmp_path):
+def test_wpa_sec_cracked_page_starts_with_its_heading(tmp_path):
     plugin = _wpa_sec_for_webhook(tmp_path, web_authed=False)
     body = plugin.on_webhook("cracked", _req()).body
-    assert body.index(_NAV) < body.index("<h1>")
-    assert _NAV_TOKEN in plugin.on_webhook("cracked", _req(args={"token": "abc"})).body
+    assert body.startswith("<h1>Recovered networks</h1>") and "&larr; Plugins" not in body
 
 
-def test_session_stats_page_uses_the_dashboard_shell_and_links_back(tmp_path):
+def test_session_stats_page_uses_the_dashboard_shell(tmp_path):
     mod = _load_module("session-stats.py", "session_stats_page_under_test")
     plugin = mod.SessionStats()
     plugin.options = {}
@@ -2796,8 +2791,19 @@ def test_session_stats_page_uses_the_dashboard_shell_and_links_back(tmp_path):
     plugin.on_epoch(4, {})
     page = plugin.on_webhook("", _req())
     assert page.title == "Session stats"
-    assert page.body.index(_NAV) < page.body.index("<h1>Session stats</h1>")
+    assert page.body.startswith("<h1>Session stats</h1>")
     assert "Handshakes: <b>1</b>" in page.body and "Epochs: <b>4</b>" in page.body
-    assert _NAV_TOKEN in plugin.on_webhook("", _req(args={"token": "abc"})).body
+    assert 'href="stats.json?token=abc"' in plugin.on_webhook(
+        "", _req(args={"token": "abc"})).body
     body, status, headers = plugin.on_webhook("stats.json", _req())
     assert status == 200 and json.loads(body)["handshakes"] == 1
+
+
+def test_no_shipped_plugin_builds_its_own_links_back():
+    # The shell owns the "← Plugins · Dashboard" line, so its order and wording
+    # can't drift: a plugin (or library) that writes it again would show it twice.
+    plugins = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "plugins")
+    offenders = [name for name in sorted(os.listdir(plugins)) if name.endswith(".py")
+                 and "&larr; Plugins" in open(os.path.join(plugins, name), encoding="utf-8").read()]
+    assert offenders == []

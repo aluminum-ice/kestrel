@@ -311,8 +311,7 @@ class Downloads(Plugin):
         if self.options.get("include_locations"):
             items.append(item("with-locations.zip", "Handshake files with locations (.zip)",
                               "adds the GPS sidecars"))
-        body = ('<p><a href="' + esc("/plugins" + qs) + '">&larr; Plugins</a> &middot; '
-                '<a href="' + esc("/" + qs) + '">Dashboard</a></p><h1>Downloads</h1>')
+        body = "<h1>Downloads</h1>"
         if refusal:
             body += '<p class="msg err" role="alert">' + refusal + "</p>"
         body += ("<p>Take your capture files home. Only networks you're allowed to "

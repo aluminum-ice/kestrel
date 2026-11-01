@@ -415,10 +415,7 @@ class CaptureMap(Plugin):
         bbox = _parse_bbox(args.get("bbox"))
         spot = _parse_bbox(args.get("spot"))
         esc = self.context.esc
-        back = "/plugins" + ("?" + urlencode([("token", token)]) if token else "")
-        head = ('<p><a href="' + esc(back) + '">&larr; Plugins</a> &middot; <a href="'
-                + esc("/" + ("?" + urlencode([("token", token)]) if token else ""))
-                + '">Dashboard</a></p><h1>Map</h1>')
+        head = "<h1>Map</h1>"
         if not getattr(self.context, "web_authed", False):
             return self.context.page("Map", head + '<p class="msg err">The map needs '
                                      "the dashboard login on. Turn it on with <code>sudo "

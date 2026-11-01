@@ -210,17 +210,10 @@ def test_compose_draws_the_near_segment_when_scanning(tmp_path):
     assert p._compose_image(noyet, "focused").size == (EINK.PANEL_W, EINK.PANEL_H)
 
 
-def test_mirror_page_back_link_is_at_the_top(tmp_path):
-    # Consistency with the other plugin pages: the "Plugins" back link comes
-    # before the heading, not at the bottom of the page.
-    p = _plugin(tmp_path)
-    page = p._mirror_page()
-    assert ('<p><a href="/plugins">&larr; Plugins</a> &middot; '
-            '<a href="/">Dashboard</a></p>') in page.body
-    assert page.body.index('href="/plugins"') < page.body.index("<h1>")
-    # A token login keeps its token on both links.
-    page = p._mirror_page(types.SimpleNamespace(args={"token": "abc"}))
-    assert 'href="/plugins?token=abc"' in page.body and 'href="/?token=abc"' in page.body
+def test_mirror_page_starts_with_its_heading(tmp_path):
+    # The page shell adds "← Plugins · Dashboard" above every plugin page.
+    page = _plugin(tmp_path)._mirror_page()
+    assert page.body.startswith("<h1>") and "&larr; Plugins" not in page.body
 
 
 def test_ui_card_reports_cached_mood_and_panel_state(tmp_path):
