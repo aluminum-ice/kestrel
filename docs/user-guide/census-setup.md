@@ -29,7 +29,7 @@ With the defaults it waits for your phone's Bluetooth tether (see
 [Which connection does the census use?](#which-connection-does-the-census-use)),
 joins the DHT, and writes its first report 5-30 minutes later, then once an
 hour at a random minute. It reads the whole census a few minutes after that
-first report (so its own report is in the totals), then every `poll_hours`.
+first report (so its own report is in the totals), then every `poll_minutes`.
 
 ## What leaves the device
 
@@ -95,9 +95,9 @@ census about two hours after its device's last write, so "online" means
 | --- | --- | --- |
 | `report` | on | Add this device to the census each hour. |
 | `read` | on | Fetch the census and show the totals. Off, the plugin only reports, and uses far less data. |
-| `poll_hours` | 4 | How often to fetch the whole census, 1-24 hours. |
+| `poll_minutes` | 90 | How often to fetch the whole census, 60-1440 minutes. A report stays in the census 60-120 minutes after its device's last write, so reading every 90 minutes catches nearly every device; reading less often can miss devices that were online only briefly. |
 | `tether_only` | on | Send and fetch only over the phone's Bluetooth tether; pause while it's down. |
-| `daily_mb` | 5 | Data budget per UTC day, in MB (0 = no limit). Over it, the plugin stops fetching; over half as much again, it stops reporting too. With the defaults it uses about 2 MB a day. |
+| `daily_mb` | 5 | Data budget per UTC day, in MB (0 = no limit). Over it, the plugin stops fetching; over half as much again, it stops reporting too. With the defaults it uses about 4 MB a day while the census is small, and more as its slots fill. |
 | `bootstrap` | the two public DHT routers | Comma-separated `host:port` routers, used only for the first join or when the saved node list has gone stale. |
 
 ## Turning it off
