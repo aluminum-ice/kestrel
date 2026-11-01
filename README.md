@@ -149,7 +149,7 @@ The image's Python 3.11 has `venv`. Bookworm blocks `pip install` into the syste
 ### The `pi` user
 
 - UID 1000. Member of `sudo`, `gpio`, `i2c`, `spi`, `dialout` and the other default groups.
-- **Login:** documented default `pi` / `raspberry`. The password hash lives in `system.account.pi` in [`builder/config.yml`](builder/config.yml). Override it at build time with the `MY_PI_PASSWORD_HASH` environment variable, or edit the default. Generate a new hash with `openssl passwd -6` or `mkpasswd -m sha-512` (from the `whois` package).
+- **Login:** documented default `pi` / `raspberry`. The password hash lives in `system.account.pi` in [`builder/config.yml`](builder/config.yml). Override it at build time with `MY_PI_PASSWORD_HASH`, in single quotes so the shell leaves its `$` signs alone: `sudo make image MY_PI_PASSWORD_HASH='$6$...'` (or `sudo MY_PI_PASSWORD_HASH='$6$...' make image`). The build refuses a value that isn't a crypt hash and logs only whether a custom hash or the default went in, never the hash. Generate one with `openssl passwd -6` or `mkpasswd -m sha-512` (from the `whois` package).
 - `~/.bashrc` activates `~/.venv`.
 - An RSA-4096 SSH key pair is generated at `~/.ssh/id_rsa` on **first boot** by `pi-ssh-keygen.service`, so each device gets its own key.
 - `~/github`, `~/Documents`, `~/Downloads` and an empty `~/deployments/` are created. `~/deployments/` is a copy of [`builder/extra/deployments/`](builder/extra/deployments), which ships empty: add your own files there to have them copied into the image.

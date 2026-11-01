@@ -54,7 +54,7 @@ The only real identifiers allowed are the functional public project identity and
 
 Where real values live instead:
 
-- `system.account.pi` holds the documented DEFAULT hash (`pi` / `raspberry`). A real one comes from the `MY_PI_PASSWORD_HASH` env var at build time.
+- `system.account.pi` holds the documented DEFAULT hash (`pi` / `raspberry`). A real one comes from `MY_PI_PASSWORD_HASH` at build time (`sudo make image MY_PI_PASSWORD_HASH='<hash>'`, single-quoted): the Makefile reads it unexpanded (`$(value ...)`), checks it is a crypt hash, and hands it to Packer as the sensitive `my_pi_password_hash` variable through the recipe environment (so make never echoes it); `builder/config.json` passes it to the playbook, which asserts it and logs only "custom hash" or "the documented default".
 - `system.network` is empty and `builder/extra/deployments/` ships empty. Real Wi-Fi networks are added at build time (env var or an uncommitted edit) or on the device.
 - Tokens and keys live in the environment or in device config, never in a file in the repo.
 
