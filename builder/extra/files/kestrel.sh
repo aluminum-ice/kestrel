@@ -2210,12 +2210,14 @@ cmd_update_apply() {
     # the clone, as a Basic auth header (Forgejo takes the token as the
     # password) scoped to $host. It goes in through git's GIT_CONFIG_* environment
     # rather than a -c argument, so it is never in a process command line other
-    # local users can read, nor in the clone's .git/config. No token => an
-    # ordinary anonymous clone of a public repo.
+    # local users can read, nor in the clone's .git/config. With the token,
+    # git follows no redirect, so the header can't go anywhere else. No token
+    # => an ordinary anonymous clone of a public repo.
     if [ -n "$token" ]; then
         local b64; b64=$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')
-        export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$host/.extraheader" \
-            GIT_CONFIG_VALUE_0="Authorization: Basic $b64"
+        export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0="http.$host/.extraheader" \
+            GIT_CONFIG_VALUE_0="Authorization: Basic $b64" \
+            GIT_CONFIG_KEY_1="http.followRedirects" GIT_CONFIG_VALUE_1="false"
     fi
     # Clone with a few retries and backoff: the device is often on a flaky
     # BT-PAN/Wi-Fi tether, and a dropped clone must not abort the update. The
@@ -2236,7 +2238,7 @@ cmd_update_apply() {
         fi
         attempt=$((attempt + 1))
     done
-    unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+    unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1
     if [ "$cloned" != yes ]; then
         update_run_set error "could not fetch release $tag"
         die "could not fetch release $tag from $repo (check connectivity; a private repo needs a valid [plugins.updates] token)"

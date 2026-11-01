@@ -878,3 +878,120 @@ def test_read_updates_config_holds_the_request_timeout_in_range(tmp_path):
         assert ua.read_updates_config(str(cfg))["timeout"] == want, raw
     cfg.write_text("")
     assert ua.read_updates_config(str(cfg))["timeout"] == 30
+
+
+# -- a redirect never carries the token off the configured host ------------------
+
+def _redirect(url, newurl, token="TKN"):
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={"Authorization": "token %s" % token})
+    return ua._Redirects().redirect_request(req, None, 302, "Found", {}, newurl)
+
+
+def test_a_same_host_redirect_keeps_the_token():
+    out = _redirect("https://git.example.com/api/v1/repos/o/r/releases",
+                    "https://git.example.com/o/r/releases/download/v1/m.json")
+    assert out.get_header("Authorization") == "token TKN"
+
+
+def test_a_redirect_to_another_host_drops_the_token():
+    for newurl in ("https://storage.example.net/blob/1",
+                   "https://git.example.com:8443/o/r/m.json"):
+        out = _redirect("https://git.example.com/o/r/releases/download/v1/m.json", newurl)
+        assert out is not None and out.full_url == newurl
+        assert out.get_header("Authorization") is None
+        assert "Authorization" not in out.unredirected_hdrs
+
+
+def test_a_redirect_to_plain_http_is_refused():
+    with pytest.raises(ua.Refused):
+        _redirect("https://git.example.com/a", "http://git.example.com/a")
+
+
+def test_redirects_are_capped():
+    assert ua._Redirects.max_redirections == ua.MAX_REDIRECTS == 5
+
+
+def test_http_fetch_goes_through_the_redirect_policy(monkeypatch):
+    import io
+
+    seen = []
+
+    class Resp(io.BytesIO):
+        status = 200
+
+    def fake_open(req, timeout=None):
+        seen.append(req)
+        return Resp(b'{"ok": true}')
+    monkeypatch.setattr(ua._OPENER, "open", fake_open)
+    assert ua.http_fetch("https://git.example.com/x", token="TKN") == (200, {"ok": True})
+    assert seen[0].get_header("Authorization") == "token TKN"
+    assert any(isinstance(h, ua._Redirects) for h in ua._OPENER.handlers)
+
+
+def test_the_token_clone_follows_no_redirect():
+    with open(os.path.join(FILES, "kestrel.sh"), encoding="utf-8") as handle:
+        src = handle.read()
+    assert 'GIT_CONFIG_KEY_1="http.followRedirects" GIT_CONFIG_VALUE_1="false"' in src
+    assert "GIT_CONFIG_COUNT=2" in src
+    assert "unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1" in src
+
+
+def test_redirects_over_real_https(monkeypatch, tmp_path):
+    """Two loopback HTTPS servers: the release host redirects to itself (the
+    token stays) and to the other one, standing in for storage (it doesn't)."""
+    import http.server
+    import ssl
+    import threading
+    import urllib.request
+
+    webtls = pytest.importorskip("kestrel_pi.webtls")
+    cert, key = webtls.ensure_certificate("localhost", directory=str(tmp_path))
+    seen = {}
+
+    def server(routes):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen[(self.server.server_port, self.path)] = self.headers.get("Authorization")
+                where = routes.get(self.path)
+                if where:
+                    self.send_response(302)
+                    self.send_header("Location", where())
+                    self.end_headers()
+                    return
+                body = b'{"ok": true}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        srv.socket = webtls.server_context(cert, key).wrap_socket(srv.socket, server_side=True)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        return srv
+
+    storage = server({})
+    release = server({
+        "/same": lambda: "/final",
+        "/away": lambda: "https://localhost:%d/blob" % storage.server_port,
+        "/plain": lambda: "http://localhost:%d/blob" % storage.server_port,
+    })
+    ctx = ssl.create_default_context(cafile=cert)
+    ctx.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
+    monkeypatch.setattr(ua, "_OPENER", urllib.request.build_opener(
+        ua._Redirects, urllib.request.HTTPSHandler(context=ctx)))
+    base = "https://localhost:%d" % release.server_port
+    try:
+        assert ua.http_fetch(base + "/same", token="TKN") == (200, {"ok": True})
+        assert seen[(release.server_port, "/final")] == "token TKN"
+        assert ua.http_fetch(base + "/away", token="TKN") == (200, {"ok": True})
+        assert seen[(release.server_port, "/away")] == "token TKN"
+        assert seen[(storage.server_port, "/blob")] is None
+        with pytest.raises(ua.Refused, match="non-https"):
+            ua.http_fetch(base + "/plain", token="TKN", attempts=1)
+    finally:
+        release.shutdown()
+        storage.shutdown()
