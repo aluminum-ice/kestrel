@@ -30,6 +30,9 @@ SLOTS = 64
 ALTERNATES = 3
 ENTRY_SIZE = 20
 MAX_ENTRIES = 49            # 49 x 20 bytes fit one BEP 44 value
+# The most entries a well-formed census can hold in a day: every slot and
+# alternate full. A reader never keeps more than this for one day.
+DAY_ENTRIES = SLOTS * MAX_ENTRIES * (ALTERNATES + 1)
 POW_BITS = 20
 POW_TAG = b"kc1|"
 # Writers use seq = minutes since UTC midnight x 100 + 0-99, so a slot whose
@@ -195,16 +198,26 @@ def parse_value(value, day, bits=POW_BITS):
     return entries, rejected
 
 
-def union(values, day, bits=POW_BITS):
-    """``({token: Entry}, rejected)`` across every node's copy of a slot."""
-    entries, rejected = {}, 0
+def union(values, day, bits=POW_BITS, limit=MAX_ENTRIES):
+    """``({token: Entry}, rejected)`` across every node's copy of a slot.
+
+    One slot holds at most ``MAX_ENTRIES``, so more than ``limit`` can only come
+    from copies that disagree: then the entries held by the most copies are
+    kept (the later hour, then the token, breaking ties), and the rest count as
+    rejected. That bounds what any one read can add."""
+    entries, copies, rejected = {}, {}, 0
     for value in values:
         found, bad = parse_value(value, day, bits)
         rejected += bad
         for token, entry in found.items():
+            copies[token] = copies.get(token, 0) + 1
             held = entries.get(token)
             if held is None or entry.hour >= held.hour:
                 entries[token] = entry
+    if len(entries) > limit:
+        keep = sorted(entries, key=lambda t: (-copies[t], -entries[t].hour, t))[:limit]
+        rejected += len(entries) - limit
+        entries = {t: entries[t] for t in keep}
     return entries, rejected
 
 
