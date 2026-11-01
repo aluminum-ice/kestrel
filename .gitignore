@@ -209,3 +209,6 @@ capture-health-*/
 kestrel-health-*.txt
 # Beta check reports (tools/beta-check), and the old .tar.gz form
 kestrel-beta-check-*
+
+# census-report CSV output (tools/census-report)
+census-*.csv
