@@ -43,6 +43,13 @@ FACE = WS.face          # the eink_face library the plugin loads
 W, H = WS.PANEL_W, WS.PANEL_H
 
 
+def test_mirror_page_links_back_to_plugins_and_the_dashboard(tmp_path):
+    page = _plugin(tmp_path)._mirror_page(types.SimpleNamespace(args={"token": "abc"}))
+    assert ('<p><a href="/plugins?token=abc">&larr; Plugins</a> &middot; '
+            '<a href="/?token=abc">Dashboard</a></p>') in page.body
+    assert page.body.index('href="/plugins') < page.body.index("<h1>")
+
+
 def _plugin(tmp_path, options=None, gps=False):
     """A plugin instance wired with a context but WITHOUT starting the render
     worker thread (so tests drive composition deterministically)."""
