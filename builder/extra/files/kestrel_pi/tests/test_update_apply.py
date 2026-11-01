@@ -404,6 +404,10 @@ def test_backup_timeout_reads_the_updates_option(tmp_path):
     assert ua.backup_timeout(config_file=str(cfg)) is None     # 0 = no bound
     cfg.write_text('[plugins.updates]\nbackup_timeout_seconds = "nope"\n')
     assert ua.backup_timeout(config_file=str(cfg)) == ua.BACKUP_TIMEOUT_DEFAULT
+    # A set value is held to 30-3600 s (0 still means "no bound").
+    for raw, want in ((5, 30), (99999, 3600), (-1, ua.BACKUP_TIMEOUT_DEFAULT)):
+        cfg.write_text("[plugins.updates]\nbackup_timeout_seconds = %d\n" % raw)
+        assert ua.backup_timeout(config_file=str(cfg)) == want, raw
     assert ua.backup_timeout(config_file=str(tmp_path / "missing")) == \
         ua.BACKUP_TIMEOUT_DEFAULT
 
@@ -864,3 +868,13 @@ def test_version_key_matches_the_plugin():
                  "1.2.3+b5", "0.7.0-rc.1", "0.7.0-beta", "master", "", None, "0.7",
                  "0.7a.0"):
         assert ua.version_key(text) == plugin.version_key(text), text
+
+
+def test_read_updates_config_holds_the_request_timeout_in_range(tmp_path):
+    cfg = tmp_path / "config.toml"
+    for raw, want in (("0", 5), ("1", 5), ("45", 45), ("100000", 120),
+                      ('"x"', 30), ("true", 30)):
+        cfg.write_text("[plugins.updates]\ntimeout = %s\n" % raw)
+        assert ua.read_updates_config(str(cfg))["timeout"] == want, raw
+    cfg.write_text("")
+    assert ua.read_updates_config(str(cfg))["timeout"] == 30

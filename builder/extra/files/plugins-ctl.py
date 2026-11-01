@@ -1191,28 +1191,53 @@ def apply_change(change):
 
 
 # -- checkauth: verify a web login against the device account ---------------
-def verify_system_password(username, password, getspnam=None, crypt_fn=None):
+# The dashboard login is a person's account: never root, a system account
+# (uid under 1000, or nobody) or an account that can't log in.
+AUTH_MIN_UID = 1000
+AUTH_NOBODY_UID = 65534
+AUTH_NOLOGIN_SHELLS = ("/usr/sbin/nologin", "/sbin/nologin", "/bin/false", "/usr/bin/false")
+# What an unknown or refused account is checked against, so the answer takes
+# about as long as for a real one and doesn't say which accounts exist.
+AUTH_DUMMY_SETTING = "$6$kestrelcheckauth$"
+# Every check, from the web page or any pi process, shares one failure count
+# here (root-only: /run is root's). Past AUTH_FREE failures in AUTH_WINDOW
+# seconds, checks are spaced min(AUTH_MAX_DELAY, 0.25 * 2**(n - AUTH_FREE))
+# seconds apart; a check that would wait longer than AUTH_MAX_WAIT is answered
+# "busy" at once. A success clears the count.
+AUTH_STATE_DIR = "/run/kestrel-auth"
+AUTH_FREE = 5
+AUTH_WINDOW = 600
+AUTH_MAX_DELAY = 4.0
+AUTH_MAX_WAIT = 30.0
+
+
+def auth_account_ok(username, getpwnam=None):
+    """True if ``username`` is an account the dashboard may sign in as."""
+    if getpwnam is None:
+        import pwd
+        getpwnam = pwd.getpwnam
+    try:
+        entry = getpwnam(username)
+    except (KeyError, OSError, ValueError):
+        return False
+    return (entry.pw_uid >= AUTH_MIN_UID and entry.pw_uid != AUTH_NOBODY_UID
+            and (entry.pw_shell or "") not in AUTH_NOLOGIN_SHELLS)
+
+
+def verify_system_password(username, password, getspnam=None, crypt_fn=None,
+                           getpwnam=None):
     """True if ``password`` is the system account ``username``'s password.
 
     Reads the account's hash from /etc/shadow (root-only, which is why this
     runs here and not in the pi daemon) and compares with crypt, in constant
-    time. A locked or password-less account (``*``/``!``/empty hash) never
-    matches. ``getspnam``/``crypt_fn`` are injectable for tests; the defaults
-    use the stdlib ``spwd``/``crypt`` (present on the image's Python 3.11),
+    time. Only an account :func:`auth_account_ok` allows can match; a locked or
+    password-less account (``*``/``!``/empty hash) never does. Every other case
+    still runs crypt once (against ``AUTH_DUMMY_SETTING``), so the time taken
+    doesn't tell an unknown account from a wrong password. ``getspnam``/
+    ``crypt_fn``/``getpwnam`` are injectable for tests; the defaults use the
+    stdlib ``spwd``/``crypt``/``pwd`` (present on the image's Python 3.11),
     imported lazily so this module still loads where they are absent."""
     if not username or not password:
-        return False
-    if getspnam is None:
-        try:
-            import spwd
-        except ImportError:
-            return False
-        getspnam = spwd.getspnam
-    try:
-        hashed = getspnam(username).sp_pwdp or ""
-    except (KeyError, PermissionError, OSError):
-        return False
-    if not hashed or hashed[0] in "*!" or ":" in hashed:
         return False
     if crypt_fn is None:
         try:
@@ -1220,17 +1245,104 @@ def verify_system_password(username, password, getspnam=None, crypt_fn=None):
         except ImportError:
             return False
         crypt_fn = crypt.crypt
+    hashed = ""
+    if auth_account_ok(username, getpwnam):
+        if getspnam is None:
+            try:
+                import spwd
+            except ImportError:
+                return False
+            getspnam = spwd.getspnam
+        try:
+            hashed = getspnam(username).sp_pwdp or ""
+        except (KeyError, PermissionError, OSError):
+            hashed = ""
+    usable = bool(hashed) and hashed[0] not in "*!" and ":" not in hashed
     try:
-        calc = crypt_fn(password, hashed)
+        calc = crypt_fn(password, hashed if usable else AUTH_DUMMY_SETTING)
     except Exception:  # noqa: BLE001 - a bad/unsupported hash is just "no match"
         return False
-    return bool(calc) and hmac.compare_digest(calc, hashed)
+    return usable and bool(calc) and hmac.compare_digest(calc, hashed)
 
 
-def cmd_checkauth():
-    """Read {"username","password"} JSON on stdin, reply {"ok": bool}. Never
-    logs or echoes the password; the journal records only the username and the
-    verdict."""
+class AuthBackoff:
+    """The shared failure count behind every password check (see AUTH_*).
+
+    State is one small JSON file in a root-only directory, read and written
+    under ``flock`` and never through a symlink. If the state can't be used
+    (it should always be usable as root) checks go ahead without the backoff
+    rather than locking the owner out."""
+
+    def __init__(self, state_dir=None, clock=time.time, sleep=time.sleep):
+        self.state_dir = state_dir or AUTH_STATE_DIR
+        self.clock, self.sleep = clock, sleep
+
+    def _open(self):
+        import stat
+        os.makedirs(self.state_dir, mode=0o700, exist_ok=True)
+        st = os.lstat(self.state_dir)
+        if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid()
+                or st.st_mode & 0o077):
+            raise OSError("unsafe auth state directory")
+        return os.open(os.path.join(self.state_dir, "fails.json"),
+                       os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+
+    def _update(self, change):
+        """Run ``change(state, now)`` on the state under the lock; its return
+        value is returned, and the (possibly changed) state is saved."""
+        import fcntl
+        fd = self._open()
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            raw = os.read(fd, 64 * 1024)
+            try:
+                state = json.loads(raw.decode("utf-8")) if raw else {}
+            except ValueError:
+                state = {}
+            now = self.clock()
+            fails = [t for t in state.get("fails", ())
+                     if isinstance(t, (int, float)) and 0 <= now - t < AUTH_WINDOW]
+            nxt = state.get("next")
+            state = {"fails": fails[-1000:],
+                     "next": nxt if isinstance(nxt, (int, float)) else 0.0}
+            result = change(state, now)
+            data = json.dumps(state).encode("utf-8")
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+            os.write(fd, data)
+            return result
+        finally:
+            os.close(fd)
+
+    def reserve(self):
+        """Seconds this check must wait first (0 when under the free count),
+        or None when it would wait longer than AUTH_MAX_WAIT ("busy")."""
+        def change(state, now):
+            n = len(state["fails"])
+            if n < AUTH_FREE:
+                return 0.0
+            delay = min(AUTH_MAX_DELAY, 0.25 * 2 ** (n - AUTH_FREE))
+            slot = max(now, state["next"])
+            if slot - now > AUTH_MAX_WAIT:
+                return None
+            state["next"] = slot + delay
+            return slot - now
+        return self._update(change)
+
+    def record(self, ok):
+        def change(state, now):
+            if ok:
+                state["fails"], state["next"] = [], 0.0
+            else:
+                state["fails"].append(now)
+        self._update(change)
+
+
+def cmd_checkauth(backoff=None):
+    """Read {"username","password"} JSON on stdin, reply {"ok": bool}, or
+    {"ok": false, "error": "busy"} when the backoff would make the caller wait
+    too long. Never logs or echoes the password; the journal records only the
+    username and the verdict."""
     raw = sys.stdin.buffer.read(MAX_REQUEST + 1)
     username = None
     if len(raw) > MAX_REQUEST:
@@ -1246,16 +1358,40 @@ def cmd_checkauth():
             if not isinstance(username, str) or not isinstance(password, str):
                 reply = {"ok": False, "error": "bad request"}
             else:
-                reply = {"ok": verify_system_password(username, password)}
+                reply = _checked(username, password, backoff or AuthBackoff())
     if "error" not in reply:
         sys.stderr.write("plugins-ctl checkauth: %s: %s\n"
                          % (username, "ok" if reply["ok"] else "denied"))
+    elif reply["error"] == "busy":
+        sys.stderr.write("plugins-ctl checkauth: %s: busy (too many failures)\n"
+                         % username)
     sys.stdout.write(json.dumps(reply) + "\n")
     sys.stdout.flush()
     # A denied login is an answer, not a failure: each connection runs as its
     # own kestrel-web-auth@ instance, and a non-zero exit would leave one
     # "failed" unit behind per wrong password. Only a crash exits non-zero.
     return 0
+
+
+def _checked(username, password, backoff):
+    """Verify through the shared backoff (or without it if its state can't be
+    used)."""
+    try:
+        wait = backoff.reserve()
+    except OSError as exc:
+        sys.stderr.write("plugins-ctl checkauth: backoff state unavailable (%s)\n"
+                         % exc.__class__.__name__)
+        return {"ok": verify_system_password(username, password)}
+    if wait is None:
+        return {"ok": False, "error": "busy"}
+    if wait > 0:
+        backoff.sleep(wait)
+    ok = verify_system_password(username, password)
+    try:
+        backoff.record(ok)
+    except OSError:
+        pass
+    return {"ok": ok}
 
 
 def restart_daemon():

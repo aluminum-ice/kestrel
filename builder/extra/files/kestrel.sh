@@ -1540,15 +1540,34 @@ sys.exit(0 if policies.has_model_for(sys.argv[1], sys.argv[2]) else 1)
 ' "$PWN_AGENT_DIR" "$algo" >/dev/null 2>&1
 }
 
+# Root never writes into a pi-owned directory: a file or link pi planted there
+# could redirect the write. Trigger files (empty requests a pi process watches
+# for) are created *as pi*, never through a symlink, and are born pi-owned, so
+# nothing is chowned. An existing trigger is left as it is.
+pi_touch() {
+    run_as_pi python3 -I -c 'import os, sys
+os.close(os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644))' "$1"
+}
+
+# Make sure a pi-owned directory exists. Root creates it only when it's missing
+# (under a root-owned parent, so nothing pi planted can be in the way), and
+# hands it to pi; an existing one is left to pi.
+pi_dir() {
+    [ -d "$1" ] && return 0
+    if [ "$(id -u)" = 0 ]; then
+        install -d -o pi -g pi -m 0755 "$1"
+    else
+        mkdir -p "$1"
+    fi
+}
+
 # Drop a "train now" request the running agent picks up (within ~15s) and runs
 # in the background. Shared by 'agent train-now' and the auto-train-on-switch
 # path; the agent is the final gate (board size, memory, temperature).
 agent_request_train() {
-    mkdir -p "$PWN_AGENT_DIR"
-    : > "$PWN_AGENT_DIR/train-request"
-    # The agent runs as pi and removes the request; keep it pi-owned when this
-    # is run as root (e.g. from the web apply helper).
-    chown pi:pi "$PWN_AGENT_DIR/train-request" 2>/dev/null || true
+    pi_dir "$PWN_AGENT_DIR"
+    pi_touch "$PWN_AGENT_DIR/train-request" \
+        || die "could not drop the train request in $PWN_AGENT_DIR"
 }
 
 # Set [agent] algorithm/policy from already-validated values, then restart the
@@ -1664,13 +1683,16 @@ cmd_agent_import() {
     fi
     [ -n "$algo" ] || die "give the model's algorithm: --algorithm <$AGENT_ALGORITHMS>"
     agent_valid_algo "$algo" || die "unknown algorithm '$algo' (one of: $AGENT_ALGORITHMS)"
-    mkdir -p "$PWN_AGENT_DIR"
+    pi_dir "$PWN_AGENT_DIR"
     # Install under the algorithm's own model name so it coexists with models
     # for other algorithms; write_meta writes the matching per-algorithm sidecar.
     local model_file
     model_file=$(run_as_pi "$PWN_VENV_PYTHON" -I -c 'import sys; from kestrel_pi.agent import model_name_for; print(model_name_for(sys.argv[1]))' "$algo") \
         || die "could not resolve the model filename for $algo"
-    install -o pi -g pi -m 0644 "$model" "$PWN_AGENT_DIR/$model_file"
+    # Root reads the model (it may be readable only by root); pi writes it into
+    # its own directory, through a temp file renamed into place.
+    cat -- "$model" | run_as_pi sh -c 'umask 022; tmp="$1.tmp.$$"; cat > "$tmp" && mv -f "$tmp" "$1"' _ "$PWN_AGENT_DIR/$model_file" \
+        || die "could not install the model into $PWN_AGENT_DIR"
     run_as_pi "$PWN_VENV_PYTHON" -I -c 'import sys; from kestrel_pi.agent import policies; policies.write_meta(sys.argv[1], sys.argv[2])' "$PWN_AGENT_DIR" "$algo"
     config_set agent algorithm "\"$algo\""
     config_set agent policy '"learned"'
@@ -1801,7 +1823,18 @@ REMOTE_TRAIN_KEY_DEFAULT=/home/pi/.ssh/id_ed25519
 remote_train_require_pi_or_root() { [ "$(id -un)" = pi ] || need_root; }
 
 # Where the plugin (and so the "reconcile now" trigger) lives on the device.
-rt_agent_dir() { cfg plugins.remote-train.agent_dir "$PWN_AGENT_DIR"; }
+# The plugin's agent dir, as root uses it: only an absolute path under
+# /var/lib/kestrel/ (the option is root-only, and this re-checks it), else the
+# default.
+rt_agent_dir() {
+    local dir; dir=$(cfg plugins.remote-train.agent_dir "$PWN_AGENT_DIR")
+    case "$dir" in
+        *..*|*//*) dir=$PWN_AGENT_DIR ;;
+        /var/lib/kestrel/?*) ;;
+        *) dir=$PWN_AGENT_DIR ;;
+    esac
+    printf '%s\n' "$dir"
+}
 
 cmd_remote_train_setup() {
     remote_train_require_pi_or_root
@@ -1831,27 +1864,25 @@ cmd_remote_train_setup() {
         || die "key installed but the test login failed; check the remote account"
     log "passwordless SSH to the training host works"
     # Nudge the plugin so host preparation (venv + ML stack) starts now, if it is
-    # enabled. Harmless if it is not yet enabled.
-    remote_train_touch_now
+    # enabled. Harmless if it is not yet enabled, and best effort.
+    remote_train_touch_now || true
     echo "The host's training environment (an isolated venv + the ML stack) is"
     echo "prepared in the background on the next run; a first run waits for it."
 }
 
 # Drop the "reconcile now" trigger the plugin watches (same idea as the agent's
 # train-request): the running plugin picks it up on its next epoch, wakes its
-# worker and removes the file. Written as pi so the pi daemon can remove it.
+# worker and removes the file. Created as pi (pi_touch).
 remote_train_touch_now() {
     local dir; dir=$(rt_agent_dir)
-    mkdir -p "$dir"
-    : > "$dir/.remote-train-now"
-    chown pi:pi "$dir/.remote-train-now" 2>/dev/null || true
+    pi_dir "$dir" && pi_touch "$dir/.remote-train-now"
 }
 
 cmd_remote_train_now() {
     remote_train_require_pi_or_root
     [ "$(cfg plugins.remote-train.enabled false)" = true ] \
         || echo "note: the remote-train plugin is not enabled; enable it to train." >&2
-    remote_train_touch_now
+    remote_train_touch_now || die "could not drop the reconcile request"
     echo "Asked remote-train to reconcile now; it pushes data, trains due models"
     echo "on the host and pulls back any finished model within an epoch. Watch the"
     echo "AI Agent dashboard card (or '$PROG remote-train status') for progress."
