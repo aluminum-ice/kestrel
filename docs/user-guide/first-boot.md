@@ -59,7 +59,15 @@ Run `sudo raspi-config` for a menu, or use these directly:
 ## Building your own image with the password already set
 
 If you build the image yourself rather than flashing the public one, you can bake
-in your own password hash instead of the `pi`/`raspberry` default: set the
-`MY_PI_PASSWORD_HASH` environment variable at build time (generate a hash with
-`openssl passwd -6`). Keep that hash private and supply it only at build time.
+in your own password hash instead of the `pi`/`raspberry` default. Generate a
+hash with `openssl passwd -6`, then pass it to the build in single quotes (its
+`$` signs must reach the build unchanged):
+
+```bash
+sudo make image MY_PI_PASSWORD_HASH='$6$...'
+```
+
+The build stops if the value isn't a crypt hash, and its log says only whether
+a custom hash or the default went in. Keep that hash private and supply it only
+at build time.
 End users who flashed the public image just use `passwd` as above.

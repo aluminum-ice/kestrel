@@ -3,6 +3,12 @@ MY_HOSTNAME := kestrel
 MY_VERSION := $(or ${MY_VERSION},$(shell cut -d"'" -f2 < _version.py))
 # MY_VERSION := 1.0.0
 MY_RELEASE := kestrel-$(MY_VERSION)
+# An optional pi password hash for the image (README, "Login"). It is read
+# unexpanded, since make would otherwise take $6, $salt... for its own variables,
+# and reaches the recipe as an environment variable, so make never echoes it.
+KESTREL_PI_HASH := $(value MY_PI_PASSWORD_HASH)
+export KESTREL_PI_HASH
+unexport MY_PI_PASSWORD_HASH
 
 MACHINE_TYPE := $(shell uname -m)
 ifneq (,$(filter x86_64,$(MACHINE_TYPE)))
@@ -114,7 +120,9 @@ EXTRA_FILES=$(shell find builder/extra/ -type f -name '*')
 
 # If the packer or ansible files are updated, rebuild the image.
 $(MY_RELEASE).img: builder/config.json builder/config.yml $(EXTRA_DIRS) $(EXTRA_FILES)
-	cd builder && sudo env PACKER_PLUGIN_PATH=$(PACKER_PLUGIN_PATH) PACKER_CACHE_DIR=$(PACKER_CACHE_DIR) $(UNSHARE) $(PACKER) build -var "my_hostname=$(MY_HOSTNAME)" -var "my_version=$(MY_VERSION)" config.json
+	@[ -z "$$KESTREL_PI_HASH" ] || printf '%s' "$$KESTREL_PI_HASH" | grep -Eqxz '[$$][0-9a-z]+[$$][./0-9A-Za-z$$=]+' \
+		|| { echo "MY_PI_PASSWORD_HASH is not a crypt hash (make one with: openssl passwd -6)" >&2; exit 1; }
+	cd builder && sudo env PACKER_PLUGIN_PATH=$(PACKER_PLUGIN_PATH) PACKER_CACHE_DIR=$(PACKER_CACHE_DIR) $(UNSHARE) $(PACKER) build -var "my_hostname=$(MY_HOSTNAME)" -var "my_version=$(MY_VERSION)" -var "my_pi_password_hash=$$KESTREL_PI_HASH" config.json
 	sudo chown -R $$USER:$$USER builder/output-my_rpi_image
 	mv builder/output-my_rpi_image/image $@
 	$(PISHRINK) -s $@

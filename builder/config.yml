@@ -209,6 +209,21 @@
         {{ system.boot_dir }} does not hold config.txt/cmdline.txt; check
         image_mounts in builder/config.json.
 
+  # The pi login: a custom hash from MY_PI_PASSWORD_HASH (passed through by the
+  # Makefile and builder/config.json) or the documented default. The log says
+  # which went in, never the value.
+  - name: assert the pi login is a crypt hash
+    assert:
+      that: system.account.pi is match('^[$][0-9a-z]+[$][./0-9A-Za-z$=]+$')
+      fail_msg: system.account.pi (or MY_PI_PASSWORD_HASH) is not a crypt hash.
+      quiet: true
+
+  - name: report which pi login the image gets
+    debug:
+      msg: >-
+        login: {{ 'custom hash' if lookup('env', 'MY_PI_PASSWORD_HASH') | length > 0
+        else 'the documented default' }}
+
   # The Makefile runs PiShrink with -s, relying on Raspberry Pi OS's own
   # first-boot hook (init=.../firstboot in cmdline.txt) to grow the root
   # filesystem to fill the card. Fail if a base image ever drops that hook.
