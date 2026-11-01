@@ -1709,3 +1709,96 @@ def test_worker_reads_after_its_first_write_so_it_sees_itself(tmp_path):
     again._plan_write(clock2.now)
     again._plan_read(clock2.now)
     assert again._next_read <= clock2.now + 600 + 120
+
+
+# -- one malformed reply never ends a round --------------------------------------
+
+def test_krpc_drops_replies_with_a_malformed_transaction_id():
+    def responder(packet, addr):
+        msg = dht.bdecode(packet)
+        good = _reply(packet, {b"id": bytes(20)}, addr)
+        bad = []
+        for tid in ([b"x"], {b"a": 1}, 7, msg[b"t"] + b"!", b""):
+            bad.append((dht.bencode({b"t": tid, b"y": b"r", b"r": {b"id": bytes(20)}}), addr))
+        bad.append((dht.bencode({b"t": msg[b"t"], b"y": b"e", b"e": {b"x": 1}}), ("198.51.100.9", 1)))
+        bad.append((dht.bencode([b"not", b"a", b"dict"]), addr))
+        return bad + [good]
+    clock = FakeClock()
+    client = dht.KrpcClient(FakeTransport(responder), clock=clock, sleep=clock.sleep)
+    [(reply, err)] = client.query([(("192.0.2.1", 6881), b"ping", {})])
+    assert err is None and reply == {b"id": bytes(20)}
+    assert client.dropped == 7
+
+
+def test_krpc_survives_a_packet_that_breaks_its_handling(monkeypatch):
+    def responder(packet, addr):
+        return [(b"BOOM", addr), _reply(packet, {b"id": bytes(20)}, addr)]
+    real = dht.bdecode
+
+    def bdecode(data, *a, **k):
+        if data == b"BOOM":
+            raise RuntimeError("unexpected")
+        return real(data, *a, **k)
+    monkeypatch.setattr(dht, "bdecode", bdecode)
+    clock = FakeClock()
+    client = dht.KrpcClient(FakeTransport(responder), clock=clock, sleep=clock.sleep)
+    [(reply, err)] = client.query([(("192.0.2.1", 6881), b"ping", {})])
+    assert err is None and reply == {b"id": bytes(20)} and client.dropped == 1
+
+
+# -- a read keeps a bounded number of entries ------------------------------------
+
+def test_union_keeps_what_most_copies_agree_on():
+    import random
+    rng = random.Random(11)
+    honest = [_entry(rng, hour=10) for _ in range(30)]
+    extra = [_entry(rng, hour=11) for _ in range(proto.MAX_ENTRIES)]
+    agreed = b"".join(e.encode() for e in honest)
+    copies = [agreed, agreed, b"".join(e.encode() for e in extra)]
+    entries, rejected = proto.union(copies, DAY, bits=8)
+    assert len(entries) == proto.MAX_ENTRIES
+    assert {e.token for e in honest} <= set(entries)      # the agreed entries stay
+    assert rejected == 30                  # 79 distinct entries, 49 kept
+    # Within the limit nothing changes.
+    entries, rejected = proto.union([agreed], DAY, bits=8)
+    assert len(entries) == 30 and rejected == 0
+
+
+def test_a_day_keeps_at_most_a_full_census(tmp_path, monkeypatch):
+    import random
+    plugin, mod = _plugin(tmp_path)
+    monkeypatch.setattr(mod.proto, "DAY_ENTRIES", 3)
+    rng = random.Random(12)
+    seen = {"entries": {}, "read_at": None, "online": 0, "rejected": 0}
+    first = [_entry(rng, hour=5) for _ in range(3)]
+    plugin._add_seen(seen, {e.token: e for e in first}, 0)
+    later = [_entry(rng, hour=6) for _ in range(2)]
+    plugin._add_seen(seen, {e.token: e for e in later}, 0)
+    assert len(seen["entries"]) == 3 and seen["over"] == 2
+    # A token already counted still updates.
+    newer = proto.Entry(first[0].token, 9, first[0].version, first[0].agent,
+                        first[0].contests, first[0].nonce)
+    plugin._add_seen(seen, {newer.token: newer}, 0)
+    assert seen["entries"][first[0].token.hex()][0] == 9
+
+
+def test_the_page_says_when_the_census_is_full(tmp_path):
+    reader, _mod = _read_census(tmp_path)
+    today = reader._day["day"]
+    reader._seen[today]["over"] = 5
+    reader._summarize(reader._now())
+    assert "The census is full today" in html.unescape(_page(reader))
+    reader._seen[today]["over"] = 0
+    reader._summarize(reader._now())
+    assert "The census is full today" not in html.unescape(_page(reader))
+
+
+def test_a_state_file_cant_bring_in_more_than_a_full_census(tmp_path, monkeypatch):
+    _plugin_, mod = _plugin(tmp_path)
+    monkeypatch.setattr(mod.proto, "DAY_ENTRIES", 2)
+    rows = {"%016x" % i: [i, 0, 0, 0, 0, 0, 0] for i in range(5)}
+    out = mod._valid_seen({"days": {"2027-01-15": {"entries": rows, "read_at": 1.0,
+                                                   "online": 0, "rejected": 0, "over": 3}}})
+    kept = out["2027-01-15"]["entries"]
+    assert sorted(r[0] for r in kept.values()) == [3, 4]  # the latest hours
+    assert out["2027-01-15"]["over"] == 3

@@ -208,11 +208,16 @@ def _valid_seen(data):
                 or not isinstance(seen.get("entries"), dict)):
             continue
         entries = {t: r for t, r in seen["entries"].items() if _hex(t, 8) and _valid_row(r)}
+        if len(entries) > proto.DAY_ENTRIES:
+            # A state file can't bring in more than a full census: keep the latest.
+            keep = sorted(entries, key=lambda t: (-entries[t][0], t))[:proto.DAY_ENTRIES]
+            entries = {t: entries[t] for t in keep}
         read_at = seen.get("read_at")
         out[day] = {"entries": entries,
                     "read_at": float(read_at) if _num(read_at) is not None else None,
                     "online": seen["online"] if _int_in(seen.get("online"), 0, 1 << 20) else 0,
-                    "rejected": seen["rejected"] if _int_in(seen.get("rejected"), 0, 1 << 30) else 0}
+                    "rejected": seen["rejected"] if _int_in(seen.get("rejected"), 0, 1 << 30) else 0,
+                    "over": seen["over"] if _int_in(seen.get("over"), 0, 1 << 30) else 0}
     return out
 
 
@@ -473,6 +478,7 @@ class Census(Plugin):
         self._last_counts = None              # the agent's last contest tally reading
         self._history = {}                    # history.json: {day: row}, 30 days
         self._summary = None                  # what the page, card and service read
+        self._full_logged = None              # the day the "census full" note was logged
         # What the page shows.
         self._paused = "starting"
         self._link_error = ""
@@ -833,6 +839,10 @@ class Census(Plugin):
                     entries, rejected = proto.read_slot(dht, self._client, self._pool, cache,
                                                         day, index, bits=self._bits)
                     self._add_seen(seen, entries, rejected)
+                if seen.get("over") and self._full_logged != day:
+                    self._full_logged = day
+                    self.log.info("census: %s is full (%d entries); further reports "
+                                  "aren't counted", day, proto.DAY_ENTRIES)
                 if day == today:
                     self._day["cache"] = cache.to_json()
                     seen["online"] = sum(1 for row in seen["entries"].values()
@@ -853,10 +863,16 @@ class Census(Plugin):
 
     @staticmethod
     def _add_seen(seen, entries, rejected):
+        """Add one slot's entries to a day's. A day keeps at most
+        ``proto.DAY_ENTRIES`` tokens (a full census); past that, known tokens
+        still update and new ones are counted in ``over`` instead."""
         rows = seen["entries"]
         for token, entry in entries.items():
             row = [entry.hour, entry.version, entry.agent] + list(entry.contests)
             held = rows.get(token.hex())
+            if held is None and len(rows) >= proto.DAY_ENTRIES:
+                seen["over"] = seen.get("over", 0) + 1
+                continue
             if held is None or row[0] > held[0] or (row[0] == held[0] and row > held):
                 rows[token.hex()] = row
         seen["rejected"] = seen.get("rejected", 0) + rejected
@@ -921,6 +937,7 @@ class Census(Plugin):
         month = list(self._history.values())
         summary = {
             "day": today, "read_at": seen["read_at"], "online": seen["online"],
+            "over": seen.get("over", 0),
             "tally": proto.Tally(seen["entries"].values()),
             "active_avg": round(sum(r["active"] for r in week) / len(week), 1) if week else None,
             "active_peak": max(r["active"] for r in week) if week else None,
@@ -1113,9 +1130,12 @@ class Census(Plugin):
         if summary["active_avg"] is not None:
             week = " &middot; last 7 days: %s a day on average, %d at most" % (
                 esc(summary["active_avg"]), summary["active_peak"])
+        full = ("<p>The census is full today: some reports weren't counted.</p>"
+                if summary.get("over") else "")
         html = ('<div class="card pad"><h2>Today (UTC)</h2><p>Kestrels online: %d &middot; '
-                "active today: %d%s.</p><p>%s.</p></div>"
-                % (summary["online"], active, week, esc(contest_line(summary["week"]).capitalize())))
+                "active today: %d%s.</p><p>%s.</p>%s</div>"
+                % (summary["online"], active, week,
+                   esc(contest_line(summary["week"]).capitalize()), full))
         if not active:
             return html
         html += _card("Releases", _shares(tally.version_rows(), active), esc)

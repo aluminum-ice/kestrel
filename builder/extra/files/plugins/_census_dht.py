@@ -344,26 +344,43 @@ class KrpcClient:
                 break
             data, src = got
             self.received_bytes += len(data) + UDP_IP_OVERHEAD
+            # Anyone can send this socket a datagram: one that can't be read,
+            # isn't a reply to a pending query from the node it was sent to, or
+            # trips anything below is dropped, never the end of the round.
             try:
-                msg = bdecode(data)
-            except BencodeError:
-                msg = None
-            kind = msg.get(b"y") if isinstance(msg, dict) else None
-            entry = pending.get(msg.get(b"t")) if kind in (b"r", b"e") else None
-            if entry is None or entry[1] != (src[0], src[1]):
+                if not self._take(data, src, pending, results):
+                    self.dropped += 1
+            except Exception:  # noqa: BLE001 - a hostile packet is only dropped
                 self.dropped += 1
-                continue
-            del pending[msg[b"t"]]
-            idx = entry[0]
-            if kind == b"r" and isinstance(msg.get(b"r"), dict):
-                results[idx] = (msg[b"r"], None)
-            elif kind == b"e":
-                err = msg.get(b"e")
-                code = err[0] if isinstance(err, list) and err and isinstance(err[0], int) else 0
-                results[idx] = (None, "e%d" % code)
-            else:
-                results[idx] = (None, "malformed")
         return results
+
+    @staticmethod
+    def _take(data, src, pending, results):
+        """Match one datagram to its pending query and record the result;
+        False when it isn't a reply to one."""
+        try:
+            msg = bdecode(data)
+        except BencodeError:
+            return False
+        if not isinstance(msg, dict):
+            return False
+        kind, tid = msg.get(b"y"), msg.get(b"t")
+        if kind not in (b"r", b"e") or not isinstance(tid, bytes) or len(tid) != 2:
+            return False
+        entry = pending.get(tid)
+        if entry is None or entry[1] != (src[0], src[1]):
+            return False
+        del pending[tid]
+        idx = entry[0]
+        if kind == b"r" and isinstance(msg.get(b"r"), dict):
+            results[idx] = (msg[b"r"], None)
+        elif kind == b"e":
+            err = msg.get(b"e")
+            code = err[0] if isinstance(err, list) and err and isinstance(err[0], int) else 0
+            results[idx] = (None, "e%d" % code)
+        else:
+            results[idx] = (None, "malformed")
+        return True
 
     def _throttle(self):
         """A token bucket: ``rate`` sends a second, bursting up to ``rate``."""

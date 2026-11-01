@@ -114,6 +114,13 @@ only while the slot it just read is full (49 entries) or past the `seq`
 ceiling. It keeps the newest entry per token across every copy and alternate,
 and drops entries with an hour above 23 or a failed proof-of-work.
 
+A slot holds at most 49 entries, so a reader keeps at most 49 from one slot's
+copies: when the copies together hold more, it keeps the entries held by the
+most copies (then the later hour). Over a day it keeps at most a full census,
+64 slots x 4 locations x 49 = 12,544 entries; past that, entries it already has
+still update, and new ones are only tallied as "not counted" (the Census
+page then says the census is full).
+
 - **Online:** entries whose hour is the reader's current UTC hour or the one
   before.
 - **Active today:** every token seen in the day's reads (the plugin adds up its
