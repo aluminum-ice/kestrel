@@ -267,6 +267,9 @@ class FakeTransport:
         self._since_recv = 0
         return self.inbox.pop(0) if self.inbox else None
 
+    def close(self):
+        self.closed = True
+
 
 def _reply(packet, body, src):
     msg = dht.bdecode(packet)
@@ -1102,3 +1105,321 @@ def test_facts_without_services_or_with_a_provider_that_raises(tmp_path):
     version, agent, contests = plugin._facts(NOW, {})
     assert version == 0 and contests == [0, 0, 0, 0]
     assert proto.decode_agent(agent) == (proto.AGENT_NONE, 0, proto.REMOTE_OFF)
+
+
+# -- step 10: the worker ---------------------------------------------------------------
+
+class Link(types.SimpleNamespace):
+    """The plugin's view of connectivity, which a test can flip."""
+
+    def active_paths(self):
+        return list(self.paths)
+
+
+def _worker(tmp_path, net=None, seed=41, name="dev", **opts):
+    """A Census plugin wired to a fake DHT and a fake clock (``NOW``, 08:00
+    UTC), with one working router name and one that doesn't resolve. Drive it
+    with ``_run_for``."""
+    import random
+    plugin, mod = _plugin(tmp_path, online=True, **opts)
+    net = net or FakeDHT(invalid=0.2, seed=seed)
+    clock = FakeClock(start=NOW)
+    plugin.context.connectivity = Link(online=True, paths=["bnep0"])
+    state = str(tmp_path / ("state-" + name))
+    plugin._state_dir = lambda: state
+    plugin._now = clock
+    plugin._rng = random.Random(seed)
+    plugin.opened = []
+
+    def open_transport(device):
+        plugin.opened.append(device)
+        plugin.transport = FakeTransport(net)
+        return plugin.transport
+    plugin._open_transport = open_transport
+    router = sorted(net.nodes)[0]
+    plugin.resolved = []
+
+    def resolve(host, port):
+        plugin.resolved.append(host)
+        return router if host == "router.example.net" else None
+    plugin._resolve = resolve
+    plugin._accept = _test_net
+    plugin._bits = 8
+    plugin._backoff = (0,)
+    plugin._client_opts = {"clock": clock, "sleep": clock.sleep}
+    plugin._clock_synced = lambda now: True
+    plugin.writes = []
+    publish = plugin._publish
+
+    def logged(now):
+        plugin.writes.append(now)
+        publish(now)
+    plugin._publish = logged
+    mod.device_version = lambda: "1.0.12"
+    return plugin, mod, net, clock
+
+
+def _run_for(plugin, clock, seconds):
+    end = clock.now + seconds
+    while clock.now < end:
+        delay = plugin._tick()
+        clock.now = min(end, clock.now + max(1.0, delay))
+
+
+def _stored(net, day, index, alt=0):
+    """Every entry the fake DHT holds for a slot, across its nodes."""
+    _private, public, target = proto.slot_key(day, index, alt)
+    found = {}
+    for node in net.nodes.values():
+        item = node["store"].get(target)
+        if item:
+            found.update(proto.parse_value(item["v"], day, bits=8)[0])
+    return found
+
+
+def test_worker_joins_writes_and_checks(tmp_path):
+    plugin, _mod, net, clock = _worker(tmp_path)
+    _run_for(plugin, clock, 2 * 3600)
+    assert plugin.opened == ["bnep0"]                # bound to the tether
+    assert plugin.resolved[:1] == ["router.example.net"]
+    day = plugin._day
+    # The first write waited 5-30 minutes; then one an hour.
+    assert NOW + 300 <= plugin.writes[0] <= NOW + 1800
+    assert len(plugin.writes) == 2
+    assert {int(t // 3600) for t in plugin.writes} == {int(NOW // 3600), int(NOW // 3600) + 1}
+    token = bytes.fromhex(day["token"])
+    entry = _stored(net, day["day"], day["slot"], day["alt"])[token]
+    assert proto.decode_version(entry.version) == "1.0.12"
+    assert plugin._last_write["ok"] and plugin._last_write["held"][0] >= 3
+    # State is private, and nothing in it is a node or router address.
+    state = tmp_path / "state-dev"
+    assert oct(os.stat(state).st_mode & 0o777) == "0o700"
+    for name in ("day.json", "seen.json", "pool.json", "routing.json"):
+        assert oct(os.stat(state / name).st_mode & 0o777) == "0o600", name
+    assert plugin.context.health_note == ""
+
+
+def test_worker_reads_the_census_and_counts_online_devices(tmp_path):
+    net = FakeDHT(invalid=0.2, seed=42)
+    writers = [_worker(tmp_path, net=net, seed=50 + i, name="w%d" % i, read=False)
+               for i in range(3)]
+    for plugin, _mod, _net, clock in writers:
+        _run_for(plugin, clock, 3600)
+    reader, _mod, _net, clock = _worker(tmp_path, net=net, seed=60, name="r", report=False)
+    _run_for(reader, clock, 3600)
+    seen = reader._seen[reader._day["day"]]
+    tokens = {bytes.fromhex(w[0]._day["token"]).hex() for w in writers}
+    assert tokens <= set(seen["entries"])
+    assert seen["online"] == len(tokens) and reader._last_read["complete"]
+    # The next read comes about poll_hours on.
+    assert 0.9 * 4 * 3600 <= reader._next_read - reader._last_read["at"] <= 1.1 * 4 * 3600 + 120
+
+
+def test_worker_gates_pause_it_and_it_resumes(tmp_path):
+    plugin, _mod, _net, clock = _worker(tmp_path)
+    for gate, reason in ((lambda: setattr(plugin, "_clock_synced", lambda now: False),
+                          "waiting for the clock to be set"),
+                         (lambda: setattr(plugin.context.connectivity, "online", False),
+                          "offline"),
+                         (lambda: setattr(plugin.context.connectivity, "paths", ["wlan0"]),
+                          "waiting for the phone's Bluetooth tether")):
+        gate()
+        _run_for(plugin, clock, 3600)
+        assert plugin.context.health_note == "paused: " + reason
+        assert plugin.opened == [] and plugin.writes == []
+        plugin._clock_synced = lambda now: True
+        plugin.context.connectivity.online = True
+        plugin.context.connectivity.paths = ["bnep0"]
+    _run_for(plugin, clock, 3600)
+    assert plugin.opened == ["bnep0"] and plugin.writes
+    assert plugin.context.health_note == ""
+
+
+def test_worker_without_tether_only_uses_any_link_unbound(tmp_path):
+    plugin, _mod, _net, clock = _worker(tmp_path, tether_only=False)
+    plugin.context.connectivity.paths = ["wlan0"]
+    _run_for(plugin, clock, 3600)
+    assert plugin.opened == [None] and plugin.writes
+
+
+def test_worker_with_report_and_read_off_does_nothing(tmp_path):
+    plugin, _mod, _net, clock = _worker(tmp_path, report=False, read=False)
+    _run_for(plugin, clock, 3600)
+    assert plugin.opened == []
+    assert plugin.context.health_note == "paused: reporting and reading are both off"
+
+
+def test_worker_link_down_mid_write_pauses_and_the_next_hour_writes(tmp_path):
+    plugin, _mod, net, clock = _worker(tmp_path, read=False)
+    _run_for(plugin, clock, 200)                    # joined, before the first write
+    assert plugin._joined and not plugin.writes
+    write = plugin._publish
+
+    def tether_drops_mid_write(now):
+        # A few packets in, the phone's hotspot goes to sleep.
+        transport, real = plugin.transport, plugin.transport.send
+        sent = len(transport.sent)
+
+        def send(data, addr):
+            if len(transport.sent) >= sent + 3:
+                plugin.context.connectivity.paths = []
+                raise dht.LinkDown(19, "No such device")
+            return real(data, addr)
+        transport.send = send
+        plugin._publish = write
+        write(now)
+    plugin._publish = tether_drops_mid_write
+    _run_for(plugin, clock, 1800)
+    assert plugin.writes and not plugin._joined and plugin.transport.closed
+    assert plugin.context.health_note == (
+        "paused: waiting for the phone's Bluetooth tether")
+    # The tether comes back: a fresh socket, and the hour is written.
+    plugin.context.connectivity.paths = ["bnep0"]
+    _run_for(plugin, clock, 2 * 3600)
+    day = plugin._day
+    assert len(plugin.opened) >= 2
+    assert bytes.fromhex(day["token"]) in _stored(net, day["day"], day["slot"], day["alt"])
+
+
+def test_worker_bootstraps_from_saved_router_addresses_before_names(tmp_path):
+    plugin, mod, net, clock = _worker(tmp_path, read=False)
+    _run_for(plugin, clock, 200)
+    assert plugin.resolved == ["router.example.net", "dht.example.org"]
+    state = tmp_path / "state-dev"
+    saved = mod.json.loads((state / "routing.json").read_text())
+    assert saved == {"routers": [list(sorted(net.nodes)[0])]}
+    # A later join with a stale pool goes to the saved address: no DNS lookup.
+    (state / "pool.json").unlink()
+    again, _mod2, _n, clock2 = _worker(tmp_path, net=net, read=False)
+    clock2.now = clock.now
+    _run_for(again, clock2, 200)
+    assert again._joined and again.resolved == []
+    # A fresh pool needs no router at all.
+    third, _mod3, _n, clock3 = _worker(tmp_path, net=net, read=False)
+    clock3.now = clock2.now
+    (state / "routing.json").unlink()
+    _run_for(third, clock3, 200)
+    assert third._joined and third.resolved == []
+    assert not any(addr == sorted(net.nodes)[0] for _d, addr in third.transport.sent[:1])
+
+
+def test_worker_falls_back_to_names_when_saved_addresses_are_silent(tmp_path):
+    plugin, mod, net, clock = _worker(tmp_path, read=False)
+    state = tmp_path / "state-dev"
+    # An address the fake DHT has no node at: nothing answers there.
+    plugin._save_json("routing.json", {"routers": [["203.0.113.254", 6881]]})
+    _run_for(plugin, clock, 200)
+    assert plugin._joined and "router.example.net" in plugin.resolved
+    assert [["203.0.113.254", 6881]] != mod.json.loads(
+        (state / "routing.json").read_text())["routers"]
+
+
+def test_worker_reports_why_it_cant_join(tmp_path):
+    plugin, _mod, net, clock = _worker(tmp_path, read=False)
+    plugin._resolve = lambda host, port: None
+    _run_for(plugin, clock, 300)
+    assert not plugin._joined
+    assert plugin.context.health_note.startswith("can't join the DHT")
+
+    def unbindable(device):
+        raise dht.TetherBindError(19, "can't bind to bnep0: No such device")
+    other, _mod2, _n, clock2 = _worker(tmp_path, net=net, name="other")
+    other._open_transport = unbindable
+    _run_for(other, clock2, 300)
+    assert other.context.health_note == "can't bind to bnep0: No such device"
+
+
+def test_worker_checks_its_write_and_writes_again_when_overwritten(tmp_path):
+    import random
+    plugin, _mod, net, clock = _worker(tmp_path, read=False)
+    while not plugin.writes:
+        _run_for(plugin, clock, 10)
+    day = plugin._day
+    # Another writer's put lands over the slot without this device's entry.
+    other, opool = _client(net, seed=77)
+    net.seed_pool(opool)
+    private, public, _t = proto.slot_key(day["day"], day["slot"], day["alt"])
+    fetched = dht.get_item(other, opool, None, public)
+    token = os.urandom(8)
+    stranger = proto.Entry(token, 8, proto.encode_version("1.0.11"), 0, (0, 0, 0, 0),
+                           proto.find_pow(day["day"], token, random.Random(5), bits=8))
+    dht.put_item(other, fetched, private, public, stranger.encode(), fetched.max_seq + 50)
+    assert bytes.fromhex(day["token"]) not in _stored(net, day["day"], day["slot"], day["alt"])
+    _run_for(plugin, clock, 120)
+    assert len(plugin.writes) == 2                       # the check wrote it again
+    stored = _stored(net, day["day"], day["slot"], day["alt"])
+    assert bytes.fromhex(day["token"]) in stored and stranger.token in stored
+
+
+def test_worker_rolls_the_day_over(tmp_path):
+    plugin, mod, net, clock = _worker(tmp_path, read=False)
+    tally = {"local": {"won": 4, "lost": 1}, "remote": {"won": 2, "lost": 2}}
+    plugin.context.services.provide("agent", lambda: _status(tally=tally), owner="daemon")
+    clock.now = NOW + 14 * 3600                          # 22:00 UTC
+    _run_for(plugin, clock, 3600)
+    first = dict(plugin._day)
+    assert first["nonce"] and first["baseline"] == [4, 1, 2, 2]
+    tally["local"]["won"] = 5                           # a contest late in the day
+    _run_for(plugin, clock, 2400)                        # upkeep notes it (23:40)
+    _run_for(plugin, clock, 3600)                        # past midnight
+    day = plugin._day
+    assert day["day"] != first["day"] and day["token"] != first["token"]
+    assert day["baseline"] == [5, 1, 2, 2] and day["bytes"] < first["bytes"] + 10**6
+    assert day["nonce"] is None or proto.pow_ok(day["day"], bytes.fromhex(day["token"]),
+                                                bytes.fromhex(day["nonce"]), bits=8)
+
+
+def test_worker_survives_a_restart_without_redoing_its_work(tmp_path):
+    plugin, mod, net, clock = _worker(tmp_path, read=False)
+    while not plugin.writes:
+        _run_for(plugin, clock, 60)
+    day = dict(plugin._day)
+    again, mod2, _n, clock2 = _worker(tmp_path, net=net, read=False)
+    clock2.now = clock.now + 60
+    calls = []
+    real = mod2.proto.find_pow
+    mod2.proto.find_pow = lambda *a, **k: calls.append(1) or real(*a, **k)
+    try:
+        _run_for(again, clock2, 2 * 3600)
+    finally:
+        mod2.proto.find_pow = real
+    assert again._day["token"] == day["token"] and again._day["slot"] == day["slot"]
+    assert calls == [] and again.writes
+    # This hour was written before the restart, so the next write is next hour.
+    assert int(again.writes[0] // 3600) == int(plugin.writes[0] // 3600) + 1
+
+
+def test_worker_rebuilds_corrupt_state(tmp_path):
+    plugin, _mod, _net, clock = _worker(tmp_path, read=False)
+    state = tmp_path / "state-dev"
+    state.mkdir()
+    (state / "day.json").write_text('{"day": "2027-01-15", "token": "zz", "slot": 99}')
+    (state / "seen.json").write_text("[1, 2")
+    (state / "pool.json").write_text('{"nodes": [["nothex", 1, 2, 3]]}')
+    (state / "routing.json").write_text('{"routers": [["10.0.0.1", 6881], "x"]}')
+    _run_for(plugin, clock, 3600)
+    assert plugin.writes and len(plugin._day["token"]) == 16
+
+
+def test_worker_keeps_to_the_data_budget(tmp_path):
+    plugin, _mod, _net, clock = _worker(tmp_path, report=False)
+    plugin._daily_bytes = lambda: 40000
+    _run_for(plugin, clock, 1800)
+    assert plugin._last_read and not plugin._last_read["complete"]
+    assert plugin._day["bytes"] < 40000 * 1.5
+    plugin._day["bytes"] = 70000
+    _run_for(plugin, clock, 120)
+    assert plugin.context.health_note == "paused: over today's data budget"
+
+
+def test_worker_stops_promptly_on_unload(tmp_path):
+    import time as _time
+    plugin, _mod, _net, _clock = _worker(tmp_path)
+    plugin._clock_synced = lambda now: False         # paused: it waits on its event
+    plugin._now = _time.time
+    plugin.on_ready()
+    _time.sleep(0.2)
+    started = _time.monotonic()
+    plugin.on_unload()
+    plugin._worker.join(5)
+    assert not plugin._worker.is_alive() and _time.monotonic() - started < 5

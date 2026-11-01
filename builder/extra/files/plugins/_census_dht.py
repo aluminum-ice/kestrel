@@ -485,17 +485,20 @@ class NodePool:
 
 # Bootstrap rounds, in seconds from the first: a phone hotspot waking from idle
 # can drop the first burst of packets.
+# Bootstrap rounds, in seconds from the first: a phone hotspot waking from idle
+# can drop the first burst of packets.
 BOOTSTRAP_BACKOFF = (0, 10, 30, 90)
 
 
-def _resolve(host, port):
+def resolve(host, port):
+    """``(ip, port)`` for a router name, IPv4 only, or None."""
     try:
         return socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_DGRAM)[0][4][:2]
     except (OSError, IndexError, UnicodeError):
         return None
 
 
-def bootstrap(client, pool, routers, resolve=_resolve, wait=None,
+def bootstrap(client, pool, routers, resolve=resolve, wait=None,
               backoff=BOOTSTRAP_BACKOFF):
     """Ask the bootstrap ``routers`` (``[(host, port)]``) for nodes near this
     client's ID, in rounds at the ``backoff`` offsets, until one answers. Names
