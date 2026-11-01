@@ -970,10 +970,35 @@ def _fetch_timeout(value):
     return min(FETCH_TIMEOUT_MAX, max(FETCH_TIMEOUT_MIN, value))
 
 
+MAX_REDIRECTS = 5
+
+
+class _Redirects(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to an https:// address, at most MAX_REDIRECTS
+    times, and drop the token once it leaves the host the request was made to:
+    an asset served from other storage still downloads, without the token."""
+
+    max_redirections = MAX_REDIRECTS
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = urllib.parse.urlsplit(newurl)
+        if new.scheme != "https":
+            raise Refused("the release server redirected to a non-https address")
+        out = super().redirect_request(req, fp, code, msg, headers, newurl)
+        old = urllib.parse.urlsplit(req.full_url)
+        if out is not None and (new.netloc.lower() != old.netloc.lower()):
+            out.remove_header("Authorization")
+        return out
+
+
+_OPENER = urllib.request.build_opener(_Redirects)
+
+
 def http_fetch(url, token="", timeout=30, limit=MAX_LIST_BYTES, attempts=3):
     """GET ``url`` and parse JSON, with retries for transient errors and a size
     cap. Returns (status, body); body is None for an HTTP error. The token is
-    only ever added by the caller for URLs on the configured host."""
+    only ever added by the caller for URLs on the configured host, and a
+    redirect keeps it only on that host (``_Redirects``)."""
     headers = {"Accept": "application/json", "User-Agent": "kestrel-update"}
     if token:
         headers["Authorization"] = "token %s" % token
@@ -981,7 +1006,7 @@ def http_fetch(url, token="", timeout=30, limit=MAX_LIST_BYTES, attempts=3):
     for attempt in range(attempts):
         try:
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _OPENER.open(req, timeout=timeout) as resp:
                 raw = resp.read(limit + 1)
                 if len(raw) > limit:
                     raise Refused("the server's reply for %s is too large" % url)

@@ -306,9 +306,14 @@ must be ones only root controls:
   in the root-owned `/var/lib/kestrel/update-run`. The package is staged in a
   fresh root-created directory and snapshotted/restored as `pi` (it is `pi`'s
   own venv).
-- The token is sent only to `host`, over https. The clone gets it through
-  git's `GIT_CONFIG_*` environment, so it never appears in a process command
-  line other local users can read.
+- The token is sent only to `host`, over https. The engine follows a redirect
+  only to an `https://` address (at most five), and drops the token once one
+  leaves `host`, so a release file served from other storage still downloads,
+  without it. The clone gets the token through git's `GIT_CONFIG_*`
+  environment, so it never appears in a process command line other local
+  users can read, and with a token git follows no redirect. (The clone runs
+  from the installed CLI, so that last part applies from the update after the
+  one that brings it.)
 - Release authenticity rests on TLS to `host` and the Forgejo account that
   publishes releases; releases are not yet signed (tracked in
   [Deferred improvements](deferred.md)).
