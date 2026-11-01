@@ -43,7 +43,7 @@ Once an hour, one 20-byte report:
 | Learning agent | Off, scripted sweep or learned, and the configured algorithm. |
 | Remote training | A code: not enabled, enabled but not configured, configured but failing, configured but no new model this week, or working. Never the training host's name, address or user. |
 | Contests today | How many model contests on-device and remote candidates won and lost since UTC midnight. |
-| Proof-of-work | A number that took the device a second or two to find, which makes flooding the census with fake reports slower. |
+| Proof-of-work | A number that took the device a second or two to find. It says nothing about the device. |
 
 Nothing from your captures, no network names, no locations, no handshake
 counts. The **Census** page shows exactly what this device reports today, in
@@ -84,8 +84,8 @@ Press **Census** on the plugin's row on the Plugins page:
 - **Last 30 days:** one line per day.
 - **What this device reports today.**
 
-The numbers are **approximate and unverified**. Anyone can write to the public
-census, and only Kestrels with the plugin on are counted. A report stays in the
+The numbers are **approximate and unverified**, and only Kestrels with the
+plugin on are counted. A report stays in the
 census about two hours after its device's last write, so "online" means
 "reported this hour or the last".
 

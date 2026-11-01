@@ -5,8 +5,8 @@ DHT (BEP 44 mutable items), and reads everyone's reports back, so every device
 can show how many Kestrels are in use, which releases they run, how their
 learning agents are set up, and how often a model trained on a desktop beats
 one trained on the device. There is no server: the reports live in 64 public
-"slots" per UTC day whose keys anyone can derive from the date (the format is
-``kestrel-census/1``, documented in docs/developer/census-protocol.md).
+"slots" per UTC day, keyed by the date (the format is ``kestrel-census/1``,
+documented in docs/developer/census-protocol.md).
 
 What leaves the device, each hour, in a 20-byte report:
 
@@ -29,8 +29,8 @@ out over the phone's Bluetooth tether, so that address is the mobile carrier's
 shared one. The plugin sends no client version and answers no DHT queries
 (BEP 43 read-only mode).
 
-The numbers are approximate and unverified: anyone can write to a public
-location, and only devices with this plugin enabled are counted.
+The numbers are approximate and unverified, and only devices with this plugin
+enabled are counted.
 
 Opt-in: it sends data off the device, so it declares the ``network`` capability
 and enabling it takes the authorized-use acknowledgment. It ships disabled,
