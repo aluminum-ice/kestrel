@@ -432,6 +432,7 @@ class Demo:
                        "baseline": [1, 5, 1, 1], "cache": {},
                        "bytes": int(2.6 * 1024 * 1024), "wrote": hour}
         census._paused = ""
+        census._joined = True                 # joined the DHT: "can read and write: yes"
         census._last_write = {"at": now - 9 * 60, "ok": True, "held": (7, 8)}
         census._last_read = {"at": now - 23 * 60, "complete": True}
         census._summarize(now)

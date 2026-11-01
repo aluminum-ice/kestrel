@@ -72,8 +72,12 @@ addresses and uses those next time, so the lookup is rare.
 
 Press **Census** on the plugin's row on the Plugins page:
 
-- **Status:** running or paused (and why), the last report and whether its
-  check found it stored, the last read, and the data used today.
+- **Status:** running or paused (and why); whether the phone's Bluetooth
+  tether is up and the census can be read and written right now; the date and
+  time (UTC, with how long ago) this device last pushed its report, and whether
+  its check found it stored; when it last retrieved the whole census; and the
+  data used today. The last push and read are kept, so they show after a
+  restart too.
 - **Today (UTC):** Kestrels online now and active today, the 7-day average,
   and the contest line.
 - **Releases, Learning agent, Remote training:** counts and shares of today's
@@ -107,8 +111,8 @@ sudo kestrel plugins disable census
 ```
 
 or the Disable control on the dashboard. Its last report drops out of the
-census within about two hours. The plugin's state (today's token, the node list
-and the 30-day history) is in `~pi/.local/state/kestrel-census/`; delete that
+census within about two hours. The plugin's state (today's token, the node list,
+the 30-day history and the last push and read) is in `~pi/.local/state/kestrel-census/`; delete that
 folder to clear it.
 
 ## Troubleshooting
