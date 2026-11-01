@@ -43,6 +43,12 @@ TimeoutStopSec=40
 # plugin event loop responsive under contention. Default is 100; set it
 # explicitly so the ratio doesn't depend on that default.
 CPUWeight=150
+# Its own /tmp: anything the web server spools (an upload part) is private to
+# the daemon and gone on restart.
+PrivateTmp=yes
+# Headroom for the web server's connection caps (64 per listener) plus every
+# plugin's files and sockets, well past the default soft limit of 1024.
+LimitNOFILE=4096
 
 [Install]
 WantedBy=multi-user.target

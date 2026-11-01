@@ -217,3 +217,38 @@ def test_throttle_backs_off_then_forgets():
     t.fail("192.0.2.9")
     t.success("192.0.2.9")
     assert t.wait_seconds("192.0.2.9") == 0
+
+
+def test_throttle_begin_counts_parallel_attempts_before_they_are_checked():
+    import threading as _t
+
+    from kestrel_pi.webtls import LoginThrottle
+
+    throttle = LoginThrottle(free=5)
+    waits = []
+    lock = _t.Lock()
+
+    def attempt():
+        w = throttle.begin("192.0.2.9")
+        with lock:
+            waits.append(w)
+
+    threads = [_t.Thread(target=attempt) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    # Only the free attempts went ahead; the rest were told to wait.
+    assert waits.count(0) == 5 and all(w > 0 for w in waits if w)
+
+
+def test_throttle_forgive_unrecords_an_unchecked_attempt():
+    from kestrel_pi.webtls import LoginThrottle
+
+    throttle = LoginThrottle(free=2)
+    for _ in range(10):
+        assert throttle.begin("192.0.2.9") == 0
+        throttle.forgive("192.0.2.9")
+    assert throttle.begin("192.0.2.9") == 0
+    throttle.success("192.0.2.9")
+    assert throttle.wait_seconds("192.0.2.9") == 0

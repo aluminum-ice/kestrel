@@ -3245,3 +3245,233 @@ def test_https_redirect_keeps_host_path_and_query():
     app({"HTTP_HOST": "evil example\r\n", "PATH_INFO": "/", "SERVER_NAME": "192.0.2.50"},
         start)
     assert seen["headers"]["Location"] == "https://192.0.2.50:8443/"
+
+
+# -- every credential check backs off; "couldn't check" isn't "wrong" ------------
+
+def _basic_offbox(client, password, path="/status.json"):
+    import base64
+
+    raw = base64.b64encode(("pi:%s" % password).encode()).decode()
+    return client.get(path, base_url=HTTPS, environ_base=OFFBOX,
+                      headers={"Authorization": "Basic " + raw})
+
+
+def test_basic_auth_on_any_route_backs_off_after_repeated_failures(monkeypatch, tmp_path):
+    client, calls = _signin_client(monkeypatch, tmp_path)
+    for _ in range(5):
+        assert _basic_offbox(client, "wrong").status_code == 401
+    refused = _basic_offbox(client, "wrong")
+    assert refused.status_code == 429 and int(refused.headers["Retry-After"]) > 0
+    assert len(calls) == 5                     # the backed-off attempt wasn't checked
+    # Not even the right password is checked while backing off...
+    assert _basic_offbox(client, "letmein").status_code == 429
+    assert len(calls) == 5
+
+
+def test_a_recently_verified_basic_login_skips_the_backoff(monkeypatch, tmp_path):
+    client, calls = _signin_client(monkeypatch, tmp_path)
+    assert _basic_offbox(client, "letmein").status_code == 200
+    for _ in range(6):
+        _basic_offbox(client, "wrong")
+    # ...but a login verified within the cache window still gets in.
+    assert _basic_offbox(client, "letmein").status_code == 200
+
+
+def test_a_busy_helper_is_not_counted_as_a_wrong_password(monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "system", "username": "pi"})
+    monkeypatch.setattr(web, "_auth_cache", {})
+    monkeypatch.setattr(web, "_auth_check",
+                        lambda u, p, socket_path=None, timeout=10: {"ok": False, "error": "busy"})
+    for _ in range(10):
+        resp = _basic_offbox(client, "letmein")
+        assert resp.status_code == 503 and resp.headers["Retry-After"] == "5"
+    # The sign-in form says so in words, and still doesn't count it.
+    import re
+
+    page = client.get("/login", base_url=HTTPS, environ_base=OFFBOX).get_data(as_text=True)
+    lt = re.search(r'name="lt" value="([^"]+)"', page).group(1)
+    resp = client.post("/login", base_url=HTTPS, environ_base=OFFBOX,
+                       data={"username": "pi", "password": "letmein", "lt": lt})
+    assert resp.status_code == 503
+    assert "Couldn&#x27;t check your password" in resp.get_data(as_text=True) \
+        or "Couldn't check your password" in resp.get_data(as_text=True)
+
+
+def test_an_unreachable_helper_is_couldnt_check(monkeypatch, tmp_path):
+    reply = web._auth_check("pi", "x", socket_path=str(tmp_path / "no-socket"))
+    assert reply == {"ok": False, "error": "unavailable"}
+
+
+def test_a_presented_token_backs_off_too(monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "token", "token": "T0k"})
+    for _ in range(5):
+        assert client.get("/status.json?token=nope", environ_base=OFFBOX).status_code == 401
+    assert client.get("/status.json?token=nope", environ_base=OFFBOX).status_code == 429
+
+
+def test_at_most_four_checks_run_at_once(monkeypatch):
+    # A fifth concurrent check that can't get a turn is "couldn't check" (None).
+    monkeypatch.setattr(web, "_AUTH_GATE", threading.BoundedSemaphore(4))
+    monkeypatch.setattr(web, "_AUTH_GATE_WAIT", 0.05)
+    monkeypatch.setattr(web, "_auth_cache", {})
+    for _ in range(4):
+        web._AUTH_GATE.acquire()
+    try:
+        assert web._verify_system_login("pi", "anything") is None
+    finally:
+        for _ in range(4):
+            web._AUTH_GATE.release()
+
+
+# -- request bodies are capped before parsing -----------------------------------
+
+def test_an_oversized_body_is_refused_before_parsing(monkeypatch, tmp_path):
+    client, _ = _signin_client(monkeypatch, tmp_path)
+    resp = client.post("/login", base_url=HTTPS, environ_base=OFFBOX,
+                       data={"username": "pi", "password": "x" * (web.MAX_BODY + 10)})
+    assert resp.status_code == 413
+
+
+def test_the_import_refuses_without_the_login_before_reading_the_body(monkeypatch, tmp_path):
+    fake = _FakeRecovered(ingest_result={"imported": 1, "skipped": 0})
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"}, recovered=fake)
+    big = b"x" * (web.MAX_BODY * 4)
+    resp = client.post("/recovered/import", data={"csrf": "x", **_potfile_upload(big)},
+                       content_type="multipart/form-data")
+    kind, text = _redirect_banner(resp)
+    assert resp.status_code == 303 and kind == "err" and "Turn on the web login" in text
+    assert fake.ingested == []
+
+
+def test_an_import_past_its_own_limit_gets_a_banner(monkeypatch, tmp_path):
+    fake = _FakeRecovered(ingest_result={"imported": 0, "skipped": 0})
+    client, _ = _client(monkeypatch, tmp_path, BASIC, recovered=fake,
+                        recovered_cfg={"max_import_mb": 1})
+    token = _csrf(client.get("/networks", headers=_basic()).get_data(as_text=True))
+    huge = b"x" * (2 * 1024 * 1024)                 # past 1 MB + the form allowance
+    resp = client.post("/recovered/import", headers=_basic(),
+                       data={"csrf": token, **_potfile_upload(huge)},
+                       content_type="multipart/form-data")
+    kind, text = _redirect_banner(resp)
+    assert resp.status_code == 303 and kind == "err" and "too large" in text
+    assert fake.ingested == []
+
+
+# -- the release-notes renderer always finishes --------------------------------
+
+@pytest.mark.parametrize("text, want", [
+    ("#142 fixed", "<p>#142 fixed</p>"),
+    ("#### Notes", "<p>#### Notes</p>"),
+    ("#", "<p>#</p>"),
+    ("Fixes\n#7 and #8", "<p>Fixes #7 and #8</p>"),
+    ("x \x0099\x00 y", "<p>x 99 y</p>"),
+    ("## Real heading", '<h2 id="real-heading">Real heading</h2>'),
+])
+def test_markdown_lines_that_start_with_hash(text, want):
+    assert web._render_markdown(text) == want
+
+
+def test_markdown_finishes_on_any_input():
+    import random
+
+    rng = random.Random(1013)
+    alphabet = ["#", "##", "####", " ", "-", "*", "1.", "`", "```", "|", "---",
+                "[", "](", ")", "\n", "\x00", "a", "7", ":", "\\|"]
+    for _ in range(3000):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 60)))
+        started = time.monotonic()
+        web._render_markdown(text)
+        assert time.monotonic() - started < 0.5, repr(text)
+
+
+# -- connections are capped; slow headers are cut off ---------------------------
+
+def test_connection_caps_bookkeeping():
+    class Base:
+        def __init__(self, *a, **k):
+            pass
+
+    server = web._capped_server(Base)()
+    reqs = [object() for _ in range(web._MAX_PER_ADDRESS + 1)]
+    for r in reqs[:-1]:
+        assert server.admit(r, "192.0.2.5")
+    assert not server.admit(reqs[-1], "192.0.2.5")          # per-address cap
+    other = object()
+    assert server.admit(other, "192.0.2.6")                 # another address is fine
+    server.release(reqs[0])
+    assert server.admit(reqs[-1], "192.0.2.5")              # a slot came back
+    # Loopback is exempt from the per-address cap, not from the total.
+    # (The requests are kept alive: the server keys them by id, as it does
+    # the real sockets it holds until they're released.)
+    loop = web._capped_server(Base)()
+    held = [object() for _ in range(web._MAX_CONNECTIONS + 1)]
+    for r in held[:-1]:
+        assert loop.admit(r, "127.0.0.1")
+    assert not loop.admit(held[-1], "127.0.0.1")
+
+
+def _serve(monkeypatch, **patch):
+    import socket as _socket
+
+    pytest.importorskip("werkzeug")
+    from flask import Flask
+
+    for name, value in patch.items():
+        monkeypatch.setattr(web, name, value)
+    app = Flask("t")
+    app.add_url_rule("/", "i", lambda: "ok")
+    server = web._default_make_server("127.0.0.1", 0, app)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, _socket
+
+
+def test_the_server_closes_connections_past_its_cap(monkeypatch):
+    server, socket = _serve(monkeypatch, _MAX_CONNECTIONS=3, _CONNECTION_TIMEOUT=5)
+    held = []
+    try:
+        for _ in range(3):
+            held.append(socket.create_connection(("127.0.0.1", server.server_port), timeout=5))
+        time.sleep(0.2)
+        extra = socket.create_connection(("127.0.0.1", server.server_port), timeout=5)
+        with extra:
+            started = time.monotonic()
+            assert extra.recv(1) == b""                     # closed at once
+            assert time.monotonic() - started < 2
+        for conn in held:
+            conn.close()
+        time.sleep(0.3)
+        with socket.create_connection(("127.0.0.1", server.server_port), timeout=5) as ok:
+            ok.sendall(b"GET / HTTP/1.0\r\n\r\n")
+            assert b"200" in ok.recv(4096)
+    finally:
+        for conn in held:
+            conn.close()
+        server.shutdown()
+
+
+def test_headers_trickled_past_the_deadline_are_cut_off(monkeypatch):
+    server, socket = _serve(monkeypatch, _HEADER_DEADLINE=1, _CONNECTION_TIMEOUT=5)
+    try:
+        conn = socket.create_connection(("127.0.0.1", server.server_port), timeout=5)
+        with conn:
+            started = time.monotonic()
+            closed = False
+            for byte in b"GET / HTTP/1.1\r\nHost: x\r\nX-Slow: " + b"a" * 40:
+                try:
+                    conn.sendall(bytes([byte]))
+                except OSError:
+                    closed = True
+                    break
+                time.sleep(0.1)
+                if time.monotonic() - started > 1.5:
+                    break
+            if not closed:
+                conn.settimeout(3)
+                try:
+                    closed = conn.recv(4096) == b""
+                except OSError:
+                    closed = True
+            assert closed and time.monotonic() - started < 4
+    finally:
+        server.shutdown()

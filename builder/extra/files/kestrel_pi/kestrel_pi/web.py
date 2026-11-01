@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import secrets
+import errno
 import socket
 import subprocess
 import threading
@@ -138,9 +139,18 @@ _auth_cache_lock = threading.Lock()
 # by (username, HMAC tag) - never the plaintext password, like the cache above.
 _auth_inflight = {}
 _auth_inflight_lock = threading.Lock()
+# The largest request body any route but the potfile import accepts.
+MAX_BODY = 64 * 1024
+
 # Just over the root helper's own socket timeout (10s), so a follower waits out
 # the leader's verification rather than giving up early and failing closed.
 _AUTH_WAIT_SECONDS = 12.0
+
+# At most this many checks against the root helper at once (its socket takes
+# 16), so a burst of logins can't fill it; one that can't get a turn within
+# _AUTH_GATE_WAIT seconds is "couldn't check right now", never "wrong password".
+_AUTH_GATE = threading.BoundedSemaphore(4)
+_AUTH_GATE_WAIT = 2.0
 
 
 class _AuthFlight:
@@ -339,20 +349,31 @@ def system_login_user(web_cfg):
         return "pi"
 
 
-def _verify_system_login(username, password):
-    """Verify a device-account login via the root helper, with a short success
-    cache so basic auth isn't re-verified on every request, and single-flight
-    coalescing so a burst of identical logins (several auto-refreshing tabs
-    hitting the empty cache right after a restart) makes one verification, not
-    one root-socket connection each."""
+def _auth_cached(username, password):
+    """True if this login verified successfully within the last _AUTH_TTL."""
     if not username or not password:
         return False
     tag = hmac.new(_AUTH_HMAC_KEY, password.encode("utf-8"), "sha256").digest()
-    now = time.monotonic()
     with _auth_cache_lock:
         cached = _auth_cache.get(username)
-        if cached and cached[1] > now and hmac.compare_digest(cached[0], tag):
-            return True
+        return bool(cached and cached[1] > time.monotonic()
+                    and hmac.compare_digest(cached[0], tag))
+
+
+def _verify_system_login(username, password):
+    """Verify a device-account login via the root helper: True, False, or None
+    when it couldn't be checked (the helper is busy or unreachable, or too many
+    checks are already running), which callers must not count as a wrong
+    password. A short success cache means basic auth isn't re-verified on every
+    request, and single-flight coalescing means a burst of identical logins
+    (several auto-refreshing tabs hitting the empty cache right after a restart)
+    makes one verification, not one root-socket connection each."""
+    if not username or not password:
+        return False
+    if _auth_cached(username, password):
+        return True
+    tag = hmac.new(_AUTH_HMAC_KEY, password.encode("utf-8"), "sha256").digest()
+    now = time.monotonic()
     key = (username, tag)
     with _auth_inflight_lock:
         flight = _auth_inflight.get(key)
@@ -363,9 +384,16 @@ def _verify_system_login(username, password):
     if not leader:
         # Another request is already verifying this exact credential; wait for
         # its result instead of opening a second root-helper socket.
-        return flight.ok if flight.done.wait(_AUTH_WAIT_SECONDS) else False
+        return flight.ok if flight.done.wait(_AUTH_WAIT_SECONDS) else None
     try:
-        ok = bool(_auth_check(username, password).get("ok"))
+        if not _AUTH_GATE.acquire(timeout=_AUTH_GATE_WAIT):
+            flight.ok = None
+            return None
+        try:
+            reply = _auth_check(username, password)
+        finally:
+            _AUTH_GATE.release()
+        ok = True if reply.get("ok") is True else (None if reply.get("error") else False)
         flight.ok = ok
         if ok:
             with _auth_cache_lock:
@@ -380,7 +408,9 @@ def _verify_system_login(username, password):
 
 
 def _check_auth(web_cfg, request):
-    """Fail closed: an empty credential or an unknown mode lets nobody in."""
+    """Fail closed: an empty credential or an unknown mode lets nobody in. In
+    ``system`` mode this can also be None: the password couldn't be checked
+    right now (see _verify_system_login), which is still not a way in."""
     mode = (web_cfg.get("auth") or "none").lower()
     if mode == "none":
         return True
@@ -441,8 +471,8 @@ def _auth_check(username, password, socket_path=None, timeout=10):
                 chunks.append(chunk)
         reply = json.loads(b"".join(chunks).decode("utf-8") or "{}")
     except (OSError, ValueError):
-        return {"ok": False}
-    return reply if isinstance(reply, dict) else {"ok": False}
+        return {"ok": False, "error": "unavailable"}
+    return reply if isinstance(reply, dict) else {"ok": False, "error": "unavailable"}
 
 
 def _configured_table(daemon, name):
@@ -538,6 +568,10 @@ def create_app(daemon):
     from flask import Flask, Response, g, jsonify, redirect, request
 
     app = Flask("kestrel_pi")
+    # Every form the dashboard has is small: a bigger body is refused (413)
+    # before anything parses it. The potfile import raises its own limit, after
+    # the login and controls checks.
+    app.config["MAX_CONTENT_LENGTH"] = MAX_BODY
     web_cfg = daemon.config.get("web", {}) or {}
     # Per-run CSRF token for the plugin control forms: with basic auth the
     # browser resends the login by itself, so a form posted from some other
@@ -619,6 +653,61 @@ def create_app(daemon):
         return (system_login_user(web_cfg) if mode == "system"
                 else str(web_cfg.get("username") or ""))
 
+    # Every credential check goes through the per-address backoff: the sign-in
+    # form, Basic auth on any route, and a presented token. Failures are logged
+    # with the source address, at most once a minute per address.
+    failure_logged = {}
+
+    def _log_failure(addr, what):
+        now = time.monotonic()
+        last = failure_logged.get(addr)
+        if last is None or now - last >= 60:
+            if len(failure_logged) > 1024:
+                failure_logged.clear()
+            failure_logged[addr] = now
+            daemon.log.warning("web: failed %s from %s", what, addr)
+
+    def _throttled(check, what):
+        """``check()`` (True/False/None) through the backoff: True, False, or
+        "wait" (backing off; nothing was checked) or "unchecked" (the password
+        couldn't be checked, which doesn't count against the address), each
+        with the seconds to suggest."""
+        addr = request.remote_addr or ""
+        wait = throttle.begin(addr)
+        if wait:
+            return ("wait", wait)
+        result = check()
+        if result is True:
+            throttle.success(addr)
+            return True
+        if result is None:
+            throttle.forgive(addr)
+            return ("unchecked", 5)
+        _log_failure(addr, what)
+        return False
+
+    def _refusal(verdict):
+        """A plain-text 429/503 for a backing-off or unchecked credential."""
+        kind, secs = verdict
+        if kind == "wait":
+            resp = Response("too many attempts; try again in %d seconds" % secs, 429)
+        else:
+            resp = Response("couldn't check the password right now; try again", 503)
+        resp.headers["Retry-After"] = str(secs)
+        return resp
+
+    def _basic_verdict():
+        auth = request.authorization
+        if (mode == "system" and auth.username and auth.password
+                and _same(auth.username, system_login_user(web_cfg))
+                and _auth_cached(auth.username, auth.password)):
+            return True                       # verified recently: no new check
+        return _throttled(lambda: _check_auth(web_cfg, request), "Basic sign-in")
+
+    def _token_presented():
+        got = request.headers.get("Authorization", "")
+        return got.startswith("Bearer ") or bool(request.args.get("token"))
+
     @app.before_request
     def _auth_gate():  # noqa: ANN202
         if sign_in and request.path == "/login":
@@ -626,9 +715,18 @@ def create_app(daemon):
         if sign_in:
             if _session_user() is not None:
                 return None
-            if (request.authorization is not None and _basic_allowed()
-                    and _check_auth(web_cfg, request)):
+            if request.authorization is not None and _basic_allowed():
+                verdict = _basic_verdict()
+                if verdict is True:
+                    return None
+                if verdict is not False:
+                    return _refusal(verdict)
+        elif mode == "token" and _token_presented():
+            verdict = _throttled(lambda: _check_auth(web_cfg, request), "token")
+            if verdict is True:
                 return None
+            if verdict is not False:
+                return _refusal(verdict)
         elif _check_auth(web_cfg, request):
             return None
         # Not signed in. A browser opening a page from off the device goes to
@@ -652,25 +750,27 @@ def create_app(daemon):
             if _session_user() is not None:
                 return redirect(nxt)
             return html(_render_login(signer.login_token(), nxt, _login_user_hint()))
-        addr = request.remote_addr or ""
         user = (request.form.get("username") or "").strip()
-        wait = throttle.wait_seconds(addr)
-        if wait:
-            resp = html(_render_login(signer.login_token(), nxt, user,
-                                      error="Too many attempts. Try again in %d "
-                                            "seconds." % wait), 429)
-            resp.headers["Retry-After"] = str(wait)
-            return resp
         if not signer.check_login_token(request.form.get("lt")):
             return html(_render_login(signer.login_token(), nxt, user,
                                       error="This sign-in page expired. Please try "
                                             "again."), 400)
-        if not _credentials_ok(user, request.form.get("password") or ""):
-            throttle.fail(addr)
-            daemon.log.warning("web: failed sign-in from %s", addr)
-            return html(_render_login(signer.login_token(), nxt, user,
-                                      error="Wrong username or password."), 401)
-        throttle.success(addr)
+        verdict = _throttled(
+            lambda: _credentials_ok(user, request.form.get("password") or ""), "sign-in")
+        if verdict is not True:
+            if verdict is False:
+                error, status, retry = "Wrong username or password.", 401, None
+            elif verdict[0] == "wait":
+                error = "Too many attempts. Try again in %d seconds." % verdict[1]
+                status, retry = 429, verdict[1]
+            else:
+                error = ("Couldn't check your password right now. Try again in a "
+                         "moment.")
+                status, retry = 503, verdict[1]
+            resp = html(_render_login(signer.login_token(), nxt, user, error=error), status)
+            if retry:
+                resp.headers["Retry-After"] = str(retry)
+            return resp
         resp = redirect(nxt, 303)
         value = signer.issue(user)
         _set_session(resp, value, signer.verify(value)[1])
@@ -760,17 +860,32 @@ def create_app(daemon):
         params["err" if error else "msg"] = message
         return redirect("/networks?" + urlencode(params), code)
 
+    @app.errorhandler(413)
+    def _too_large(_exc):  # noqa: ANN202
+        if request.path == "/recovered/import":
+            return redirect("/networks?" + urlencode(
+                {"err": "That file is too large to import."}), 303)
+        return Response("request too large", 413)
+
     @app.post("/recovered/import")
     def recovered_import():  # noqa: ANN202
         # Import a potfile of known passphrases into the recovered store. Runs as
         # the daemon (pi) into the pi-owned store -- no root, no new privilege.
         ctl = control()
+        if not ctl["ready"]:
+            # Answered before the body is read (it's only parsed past here).
+            return redirect("/networks?" + urlencode(
+                {"err": "Turn on the web login to import recovered results."}), 303)
+        cfg = daemon._fresh_config()
+        recovered_cfg = cfg.get("recovered") or {}
+        try:
+            max_mb = max(1, int(recovered_cfg.get("max_import_mb", 2)))
+        except (TypeError, ValueError):
+            max_mb = 2
+        # The one upload: room for the file (checked below too) plus the form.
+        request.max_content_length = max_mb * 1024 * 1024 + MAX_BODY
         view = request.form.get("view")
         view = view if view in ("ssid", "ap") else None
-        if not ctl["ready"]:
-            return _back_to_networks(
-                "Turn on the web login to import recovered results.",
-                error=True, view=view)
         if not _same(request.form.get("csrf") or "", csrf_token):
             return _back_to_networks(
                 "This page is out of date (the daemon restarted). Reload and "
@@ -778,12 +893,6 @@ def create_app(daemon):
         upload = request.files.get("potfile")
         if upload is None or not upload.filename:
             return _back_to_networks("No file selected.", error=True, view=view)
-        cfg = daemon._fresh_config()
-        recovered_cfg = cfg.get("recovered") or {}
-        try:
-            max_mb = max(1, int(recovered_cfg.get("max_import_mb", 2)))
-        except (TypeError, ValueError):
-            max_mb = 2
         try:
             max_lines = max(1, int(recovered_cfg.get("max_import_lines", 50000)))
         except (TypeError, ValueError):
@@ -1703,6 +1812,12 @@ _MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MD_BOLD = re.compile(r"\*\*(\S(?:[^*]*\S)?)\*\*")
 _MD_ITALIC = re.compile(r"\*(\S(?:[^*]*\S)?)\*")
 # A GitHub-style table separator row, e.g. ``| --- | :--: |``.
+# A heading: one to three #, then whitespace. The heading branch and
+# _md_breaks_para use the same test, so a "#" line that isn't a heading
+# (#142, ####, a bare #) is ordinary paragraph text, never a stall.
+_MD_HEADING = re.compile(r"(#{1,3})\s+(.*)$")
+# The renderer reads at most this much (release notes come off the network).
+_MD_MAX_CHARS = 200_000
 _MD_TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-+:?\s*)+\|?\s*$")
 
 
@@ -1730,8 +1845,11 @@ def _md_inline(text):
     text = _MD_LINK.sub(_md_link_sub, text)
     text = _MD_BOLD.sub(r"<strong>\1</strong>", text)
     text = _MD_ITALIC.sub(r"<em>\1</em>", text)
-    return re.sub(r"\x00(\d+)\x00",
-                  lambda m: "<code>" + spans[int(m.group(1))] + "</code>", text)
+    def _restore(match):
+        idx = int(match.group(1))
+        return "<code>" + spans[idx] + "</code>" if idx < len(spans) else ""
+
+    return re.sub(r"\x00(\d+)\x00", _restore, text)
 
 
 def _md_slug(text):
@@ -1753,7 +1871,7 @@ def _md_cells(row):
 
 def _md_breaks_para(line):
     s = line.strip()
-    return bool(s.startswith(("```", "#"))
+    return bool(s.startswith("```") or _MD_HEADING.match(s)
                 or re.match(r"[-*]\s+", s) or re.match(r"\d+\.\s+", s)
                 or re.fullmatch(r"-{3,}", s))
 
@@ -1764,6 +1882,8 @@ def _render_markdown(md):
     **bold**, *italic*, [text](url) links (http/https/#/mailto/relative only),
     ``---`` rules, and simple pipe tables (emitted with ``data-label`` cells so
     the shared mobile CSS reflows them to cards). Everything is escaped."""
+    # NUL marks the inline-code placeholders, so none may come from the text.
+    md = md[:_MD_MAX_CHARS].replace("\x00", "")
     lines = md.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     out = []
     i, n = 0, len(lines)
@@ -1790,7 +1910,7 @@ def _render_markdown(md):
             i += 1
             continue
 
-        m = re.match(r"(#{1,3})\s+(.*)$", stripped)  # heading
+        m = _MD_HEADING.match(stripped)             # heading
         if m:
             lvl = len(m.group(1))
             out.append('<h%d id="%s">%s</h%d>'
@@ -1839,6 +1959,11 @@ def _render_markdown(md):
         para = []                                   # paragraph
         while i < n and lines[i].strip() and not _md_breaks_para(lines[i]):
             para.append(lines[i].strip())
+            i += 1
+        if not para:
+            # Every pass must consume a line: one no branch above took is
+            # ordinary text, so a future pattern mismatch renders, never stalls.
+            para.append(stripped)
             i += 1
         out.append("<p>" + " ".join(_md_inline(p) for p in para) + "</p>")
     return "".join(out)
@@ -4219,14 +4344,14 @@ def _default_make_server(host, port, app, ssl_context=None):
     werkzeug, with the handshake deferred to the connection's own thread (it
     runs on first read, under the handler's timeout), so a client that stalls
     mid-handshake can't hold up the accept loop."""
-    from werkzeug.serving import WSGIRequestHandler, make_server
+    from werkzeug.serving import ThreadedWSGIServer, WSGIRequestHandler
 
     # No per-request access log in the journal: it would record the token
     # (token auth rides in the query string) and a line a second while the
     # page waits for a restart. Warnings and errors still log.
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
-    server = make_server(host, port, app, threaded=True,
-                         request_handler=_request_handler(WSGIRequestHandler))
+    server = _capped_server(ThreadedWSGIServer)(
+        host, port, app, handler=_request_handler(WSGIRequestHandler))
     if ssl_context is not None:
         server.socket = ssl_context.wrap_socket(
             server.socket, server_side=True, do_handshake_on_connect=False)
@@ -4243,9 +4368,115 @@ def _default_make_server(host, port, app, ssl_context=None):
 _CONNECTION_TIMEOUT = 15
 
 
+# A request must finish its request line and headers within this many seconds
+# in all, however slowly it trickles (each read has _CONNECTION_TIMEOUT too).
+_HEADER_DEADLINE = 20
+# Connections one listener serves at once, and from one client address
+# (loopback exempt: on-device tools). Past either, a new connection is closed
+# at once, so slow clients can't use up the daemon's file descriptors.
+_MAX_CONNECTIONS = 64
+_MAX_PER_ADDRESS = 16
+
+
 def _request_handler(base):
-    """``base`` (werkzeug's WSGIRequestHandler) with the connection timeout."""
-    return type("KestrelRequestHandler", (base,), {"timeout": _CONNECTION_TIMEOUT})
+    """``base`` (werkzeug's WSGIRequestHandler) with the connection timeout and
+    the header deadline."""
+
+    class KestrelRequestHandler(base):
+        timeout = _CONNECTION_TIMEOUT
+
+        def handle_one_request(self):
+            self._headers_done = False
+            timer = threading.Timer(_HEADER_DEADLINE, self._headers_overdue)
+            timer.daemon = True
+            timer.start()
+            try:
+                super().handle_one_request()
+            finally:
+                timer.cancel()
+
+        def parse_request(self):
+            ok = super().parse_request()
+            self._headers_done = True
+            return ok
+
+        def _headers_overdue(self):
+            if not self._headers_done:
+                try:
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    return KestrelRequestHandler
+
+
+def _capped_server(base):
+    """``base`` (werkzeug's ThreadedWSGIServer) with the connection caps, and
+    an accept loop that pauses instead of spinning when the process is out of
+    file descriptors."""
+
+    class KestrelServer(base):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._caps_lock = threading.Lock()
+            self._conns = {}                # id(request) -> client address
+            self._per_addr = {}
+            self._fd_warned = 0.0
+
+        def admit(self, request, addr):
+            """Count a new connection in, or False to refuse it."""
+            with self._caps_lock:
+                if len(self._conns) >= _MAX_CONNECTIONS:
+                    return False
+                if (not is_loopback(addr)
+                        and self._per_addr.get(addr, 0) >= _MAX_PER_ADDRESS):
+                    return False
+                self._conns[id(request)] = addr
+                self._per_addr[addr] = self._per_addr.get(addr, 0) + 1
+                return True
+
+        def release(self, request):
+            with self._caps_lock:
+                addr = self._conns.pop(id(request), None)
+                if addr is None:
+                    return
+                left = self._per_addr.get(addr, 1) - 1
+                if left > 0:
+                    self._per_addr[addr] = left
+                else:
+                    self._per_addr.pop(addr, None)
+
+        def process_request(self, request, client_address):
+            addr = client_address[0] if client_address else ""
+            if not self.admit(request, addr):
+                self.close_request(request)
+                return
+            try:
+                super().process_request(request, client_address)
+            except Exception:
+                self.release(request)
+                raise
+
+        def shutdown_request(self, request):
+            try:
+                super().shutdown_request(request)
+            finally:
+                self.release(request)
+
+        def get_request(self):
+            try:
+                return super().get_request()
+            except OSError as exc:
+                if exc.errno in (errno.EMFILE, errno.ENFILE):
+                    now = time.monotonic()
+                    if now - self._fd_warned >= 60:
+                        self._fd_warned = now
+                        logging.getLogger("kestrel_pi.web").warning(
+                            "web: out of file descriptors; pausing new connections")
+                    time.sleep(0.5)
+                raise
+
+    return KestrelServer
 
 
 class WebServer:
