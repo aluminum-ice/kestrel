@@ -42,7 +42,9 @@ Ghost page should be edited by hand: the next publish overwrites it, and
   on loopback, with the bundled plugins loaded (their hardware-touching
   `on_loaded` skipped) and made-up data: fictional networks on documentation MAC
   addresses (`00:00:5E:00:53:xx`), a generic GPS position, a learning agent
-  mid-session. Labels, layout and wording therefore always match the release.
+  mid-session, and (from 1.0.12) an invented census read on a fixed clock, so
+  its clock times and dates don't change between runs. Labels, layout and
+  wording therefore always match the release.
   When a release changes something the fixture reaches into, it fails loudly
   rather than drawing a misleading page.
   - Phone shots: Playwright's WebKit (Safari's engine) as an **iPhone 14 Pro
@@ -81,10 +83,21 @@ prints it.
 Add a `[[figure]]` to `guide.toml`: a `key` (the image name), `after` (the
 heading slug it follows, or `place = "hero"`), the page `path` on the demo
 device, `alt` text and an optional `caption`. `focus` scrolls to a piece of
-text first; `scenario = "update-available"` shows the dashboard with an in-place
-upgrade on offer. A figure whose heading disappears from a later release fails
+text first, leaving it `lift` pt below the top (24 by default; more shows the
+card heading above a row); `scenario = "update-available"` shows the dashboard
+with an in-place upgrade on offer. Figures after the same heading appear in
+`guide.toml` order. A figure whose heading disappears from a later release fails
 the build, so move or drop it then. Demo data lives at the top of
-`fixture.py`; keep it fictional (no real SSIDs, MACs, places or names).
+`fixture.py`; keep it fictional (no real SSIDs, MACs, places or names), and
+keep anything that prints a clock time or date on a fixed clock, so an
+unchanged figure is reused on Ghost rather than uploaded again.
+
+**A new feature gets screenshots.** When a change adds a feature an operator
+sees, or visibly changes one (a page, a card, a plugin's view), the same change
+gives the fixture the invented data that feature needs and adds `[[figure]]`
+entries for it after its `GUIDE_MD` heading: one screen per figure, scrolled
+with `focus` to the part worth showing, never a full-page strip. Build it and
+look at every new image before committing.
 
 ## Tests
 

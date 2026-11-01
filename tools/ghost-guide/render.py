@@ -131,17 +131,20 @@ def build_page(md_text, page_cfg, figures, notice):
 
     ``figures`` is a list of dicts with ``place`` (``"hero"`` or ``"after"``),
     ``after`` (a heading slug, for ``"after"``) and ``html`` (the figure
-    markup). A figure whose heading no longer exists is an error, so a renamed
-    section can't silently drop its screenshot."""
+    markup). Figures after the same heading keep their order. A figure whose
+    heading no longer exists is an error, so a renamed section can't silently
+    drop its screenshot."""
     body, headings = render_body(md_text)
+    after = {}
     for fig in figures:
-        if fig["place"] != "after":
-            continue
-        match = re.search(r'<h([23]) id="%s">.*?</h\1>' % re.escape(fig["after"]), body)
+        if fig["place"] == "after":
+            after.setdefault(fig["after"], []).append(fig)
+    for slug, figs in after.items():
+        match = re.search(r'<h([23]) id="%s">.*?</h\1>' % re.escape(slug), body)
         if match is None:
             raise ValueError("figure %s: no heading with id %r in this release's "
-                             "guide" % (fig["key"], fig["after"]))
-        body = body[:match.end()] + fig["html"] + body[match.end():]
+                             "guide" % (figs[0]["key"], slug))
+        body = body[:match.end()] + "".join(f["html"] for f in figs) + body[match.end():]
 
     parts = ["<p><em>%s</em></p>" % html.escape(page_cfg["subtitle"]), notice]
     parts += [fig["html"] for fig in figures if fig["place"] == "hero"]

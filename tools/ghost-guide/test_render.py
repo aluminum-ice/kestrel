@@ -91,6 +91,13 @@ def test_page_layout_and_figure_placement():
         < page.index('id="plugins-1"')
 
 
+def test_figures_after_one_heading_keep_their_order():
+    page, _ = render.build_page(MD, PAGE, [_fig("first", "after", "command-reference"),
+                                           _fig("second", "after", "command-reference")], "")
+    assert page.index('id="command-reference"') < page.index("first.png") \
+        < page.index("second.png") < page.index('id="plugins-1"')
+
+
 def test_figure_after_missing_heading_is_an_error():
     with pytest.raises(ValueError, match="gone"):
         render.build_page(MD, PAGE, [_fig("x", "after", "gone")], "")

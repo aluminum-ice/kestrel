@@ -17,9 +17,11 @@ hero_caption = "Kestrel at a glance: the phone dashboard, the e-ink face, and th
 
 # Each figure is regenerated from the release's code on every run. `key` is the
 # image name on Ghost (it may gain a -N suffix there). `place = "hero"` puts it
-# under the subtitle; `after` names the heading slug it follows. Phone shots load
-# `path` on the demo device (optionally scrolled to the text in `focus`, in the
-# named `scenario`); `source = "eink"` is the e-ink panel frame.
+# under the subtitle; `after` names the heading slug it follows (several after
+# one heading keep this file's order). Phone shots load `path` on the demo
+# device (optionally scrolled so the text in `focus` sits `lift` pt below the
+# top, 24 by default, in the named `scenario`); `source = "eink"` is the e-ink
+# panel frame.
 
 [[figure]]
 key = "phone-dashboard"
@@ -81,6 +83,30 @@ path = "/plugins/map/?spot=38.713949,-9.139401,38.713951,-9.139399"
 focus = "networks at this spot"
 alt = "Networks captured from one spot, listed under the map with a lock for recovered ones"
 caption = "Networks captured from one spot share its location, so their square lists them under the map."
+
+[[figure]]
+key = "phone-census-card"
+after = "census-an-anonymous-count-of-kestrels"
+path = "/"
+focus = "Kestrels online"
+lift = 72
+alt = "The census card on the dashboard: Kestrels online, active today, and how often desktop training won this week"
+caption = "The census card on the dashboard. Sample data."
+
+[[figure]]
+key = "phone-census"
+after = "census-an-anonymous-count-of-kestrels"
+path = "/plugins/census/index"
+alt = "The Census page: its status, today's totals and the releases in use"
+caption = "The Census page: its status, today's totals and the releases in use. Sample data."
+
+[[figure]]
+key = "phone-census-report"
+after = "census-an-anonymous-count-of-kestrels"
+path = "/plugins/census/index"
+focus = "What this device reports today"
+alt = "The bottom of the Census page, listing exactly what this device reports today"
+caption = "The bottom of the Census page spells out exactly what this device reports today."
 
 [[figure]]
 key = "phone-update"

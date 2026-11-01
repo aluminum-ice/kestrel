@@ -83,13 +83,14 @@ def frame_eink(panel):
     return out
 
 
-def _scroll_to_text(page, text):
-    """Scroll so the first element containing ``text`` sits near the top."""
+def _scroll_to_text(page, text, lift=24):
+    """Scroll so the first element containing ``text`` sits ``lift`` pt below
+    the top (more to show the card heading above a row)."""
     target = page.get_by_text(text, exact=False).first
     target.wait_for(timeout=10000)
     box = target.bounding_box()
     page.evaluate("y => window.scrollTo(0, Math.max(0, y))",
-                  box["y"] - 24 + page.evaluate("window.scrollY"))
+                  box["y"] - lift + page.evaluate("window.scrollY"))
 
 
 def _wait_for_images(page):
@@ -156,7 +157,7 @@ def capture(demo, base_url, figures, out_dir, browser="webkit"):
                         resp.status if resp else "nothing", fig["path"], fig["key"]))
                 _wait_for_images(page)
                 if fig.get("focus"):
-                    _scroll_to_text(page, fig["focus"])
+                    _scroll_to_text(page, fig["focus"], fig.get("lift", 24))
                 raw = os.path.join(out_dir, fig["key"] + ".page.png")
                 page.screenshot(path=raw)
                 img = frame_phone(raw)

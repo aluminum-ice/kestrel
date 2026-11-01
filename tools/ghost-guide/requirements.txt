@@ -1,11 +1,13 @@
 # The Ghost guide publisher (tools/ghost-guide), run on a desktop, not in CI.
-# flask/numpy are for the release's own kestrel_pi package and plugins, which
-# the screenshots run on a demo device. After installing, also run
+# flask/numpy/cryptography are for the release's own kestrel_pi package and
+# plugins, which the screenshots run on a demo device (the census plugin's
+# helper files import cryptography; cryptography is the image's pin). After installing, also run
 # `playwright install webkit` (see README.md).
 flask==3.0.2
 markdown-it-py==3.0.0
 numpy==2.5.4
 Pillow==10.2.0
+cryptography==50.0.2
 playwright==1.64.1
 pytest
 requests==2.31.0
