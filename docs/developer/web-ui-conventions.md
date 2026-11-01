@@ -107,6 +107,19 @@ The web subsystem is described in
   the two never drift; `basic`/`token` use a web-only credential; `none` is open
   and strictly read-only. Pages fail closed on an unknown mode or empty
   credential.
+- **Every credential check backs off.** The sign-in form, HTTP Basic on any
+  route and a presented token all go through one per-address `LoginThrottle`
+  (`begin` records the attempt before the slow check, so parallel attempts each
+  count); past it the answer is 429 with `Retry-After`. At most four password
+  checks run at once; one that can't run ("busy", the helper unreachable) is a
+  503 "couldn't check right now" and is never counted as a wrong password. The
+  root helper keeps its own shared backoff too.
+- **Bounded requests.** Bodies over 64 KB (`MAX_BODY`) are refused with 413
+  before anything parses them; a route that takes an upload raises its own
+  limit (`request.max_content_length`) only after its auth checks. Each
+  listener serves at most 64 connections and 16 per client address (loopback
+  exempt from the latter), a request must finish its headers within 20 s, and
+  the daemon runs with `PrivateTmp` and `LimitNOFILE=4096`.
 - **State changes need auth + CSRF.** Any form that writes posts the per-run
   CSRF token; a `GET` never changes state. With auth `none` the page shows no
   controls.

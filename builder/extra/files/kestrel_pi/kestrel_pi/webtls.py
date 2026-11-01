@@ -308,6 +308,36 @@ class LoginThrottle:
                 oldest = min(self._fails, key=lambda a: self._fails[a][-1])
                 self._fails.pop(oldest, None)
 
+    def begin(self, addr):
+        """Start an attempt: the seconds to wait if ``addr`` must back off
+        first (nothing is recorded then), else 0, with the attempt recorded as
+        a failure *now*, before the slow check, so parallel attempts each
+        count. Follow with :meth:`success` (clears) or :meth:`forgive` (the
+        check couldn't run: un-records it); a plain failure stays recorded."""
+        with self._lock:
+            now = self._clock()
+            times = self._recent(addr, now)
+            if len(times) >= self.free:
+                delay = min(self.cap, 2 ** (len(times) - self.free + 1))
+                wait = math.ceil(times[-1] + delay - now)
+                if wait > 0:
+                    return wait
+            times.append(now)
+            self._fails[addr] = times
+            if len(self._fails) > self._max:
+                oldest = min(self._fails, key=lambda a: self._fails[a][-1])
+                self._fails.pop(oldest, None)
+            return 0
+
+    def forgive(self, addr):
+        """Un-record the latest attempt from ``addr`` (its check couldn't run)."""
+        with self._lock:
+            times = self._fails.get(addr)
+            if times:
+                times.pop()
+                if not times:
+                    self._fails.pop(addr, None)
+
     def success(self, addr):
         with self._lock:
             self._fails.pop(addr, None)
