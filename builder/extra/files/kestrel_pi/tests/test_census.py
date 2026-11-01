@@ -1636,6 +1636,16 @@ def test_when_gives_the_date_time_and_how_long_ago(tmp_path):
     assert mod._valid_last({"write": {"at": "x"}, "read": []}) == (None, None)
 
 
+def test_page_links_back_to_plugins_and_the_dashboard(tmp_path):
+    plugin, _mod = _plugin(tmp_path)
+    body = _page(plugin)
+    assert ('<p><a href="/plugins">&larr; Plugins</a> &middot; '
+            '<a href="/">Dashboard</a></p><h1>Census</h1>') in body
+    request = types.SimpleNamespace(args={"token": "t0k en"})
+    body = plugin.on_webhook("index", request).body
+    assert 'href="/plugins?token=t0k+en"' in body and 'href="/?token=t0k+en"' in body
+
+
 def test_page_with_a_census_read(tmp_path):
     reader, _mod = _read_census(tmp_path)
     body = _page(reader)

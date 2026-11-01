@@ -49,6 +49,7 @@ import re
 import subprocess
 import threading
 import time
+from urllib.parse import urlencode
 
 from kestrel_pi import Plugin, device_version, load_helper
 
@@ -1034,8 +1035,14 @@ class Census(Plugin):
             day = dict(self._day) if self._day else {}
         esc = self.context.esc
         now = self._now()
-        body = ('<p class="hint">Approximate and unverified. Counts only Kestrels with the '
-                "census plugin on.</p>")
+        # The standard way back, as on the other plugin pages (a token login
+        # carries its token along).
+        token = (getattr(request, "args", None) or {}).get("token") or ""
+        qs = "?" + urlencode([("token", token)]) if token else ""
+        body = ('<p><a href="' + esc("/plugins" + qs) + '">&larr; Plugins</a> &middot; '
+                '<a href="' + esc("/" + qs) + '">Dashboard</a></p><h1>Census</h1>')
+        body += ('<p class="hint">Approximate and unverified. Counts only Kestrels with the '
+                 "census plugin on.</p>")
         body += ('<div class="card pad"><h2>Status</h2>'
                  + "".join("<p>" + esc(line) + "</p>"
                            for line in self._status_lines(last_write, last_read, day, now))
