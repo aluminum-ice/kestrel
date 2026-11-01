@@ -26,6 +26,7 @@ import importlib.util
 import os
 import random
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +34,9 @@ PLUGINS = os.path.normpath(os.path.join(HERE, "..", "..", "builder", "extra", "f
 DEFAULT_BOOTSTRAP = "dht.transmissionbt.com:6881,dht.libtorrent.org:25401"
 DEFAULT_STATE = os.path.join("~", ".cache", "kestrel-census-report")
 FRESH_NODES = 8
+# Slots read at once, each by its own socket and client. Each client keeps to
+# the DHT client's own rate (10 queries a second).
+DEFAULT_PARALLEL = 8
 
 
 def load_helpers(plugins=PLUGINS):
@@ -71,17 +75,52 @@ def join(dht, client, pool, routers, now, resolve=None, backoff=(0, 10, 30), wai
     return fresh(3600) >= FRESH_NODES
 
 
-def collect(dht, proto, client, pool, day, slots, bits):
-    """``({token: Entry}, rejected)`` across a day's slots."""
-    entries, rejected = {}, 0
-    for index in range(slots):
-        found, bad = proto.read_slot(dht, client, pool, None, day, index, bits=bits)
-        rejected += bad
-        for token, entry in found.items():
-            held = entries.get(token)
-            if held is None or entry.hour > held.hour:
-                entries[token] = entry
-    return entries, rejected
+def collect(dht, proto, make_client, pool, day, slots, bits, parallel=1):
+    """``({token: Entry}, rejected)`` across a day's slots, read by
+    ``parallel`` workers at once. Each worker has its own client (from
+    ``make_client()``, closed when it's done) and its own copy of the node
+    list, so nothing is shared while they read; the copies are merged back
+    into ``pool`` at the end."""
+    indexes = list(range(slots))
+    lock = threading.Lock()
+    entries, rejected, pools = {}, [0], []
+
+    def work():
+        client = make_client()
+        mine = dht.NodePool(capacity=pool.capacity, accept=pool.accept, clock=pool.clock)
+        mine.nodes = {n: list(e) for n, e in pool.nodes.items()}
+        try:
+            while True:
+                with lock:
+                    if not indexes:
+                        break
+                    index = indexes.pop(0)
+                found, bad = proto.read_slot(dht, client, mine, None, day, index, bits=bits)
+                with lock:
+                    rejected[0] += bad
+                    for token, entry in found.items():
+                        held = entries.get(token)
+                        if held is None or entry.hour > held.hour:
+                            entries[token] = entry
+        finally:
+            client.transport.close()
+            with lock:
+                pools.append(mine)
+
+    workers = [threading.Thread(target=work, daemon=True)
+               for _ in range(max(1, min(parallel, slots)))]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    for mine in pools:
+        for node_id, entry in mine.nodes.items():
+            held = pool.nodes.get(node_id)
+            if held is None or entry[3] > held[3]:
+                pool.nodes[node_id] = list(entry)
+    if len(pool.nodes) > pool.capacity:
+        pool._evict()
+    return entries, rejected[0]
 
 
 def rows_of(entries):
@@ -180,6 +219,8 @@ def main(argv=None, open_transport=None, resolve=None, now=time.time, accept=Non
     parser.add_argument("--csv", metavar="DIR", help="also write DIR/census-DAY.csv")
     parser.add_argument("--bootstrap", default=DEFAULT_BOOTSTRAP,
                         help="comma-separated host:port DHT routers (default: %(default)s)")
+    parser.add_argument("--parallel", type=int, default=DEFAULT_PARALLEL,
+                        help="slots to read at once, 1-16 (default: %(default)s)")
     parser.add_argument("--slots", type=int, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
@@ -199,15 +240,19 @@ def main(argv=None, open_transport=None, resolve=None, now=time.time, accept=Non
     pool_path = os.path.join(state, "pool.json")
     pool = dht.NodePool(accept=accept or dht.public_ipv4, clock=now)
     pool.load(pool_path)
-    transport = (open_transport or dht.UdpTransport)(None)
-    client = dht.KrpcClient(transport, **(client_opts or {}))
+    def make_client():
+        return dht.KrpcClient((open_transport or dht.UdpTransport)(None),
+                              **(client_opts or {}))
+    client = make_client()
+    transport = client.transport
     try:
         if not join(dht, client, pool, parse_routers(args.bootstrap), now, resolve=resolve,
                     wait=wait):
             print("Can't join the DHT: no bootstrap router or saved node answered.",
                   file=sys.stderr)
             return 2
-        entries, rejected = collect(dht, proto, client, pool, day, slots, bits)
+        entries, rejected = collect(dht, proto, make_client, pool, day, slots, bits,
+                                    parallel=min(16, max(1, args.parallel)))
     finally:
         pool.save(pool_path)
         transport.close()
