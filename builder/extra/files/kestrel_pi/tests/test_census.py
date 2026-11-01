@@ -87,7 +87,8 @@ def test_census_loads_after_remote_train(tmp_path):
         order = [r.name for r in loaded]
         assert order.index("remote-train") < order.index("census")
         assert loader.services.has("census")
-        assert loader.services.get("census") is None      # nothing read yet
+        census = loader.services.get("census")             # nothing read yet
+        assert census["online"] is None and census["active_today"] is None
     finally:
         for rec in loaded:
             loader.unload(rec)
@@ -1423,3 +1424,97 @@ def test_worker_stops_promptly_on_unload(tmp_path):
     plugin.on_unload()
     plugin._worker.join(5)
     assert not plugin._worker.is_alive() and _time.monotonic() - started < 5
+
+
+# -- step 11: totals ---------------------------------------------------------------------
+
+def _row(hour=8, version="1.0.12", state=3, algorithm=1, remote=0, contests=(0, 0, 0, 0)):
+    return [hour, proto.encode_version(version), proto.encode_agent(state, algorithm, remote)
+            ] + list(contests)
+
+
+def test_tally_counts_every_field():
+    rows = [_row(version="1.0.12", contests=(2, 1, 0, 0)),
+            _row(hour=7, version="1.0.12-beta.3", algorithm=2, remote=4, contests=(1, 0, 3, 1)),
+            _row(hour=3, version="master", state=2, remote=2),
+            _row(hour=8, version="1.0.11", state=0, algorithm=0, remote=1)]
+    tally = proto.Tally(rows, hour=8)
+    assert tally.active == 4 and tally.online == 3
+    assert tally.version_rows() == [("1.0.12", 1), ("1.0.12-beta.3", 1), ("1.0.11", 1),
+                                    ("unknown", 1)]
+    assert tally.states == {3: 2, 2: 1, 0: 1}
+    assert tally.algorithms == {1: 1, 2: 1}                  # learned policies only
+    assert tally.remotes == {0: 1, 4: 1, 2: 1, 1: 1}
+    assert tally.contests == [3, 1, 3, 1] and tally.working == [1, 0, 3, 1]
+    assert proto.Tally([]).version_rows() == [] and proto.Tally([]).active == 0
+
+
+def test_tally_leaves_out_contests_a_day_cant_hold():
+    rows = [_row(contests=(60, 41, 0, 0)), _row(remote=4, contests=(0, 0, 30, 21)),
+            _row(contests=(60, 40, 25, 25))]
+    tally = proto.Tally(rows)
+    assert tally.active == 3 and tally.capped == 2
+    assert tally.contests == [60, 40, 25, 25] and tally.working == [0, 0, 0, 0]
+
+
+def test_win_rates_with_nothing_judged():
+    assert proto.win_rate(0, 0) is None
+    assert proto.win_rate(3, 1) == 0.75
+
+
+def test_census_service_before_and_after_a_read(tmp_path):
+    plugin, _mod = _plugin(tmp_path)
+    service = plugin.provide_census()
+    assert set(service) == {"online", "active_today", "active_7d_avg", "versions",
+                            "local_win_rate_7d", "remote_win_rate_7d"}
+    assert all(value is None for value in service.values())
+
+    net = FakeDHT(invalid=0.2, seed=43)
+    for i in range(2):
+        writer, _m, _n, clock = _worker(tmp_path, net=net, seed=70 + i, name="w%d" % i,
+                                        read=False)
+        writer.context.services.provide("agent", lambda: _status(), owner="daemon")
+        _run_for(writer, clock, 3600)
+    reader, _m, _n, clock = _worker(tmp_path, net=net, seed=80, name="r", report=False)
+    _run_for(reader, clock, 3600)
+    service = reader.provide_census()
+    assert service["online"] == 2 and service["active_today"] == 2
+    assert service["versions"] == {"1.0.12": 2} and service["active_7d_avg"] == 2
+    assert service["local_win_rate_7d"] is None
+
+
+def test_history_and_the_seven_day_figures_across_days(tmp_path):
+    plugin, mod, _net, clock = _worker(tmp_path, report=False)
+    today = mod._utc(NOW)[0]
+    days = [mod._utc(NOW - i * 86400)[0] for i in range(9)]
+    history = {day: {"active": 10 + i, "online": 3, "capped": 0,
+                     "contests": [i, 1, 2, 1], "working": [0, 0, 2, 1]}
+               for i, day in enumerate(days) if day != today}
+    plugin._save_json("history.json", {"days": history})
+    plugin._save_json("seen.json", {"days": {today: {
+        "entries": {"%016x" % n: _row(remote=4, contests=(1, 0, 1, 1)) for n in range(5)},
+        "read_at": NOW - 5 * 3600, "online": 5, "rejected": 0}}})
+    plugin._roll_day(NOW)
+    summary = plugin._summary
+    assert summary["tally"].active == 5
+    # The week is today plus the six days before; the 30 days are everything.
+    assert summary["week"] == [sum(range(1, 7)), 6, 12, 6]
+    assert summary["month"] == [sum(range(1, 9)), 8, 16, 8]
+    assert summary["active_avg"] == round(sum(range(11, 17)) / 6, 1)
+    # A read adds today's row; rows past 30 days are dropped.
+    plugin._save_json("history.json", {"days": dict(history, **{
+        mod._utc(NOW - i * 86400)[0]: history[days[1]] for i in range(20, 45)})})
+    again, _m, _n, clock2 = _worker(tmp_path, report=False)
+    _run_for(again, clock2, 1800)
+    assert today in again._history and len(again._history) == 30
+    # Today's row (five devices, one remote win and one loss each) joins the week.
+    assert again._summary["week"] == [21 + 5, 6, 12 + 5, 6 + 5]
+    assert again.provide_census()["remote_win_rate_7d"] == 17 / 28
+
+
+def test_corrupt_history_is_dropped_not_fatal(tmp_path):
+    plugin, _mod, _net, clock = _worker(tmp_path, report=False)
+    plugin._save_json("history.json", {"days": {"2027-01-14": {"active": "x"},
+                                                 "2027-01-13": [1, 2]}})
+    _run_for(plugin, clock, 1800)
+    assert set(plugin._history) == {"2027-01-15"}

@@ -20,6 +20,7 @@ import hashlib
 import re
 import struct
 import time
+from collections import Counter
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -47,6 +48,12 @@ REMOTE_STATES = {REMOTE_OFF: "not enabled",
                  REMOTE_FAILING: "configured, failing",
                  REMOTE_IDLE: "configured, no new model",
                  REMOTE_WORKING: "working"}
+
+
+# Readers drop an entry's contests when a day's count is above these: the agent
+# runs at most one on-device contest every ~30 minutes, and one per remote model.
+CAP_LOCAL = 100
+CAP_REMOTE = 50
 
 
 # -- slots ---------------------------------------------------------------------------
@@ -303,3 +310,50 @@ def read_slot(dht, client, pool, cache, day, index, bits=POW_BITS):
         if fetched.max_seq <= SEQ_CEILING and len(found) < MAX_ENTRIES:
             break
     return entries, rejected
+
+
+# -- counting ----------------------------------------------------------------------------
+
+def win_rate(won, lost):
+    """``won / (won + lost)``, or None when nothing was judged."""
+    judged = won + lost
+    return won / judged if judged else None
+
+
+class Tally:
+    """Counts over a day's entries, each a row ``(hour, version, agent, local
+    won, local lost, remote won, remote lost)``: devices active, and online
+    (wrote in ``hour`` or the hour before) when ``hour`` is given; devices by
+    version, agent state, algorithm (learned policies only) and remote-training
+    state; and contest totals, for all devices and for those whose remote
+    training works. An entry with more contests than a day can hold has its
+    contests left out, and counted in ``capped``."""
+
+    def __init__(self, rows, hour=None):
+        self.active = self.online = self.capped = 0
+        self.versions, self.states = Counter(), Counter()
+        self.algorithms, self.remotes = Counter(), Counter()
+        self.contests, self.working = [0, 0, 0, 0], [0, 0, 0, 0]
+        for row in rows:
+            entry_hour, version, agent = row[0], row[1], row[2]
+            counts = list(row[3:7])
+            self.active += 1
+            if hour is not None and entry_hour in (hour, hour - 1):
+                self.online += 1
+            state, algorithm, remote = decode_agent(agent)
+            self.versions[version] += 1
+            self.states[state] += 1
+            self.remotes[remote] += 1
+            if state == AGENT_LEARNED:
+                self.algorithms[algorithm] += 1
+            if counts[0] + counts[1] > CAP_LOCAL or counts[2] + counts[3] > CAP_REMOTE:
+                self.capped += 1
+                continue
+            self.contests = [a + b for a, b in zip(self.contests, counts)]
+            if remote == REMOTE_WORKING:
+                self.working = [a + b for a, b in zip(self.working, counts)]
+
+    def version_rows(self):
+        """``[(version text, devices)]``, newest release first, unknown last."""
+        return [(decode_version(code), self.versions[code])
+                for code in sorted(self.versions, key=version_sort_key)]

@@ -78,6 +78,7 @@ _FIRST_WRITE = (300.0, 1800.0)
 _FIRST_READ = (60.0, 600.0)
 _CHECK_AFTER = (20.0, 60.0)   # a write's check follows it by this long
 _UPKEEP = (600.0, 1200.0)     # node-pool upkeep, every 15 minutes or so
+_HISTORY_DAYS = 30
 
 _HOST_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 
@@ -206,6 +207,26 @@ def _valid_seen(data):
                     "online": seen["online"] if _int_in(seen.get("online"), 0, 1 << 20) else 0,
                     "rejected": seen["rejected"] if _int_in(seen.get("rejected"), 0, 1 << 30) else 0}
     return out
+
+
+def _valid_counts(value):
+    return isinstance(value, list) and len(value) == 4 and all(_int_in(v, 0, 1 << 31) for v in value)
+
+
+def _valid_history(data):
+    """``{day: row}`` from history.json, keeping only well-formed rows."""
+    days = data.get("days") if isinstance(data, dict) else None
+    out = {}
+    for day, row in (days.items() if isinstance(days, dict) else ()):
+        if (isinstance(day, str) and isinstance(row, dict)
+                and all(_int_in(row.get(k), 0, 1 << 20) for k in ("active", "online", "capped"))
+                and _valid_counts(row.get("contests")) and _valid_counts(row.get("working"))):
+            out[day] = {k: row[k] for k in ("active", "online", "capped", "contests", "working")}
+    return out
+
+
+def _sum_counts(rows, key):
+    return [sum(row[key][i] for row in rows) for i in range(4)]
 
 
 # -- what this device reports ----------------------------------------------------
@@ -372,6 +393,8 @@ class Census(Plugin):
         self._check_at = None
         self._check_retry = False
         self._last_counts = None              # the agent's last contest tally reading
+        self._history = {}                    # history.json: {day: row}, 30 days
+        self._summary = None                  # what the page, card and service read
         # What the page shows.
         self._paused = "starting"
         self._link_error = ""
@@ -391,8 +414,29 @@ class Census(Plugin):
 
     # -- the census service ----------------------------------------------
     def provide_census(self):
-        """The fleet totals for other plugins, or None before the first read."""
-        return None
+        """The ``census`` service: the fleet's totals for other plugins (the
+        e-ink face may show them). A new dict on every call; each value is None
+        until the census has been read. Keys may be added later; existing keys
+        keep their meaning.
+
+        - ``online``: Kestrels that reported this hour or the last.
+        - ``active_today``: Kestrels that reported today (UTC).
+        - ``active_7d_avg``: the average of that over the last seven days.
+        - ``versions``: ``{release: devices}`` today.
+        - ``local_win_rate_7d``, ``remote_win_rate_7d``: the share of contests
+          on-device and remote candidates won over the last seven days.
+        """
+        with self._lock:
+            summary = self._summary
+        read = summary is not None and summary["read_at"] is not None
+        tally = summary["tally"] if read else None
+        week = summary["week"] if summary else [0, 0, 0, 0]
+        return {"online": summary["online"] if read else None,
+                "active_today": tally.active if read else None,
+                "active_7d_avg": summary["active_avg"] if summary else None,
+                "versions": dict(tally.version_rows()) if read else None,
+                "local_win_rate_7d": proto.win_rate(week[0], week[1]),
+                "remote_win_rate_7d": proto.win_rate(week[2], week[3])}
 
     # -- worker ----------------------------------------------------------
     def _run(self):
@@ -711,6 +755,9 @@ class Census(Plugin):
                     break
         finally:
             self._save_seen()
+            for day in days:
+                self._record(day)
+            self._summarize(now)
         with self._lock:
             self._last_read = {"at": now, "complete": not stopped}
         self._next_read = self._apart(now + self._poll_hours() * 3600
@@ -732,10 +779,14 @@ class Census(Plugin):
         proof-of-work waits for the day's first write), the contest baseline
         from the last tally reading if the census was running at midnight."""
         today = _utc(now)[0]
-        if self._day is None:
+        loaded = self._day is None
+        if loaded:
             self._day = _valid_day(self._load_json("day.json"), self._bits)
             self._seen = _valid_seen(self._load_json("seen.json"))
+            self._history = _valid_history(self._load_json("history.json"))
         if self._day is not None and self._day["day"] == today:
+            if loaded:
+                self._summarize(now)
             return
         carried = self._day is not None and self._day["day"] == _utc(now - _DAY)[0]
         self._day = {"day": today, "token": os.urandom(8).hex(),
@@ -750,6 +801,44 @@ class Census(Plugin):
         self._next_write = self._next_read = self._check_at = None
         self._save_day()
         self._save_seen()
+        self._summarize(now)
+
+    # -- totals ----------------------------------------------------------------
+    def _record(self, day):
+        """Put a day's totals (from the entries seen so far) in the history."""
+        seen = self._seen.get(day)
+        if not seen or seen.get("read_at") is None:
+            return
+        tally = proto.Tally(seen["entries"].values())
+        old = self._history.get(day) or {}
+        self._history[day] = {"active": tally.active,
+                              "online": max(old.get("online", 0), seen["online"]),
+                              "capped": tally.capped, "contests": tally.contests,
+                              "working": tally.working}
+        for stale in sorted(self._history)[:-_HISTORY_DAYS]:
+            del self._history[stale]
+        self._save_json("history.json", {"days": self._history})
+
+    def _summarize(self, now):
+        """Build what the page, card and service show from today's entries and
+        the history, and swap it in whole, so a reader never sees it half-built."""
+        today = _utc(now)[0]
+        seen = self._seen.get(today) or {"entries": {}, "read_at": None, "online": 0}
+        week_days = {_utc(now - i * _DAY)[0] for i in range(7)}
+        week = [row for day, row in self._history.items() if day in week_days]
+        month = list(self._history.values())
+        summary = {
+            "day": today, "read_at": seen["read_at"], "online": seen["online"],
+            "tally": proto.Tally(seen["entries"].values()),
+            "active_avg": round(sum(r["active"] for r in week) / len(week), 1) if week else None,
+            "active_peak": max(r["active"] for r in week) if week else None,
+            "week": _sum_counts(week, "contests"), "week_working": _sum_counts(week, "working"),
+            "month": _sum_counts(month, "contests"),
+            "month_working": _sum_counts(month, "working"),
+            "history": sorted(self._history.items(), reverse=True),
+        }
+        with self._lock:
+            self._summary = summary
 
     def _seen_day(self, day):
         return self._seen.setdefault(day, {"entries": {}, "read_at": None,
