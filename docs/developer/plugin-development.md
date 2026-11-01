@@ -493,6 +493,7 @@ The services that ship with Kestrel:
 | `recovered` | the daemon | The recovered-networks store (known passphrases). |
 | `geo` | the daemon | The network-location store. |
 | `remote-training` | `remote-train` | The training host's state, without the host's details ([remote training](remote-training.md#the-remote-training-service)). |
+| `census` | `census` | The fleet's totals: `online`, `active_today`, `active_7d_avg`, `versions`, `local_win_rate_7d`, `remote_win_rate_7d` (each `None` until the census is read). |
 
 ---
 
