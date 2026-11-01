@@ -124,3 +124,34 @@ def test_report_early_in_the_day_points_to_yesterday(tmp_path):
     code, text = _run(tmp_path, net, ["--slots", "2"], clock)
     assert code == 0 and "No reports found." in text
     assert "run with --day 2027-01-14 for yesterday's full count" in text
+
+
+def test_report_reads_slots_in_parallel_with_the_same_result(tmp_path):
+    net = tc.FakeDHT(invalid=0.2, seed=48)
+    writers = []
+    for i in range(6):
+        writer, _m, _n, clock = tc._worker(tmp_path, net=net, seed=120 + i, name="w%d" % i,
+                                           read=False)
+        tc._run_for(writer, clock, 3600)
+        writers.append(writer)
+    day = writers[0]._day["day"]
+    report = _script()
+    dht, proto = report.load_helpers()
+    found = {}
+    for parallel in (1, 6):
+        opened = []
+
+        def make_client():
+            transport = tc.FakeTransport(net)
+            opened.append(transport)
+            return dht.KrpcClient(transport, clock=clock, sleep=clock.sleep)
+        pool = dht.NodePool(accept=tc._test_net, clock=clock)
+        net.seed_pool(pool)
+        before = set(pool.nodes)
+        entries, _bad = report.collect(dht, proto, make_client, pool, day, 64, 8,
+                                       parallel=parallel)
+        found[parallel] = set(entries)
+        assert len(opened) == parallel and all(t.closed for t in opened)
+        assert before <= set(pool.nodes) and len(pool.nodes) <= pool.capacity
+    tokens = {bytes.fromhex(w._day["token"]) for w in writers}
+    assert found[1] == found[6] == tokens

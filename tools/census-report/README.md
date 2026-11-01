@@ -35,8 +35,11 @@ python3 tools/census-report/census_report.py --csv ~/census  # also writes ~/cen
 | `--csv DIR` | none | Also write `DIR/census-DAY.csv` (`day,table,item,value`), rewritten on each run. |
 | `--state DIR` | `~/.cache/kestrel-census-report` | Where it keeps its list of DHT nodes between runs, so later runs don't need the bootstrap routers. |
 | `--bootstrap host:port,...` | the plugin's default routers | The DHT routers for the first join. |
+| `--parallel N` | 8 | Slots read at once (1-16), each with its own socket. |
 
-A full read takes a few minutes and a few hundred KB of traffic. It exits 0
+A full read takes about two minutes, reading 8 slots at a time, and a few
+hundred KB of traffic. Each slot needs its own lookup through the DHT, so one
+slot at a time (`--parallel 1`) takes over ten minutes. It exits 0
 with "No reports found." when the day's slots are empty, and 2 when it can't
 join the DHT.
 
