@@ -216,6 +216,23 @@ def _valid_seen(data):
     return out
 
 
+def _valid_last(data):
+    """``(last_write, last_read)`` from status.json, each None when missing or
+    malformed: the last push (``at``, ``ok``, ``held``) and the last read
+    (``at``, ``complete``), kept so the page shows them after a restart."""
+    data = data if isinstance(data, dict) else {}
+    write, read = data.get("write"), data.get("read")
+    last_write = last_read = None
+    if isinstance(write, dict) and _num(write.get("at")) is not None:
+        held = write.get("held")
+        held = (tuple(held) if isinstance(held, list) and len(held) == 2
+                and all(_int_in(v, 0, 1 << 10) for v in held) else None)
+        last_write = {"at": float(write["at"]), "ok": write.get("ok") is True, "held": held}
+    if isinstance(read, dict) and _num(read.get("at")) is not None:
+        last_read = {"at": float(read["at"]), "complete": read.get("complete") is not False}
+    return last_write, last_read
+
+
 def _valid_counts(value):
     return isinstance(value, list) and len(value) == 4 and all(_int_in(v, 0, 1 << 31) for v in value)
 
@@ -252,8 +269,20 @@ def _won(won, lost):
     return "%d of %d (%d%%)" % (won, judged, round(100 * won / judged))
 
 
-def _clock(ts):
-    return time.strftime("%H:%M UTC", time.gmtime(ts))
+def _when(ts, now):
+    """``2026-11-01 18:23 UTC (9 min ago)``: the full UTC date and time, since
+    the last push or read may be from an earlier day."""
+    stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
+    ago = max(0, int(now - ts))
+    if ago < 60:
+        rel = "just now"
+    elif ago < 3600:
+        rel = "%d min ago" % (ago // 60)
+    elif ago < 2 * _DAY:
+        rel = "%dh %02dm ago" % (ago // 3600, ago % 3600 // 60)
+    else:
+        rel = "%d days ago" % (ago // _DAY)
+    return "%s (%s)" % (stamp, rel)
 
 
 def _size(count):
@@ -751,6 +780,7 @@ class Census(Plugin):
             self._last_write = {"at": now, "ok": done.alt is not None,
                                 "confirms": done.confirms, "count": done.count,
                                 "held": None}
+        self._save_last()
         if done.alt is None:
             self.log.info("census: couldn't write slot %d (%s)", day["slot"],
                           ", ".join(why for _alt, why in done.skipped) or "no nodes")
@@ -775,6 +805,7 @@ class Census(Plugin):
         with self._lock:
             if self._last_write:
                 self._last_write["held"] = (mine, holders)
+        self._save_last()
         if mine == 0 and self._check_retry:
             self._check_retry = False
             self.log.info("census: entry missing after the write; writing it again")
@@ -816,6 +847,7 @@ class Census(Plugin):
             self._summarize(now)
         with self._lock:
             self._last_read = {"at": now, "complete": not stopped}
+        self._save_last()
         self._next_read = self._apart(now + self._poll_minutes() * 60
                                       * self._rng.uniform(0.9, 1.1))
 
@@ -840,6 +872,10 @@ class Census(Plugin):
             self._day = _valid_day(self._load_json("day.json"), self._bits)
             self._seen = _valid_seen(self._load_json("seen.json"))
             self._history = _valid_history(self._load_json("history.json"))
+            last_write, last_read = _valid_last(self._load_json("status.json"))
+            with self._lock:
+                self._last_write = self._last_write or last_write
+                self._last_read = self._last_read or last_read
         if self._day is not None and self._day["day"] == today:
             if loaded:
                 self._summarize(now)
@@ -916,6 +952,17 @@ class Census(Plugin):
     def _save_day(self):
         if self._day is not None:
             self._save_json("day.json", self._day)
+
+    def _save_last(self):
+        """Keep the last push and read (status.json), so the page still shows
+        them after a restart or across UTC midnight."""
+        with self._lock:
+            write, read = self._last_write, self._last_read
+            data = {"write": {"at": write["at"], "ok": write["ok"],
+                              "held": list(write["held"]) if write.get("held") else None}
+                    if write else None,
+                    "read": dict(read) if read else None}
+        self._save_json("status.json", data)
 
     def _save_seen(self):
         if self._seen is not None:
@@ -1014,20 +1061,44 @@ class Census(Plugin):
             lines.append(self._link_error[:1].upper() + self._link_error[1:] + ".")
         else:
             lines.append("Running.")
+        # Whether the census can reach the DHT now, from what the worker last
+        # found (the page never probes the network itself).
+        if self._tether_only():
+            tether = _TETHER in (self.context.connectivity.active_paths() or ())
+            lines.append("Phone's Bluetooth tether: %s." % ("up" if tether else "down"))
+        else:
+            lines.append("Connection: any (tether_only is off).")
+        if self._paused == "starting":
+            reach = "not yet, starting"
+        elif self._paused:
+            reach = "no, " + self._paused
+        elif self._link_error:
+            reach = "no, " + self._link_error
+        elif not self._joined:
+            reach = "not yet, joining the DHT"
+        else:
+            reach = "yes"
+        lines.append("Can read and write the census now: %s." % reach)
         if not self.options.get("report", True):
             lines.append("Reporting is off, so this device isn't counted.")
-        elif last_write:
-            if last_write["ok"]:
-                held = last_write.get("held")
-                lines.append("Last report: %s%s." % (
-                    _clock(last_write["at"]),
-                    ", checked: %d of %d storing nodes hold it" % held if held else ""))
-            else:
-                lines.append("Last report at %s couldn't be stored; it's tried again "
-                             "next hour." % _clock(last_write["at"]))
-        if last_read:
-            lines.append("Last read: %s%s." % (_clock(last_read["at"]), "" if last_read["complete"]
-                                                else " (stopped part-way)"))
+        elif not last_write:
+            lines.append("Last pushed (this device's report): not yet.")
+        elif last_write["ok"]:
+            held = last_write.get("held")
+            lines.append("Last pushed (this device's report): %s%s." % (
+                _when(last_write["at"], now),
+                "; checked: %d of %d storing nodes hold it" % held if held else ""))
+        else:
+            lines.append("Last push, %s, couldn't be stored; it's tried again next hour."
+                         % _when(last_write["at"], now))
+        if not self.options.get("read", True):
+            pass                        # said below the card
+        elif not last_read:
+            lines.append("Last retrieved (the whole census): not yet.")
+        else:
+            lines.append("Last retrieved (the whole census): %s%s." % (
+                _when(last_read["at"], now),
+                "" if last_read["complete"] else ", stopped part-way"))
         budget = self._daily_bytes()
         used = day.get("bytes", 0) if day.get("day") == _utc(now)[0] else 0
         lines.append("Data used today: %s%s." % (

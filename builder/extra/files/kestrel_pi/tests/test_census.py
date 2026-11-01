@@ -3,7 +3,9 @@
 in-process fake whose nodes sit at RFC 5737 documentation addresses, and every
 key and token is generated here."""
 
+import html
 import importlib.util
+import json
 import logging
 import os
 import types
@@ -1584,10 +1586,60 @@ def test_page_before_anything_is_read(tmp_path):
     assert plugin.on_webhook("nope", None).status == 404
 
 
+def test_status_shows_the_tether_and_when_it_last_pushed_and_retrieved(tmp_path):
+    plugin, _mod, _net, clock = _worker(tmp_path)
+    body = html.unescape(_page(plugin))
+    assert "Phone's Bluetooth tether: up." in body
+    assert "Last pushed (this device's report): not yet." in body
+    _run_for(plugin, clock, 3600)
+    body = html.unescape(_page(plugin))
+    assert "Can read and write the census now: yes." in body
+    assert "storing nodes hold it" in body
+    # Full UTC dates (NOW is 2027-01-15 08:00 UTC) with how long ago.
+    assert "report): 2027-01-15 08:" in body and " min ago" in body
+    assert "Last retrieved (the whole census): 2027-01-15 08:" in body
+
+
+def test_status_times_survive_a_restart(tmp_path):
+    plugin, _mod, _net, clock = _worker(tmp_path, name="keep")
+    _run_for(plugin, clock, 3600)
+    pushed, read = plugin._last_write["at"], plugin._last_read["at"]
+    again, _m, _n, clock2 = _worker(tmp_path, name="keep")
+    clock2.now = clock.now + 600
+    again._roll_day(clock2.now)            # the worker's first tick after a restart
+    assert again._last_write["at"] == pushed and again._last_write["held"]
+    assert again._last_read["at"] == read
+    body = html.unescape(_page(again))
+    assert "Last pushed (this device's report): 2027-01-15 08:" in body and "storing nodes hold it" in body
+    assert "Last retrieved (the whole census): 2027-01-15 08:" in body
+    with open(os.path.join(again._state_dir(), "status.json")) as handle:
+        assert set(json.load(handle)) == {"write", "read"}
+
+
+def test_status_says_when_the_tether_is_down(tmp_path):
+    plugin, _mod, _net, clock = _worker(tmp_path)
+    plugin.context.connectivity.paths = []
+    _run_for(plugin, clock, 120)
+    body = html.unescape(_page(plugin))
+    assert "Phone's Bluetooth tether: down." in body
+    assert "Can read and write the census now: no, waiting for the phone's Bluetooth tether." in body
+    plugin.options["tether_only"] = False
+    assert "Connection: any (tether_only is off)." in html.unescape(_page(plugin))
+
+
+def test_when_gives_the_date_time_and_how_long_ago(tmp_path):
+    _plugin_, mod = _plugin(tmp_path)
+    assert mod._when(NOW, NOW + 30) == "2027-01-15 08:00 UTC (just now)"
+    assert mod._when(NOW, NOW + 9 * 60) == "2027-01-15 08:00 UTC (9 min ago)"
+    assert mod._when(NOW, NOW + 3 * 3600 + 5 * 60) == "2027-01-15 08:00 UTC (3h 05m ago)"
+    assert mod._when(NOW, NOW + 3 * 86400) == "2027-01-15 08:00 UTC (3 days ago)"
+    assert mod._valid_last({"write": {"at": "x"}, "read": []}) == (None, None)
+
+
 def test_page_with_a_census_read(tmp_path):
     reader, _mod = _read_census(tmp_path)
     body = _page(reader)
-    assert "Running." in body and "Last read:" in body
+    assert "Running." in body and "Last retrieved (the whole census): 2027-01-15 " in body
     assert "Kestrels online: 2 &middot; active today: 2" in body
     assert "<p>1.0.12: 2 (100%)</p>" in body and "<p>learned: 2 (100%)</p>" in body
     assert "<p>Learned with PPO: 2 (100%)</p>" in body
