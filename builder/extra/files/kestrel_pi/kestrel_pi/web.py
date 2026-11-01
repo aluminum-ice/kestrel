@@ -1276,7 +1276,8 @@ def create_app(daemon):
             daemon.log.exception("plugin %s on_webhook raised", name)
             return Response("plugin error", 500)
         if isinstance(result, PluginPage):
-            return html(_page(result.title, result.body), result.status)
+            return html(_page(result.title, _plugin_back_links(control()) + result.body),
+                        result.status)
         if isinstance(result, PluginRedirect):
             return Response("", 303, headers={
                 "Location": _plugins_redirect_url(result, control())})
@@ -1967,6 +1968,14 @@ def _render_guide_section(slug, control):
 
 def _url(path, control):
     return path + ((control or {}).get("qs") or "")
+
+
+def _plugin_back_links(control):
+    """The first line of every plugin page, added by the shell rather than by
+    each plugin, so every page has it in the same order and wording (and a
+    token login keeps its token): docs/developer/web-ui-conventions.md."""
+    return ('<p><a href="' + _esc(_url("/plugins", control)) + '">&larr; Plugins</a>'
+            ' &middot; <a href="' + _esc(_url("/", control)) + '">Dashboard</a></p>')
 
 
 def _manage_url(name, control):

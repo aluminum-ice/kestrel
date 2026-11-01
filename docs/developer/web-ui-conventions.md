@@ -77,6 +77,14 @@ screen first and let it widen.
   needs a different rendering on a phone (the `map` plugin's portrait map), the
   page carries both and marks them `.wide-only` / `.narrow-only`; the shared
   stylesheet shows the one that fits at the 40em breakpoint.
+- **Every plugin page opens with the same links back.** The shell puts
+  `<p><a href="/plugins">&larr; Plugins</a> &middot; <a href="/">Dashboard</a></p>`
+  above the body of every page a plugin returns with `context.page()`, error and
+  "not found" pages included; with a token login both links carry `?token=…`.
+  The order and wording are fixed: Plugins first, then Dashboard. A plugin never
+  writes this line itself (a test fails on any shipped plugin that does, since
+  it would show twice); its body starts with its own `<h1>`, and any extra links
+  a page needs (Cancel, the JSON view) go below the heading.
 - **Assemble by concatenation, not `str.format`, for anything holding CSS or
   JS.** The stylesheet contains literal `{` `}`, which `str.format` reads as
   fields (this once 500'd the page with `KeyError: 'font-family'`). Per-row
@@ -130,6 +138,9 @@ The web subsystem is described in
       resource request.
 - [ ] Wrapped by `_page()` (so it gets the viewport meta, the shared stylesheet,
       and dark mode) — not its own `<style>`.
+- [ ] A plugin page is returned with `context.page()`, so the shell adds the
+      "← Plugins · Dashboard" links; its body starts with its `<h1>` and never
+      repeats those links.
 - [ ] Reads well at phone width: no sideways scroll; any wide table reflows to
       cards (`data-label` + hidden `thead`); touch-sized controls.
 - [ ] Colour meaning is backed by text/label (not colour alone).

@@ -225,10 +225,9 @@ def test_tile_url_option(store, tmp_path):
     assert "<x>" not in _page(p).body.split("<h1>", 1)[1]
 
 
-def test_the_page_links_back_with_the_token(store, tmp_path):
+def test_the_page_leaves_the_links_back_to_the_shell(store, tmp_path):
     body = _page(_plugin(store, tmp_path), token="abc").body
-    assert '<a href="/plugins?token=abc">&larr; Plugins</a>' in body
-    assert '<a href="/?token=abc">Dashboard</a>' in body
+    assert body.startswith("<h1>Map</h1>") and "&larr; Plugins" not in body
 
 
 def _recover(p, store, *macs):

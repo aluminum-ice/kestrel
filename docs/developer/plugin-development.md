@@ -604,7 +604,12 @@ Return any of:
 - a Flask `Response`,
 - a `self.context.page(title, body, status=200)` **marker** — the daemon wraps
   `body` in the shared page shell (house CSS, the Documentation footer), so a
-  plugin page matches the rest of the UI without importing the web module,
+  plugin page matches the rest of the UI without importing the web module. The
+  shell also opens every such page with the standard links back,
+  **"← Plugins · Dashboard"** (in that order and wording, keeping a token
+  login's token), so start `body` with your `<h1>` and don't write those links
+  yourself, or they show twice. Use `context.page()` for every page a person
+  sees, error and "not found" pages included, so none is a dead end,
 - a `self.context.redirect(message=None, error=False)` **marker** — the daemon
   sends the browser back to the Plugins page with a one-line banner (`message`,
   shown red when `error`); use it after a POST action,
@@ -794,7 +799,9 @@ on the plugin module. See [Testing](testing.md).
 - Never block an event hook — offload long work to your own thread and lock
   shared state.
 - Contribute to the dashboard as data (`on_ui_*`) or own a page (`on_webhook`);
-  never inject markup; follow the web conventions for any page.
+  never inject markup; follow the web conventions for any page. Return pages
+  with `context.page()` and start them with an `<h1>`: the shell adds the
+  "← Plugins · Dashboard" links above it.
 - For a row button, declare `__actions__` (at most two), route it to
   `on_webhook`, and gate a POST action's prerequisite in `webhook_actions` *and*
   re-check it in `on_webhook`; send privileged changes through

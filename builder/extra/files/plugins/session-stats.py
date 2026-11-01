@@ -91,17 +91,15 @@ class SessionStats(Plugin):
         snap = self._snapshot()
         if path == "stats.json":
             return (json.dumps(snap), 200, {"Content-Type": "application/json"})
-        # In the dashboard's own page shell, with the standard way back (a token
-        # login carries its token along).
+        # In the dashboard's own page shell (which adds the links back); a token
+        # login keeps its token on the JSON link.
         esc = self.context.esc
         token = (getattr(request, "args", None) or {}).get("token") or ""
         qs = "?" + urlencode([("token", token)]) if token else ""
         rows = (("Uptime", _format_uptime(snap["uptime_seconds"])),
                 ("Handshakes", snap["handshakes"]), ("Unique APs", snap["unique_aps"]),
                 ("Epochs", snap["epochs"]))
-        body = ('<p><a href="' + esc("/plugins" + qs) + '">&larr; Plugins</a> &middot; '
-                '<a href="' + esc("/" + qs) + '">Dashboard</a></p><h1>Session stats</h1>'
-                '<div class="card pad">'
+        body = ('<h1>Session stats</h1><div class="card pad">'
                 + "".join("<p>%s: <b>%s</b></p>" % (esc(k), esc(v)) for k, v in rows)
                 + '</div><p class="muted">Since the plugin daemon last started. Also as '
                 '<a href="' + esc("stats.json" + qs) + '">JSON</a>.</p>')

@@ -43,11 +43,10 @@ FACE = WS.face          # the eink_face library the plugin loads
 W, H = WS.PANEL_W, WS.PANEL_H
 
 
-def test_mirror_page_links_back_to_plugins_and_the_dashboard(tmp_path):
-    page = _plugin(tmp_path)._mirror_page(types.SimpleNamespace(args={"token": "abc"}))
-    assert ('<p><a href="/plugins?token=abc">&larr; Plugins</a> &middot; '
-            '<a href="/?token=abc">Dashboard</a></p>') in page.body
-    assert page.body.index('href="/plugins') < page.body.index("<h1>")
+def test_mirror_page_starts_with_its_heading(tmp_path):
+    # The page shell adds "← Plugins · Dashboard" above every plugin page.
+    page = _plugin(tmp_path)._mirror_page()
+    assert page.body.startswith("<h1>") and "&larr; Plugins" not in page.body
 
 
 def _plugin(tmp_path, options=None, gps=False):
@@ -310,7 +309,7 @@ def test_mirror_page(tmp_path):
     page = p.on_webhook("display", types.SimpleNamespace(headers={}))
     assert isinstance(page, PluginPage)
     assert "display.png" in page.body and "20000" in page.body
-    assert page.body.index('href="/plugins"') < page.body.index("<h1>")
+    assert page.body.startswith("<h1>")          # the shell adds the links above it
 
 
 def test_frame_seq_only_advances_when_the_frame_changes(tmp_path):
