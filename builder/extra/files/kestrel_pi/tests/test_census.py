@@ -32,7 +32,7 @@ def _load(path, modname):
 def _plugin(tmp_path, online=False, **opts):
     """A Census instance with its context, without its worker running."""
     mod = _load(CENSUS, "census_under_test")
-    options = {"report": True, "read": True, "poll_hours": 4,
+    options = {"report": True, "read": True, "poll_minutes": 90,
                "tether_only": True, "daily_mb": 5,
                "bootstrap": "router.example.net:6881,dht.example.org:25401"}
     options.update(opts)
@@ -64,7 +64,7 @@ def test_census_declarations_read_statically():
     assert tuple(decl["capabilities"]) == ("network", "ui", "web")
     assert tuple(decl["provides"]) == ("census",)
     assert tuple(decl["optional_requires"]) == ("agent", "remote-training")
-    assert set(decl["options"]) == {"report", "read", "poll_hours", "tether_only",
+    assert set(decl["options"]) == {"report", "read", "poll_minutes", "tether_only",
                                     "daily_mb", "bootstrap"}
     assert decl["options"]["tether_only"]["default"] is True
     assert decl["options"]["bootstrap"]["default"] == (
@@ -117,15 +117,15 @@ def test_census_health_note_names_bad_bootstrap_entries(tmp_path):
     assert "no usable bootstrap router" in plugin.context.health_note
 
 
-def test_census_clamps_poll_hours_and_budget(tmp_path):
-    plugin, _mod = _plugin(tmp_path, poll_hours=0, daily_mb=-3)
-    assert plugin._poll_hours() == 1
+def test_census_clamps_poll_minutes_and_budget(tmp_path):
+    plugin, _mod = _plugin(tmp_path, poll_minutes=5, daily_mb=-3)
+    assert plugin._poll_minutes() == 60
     assert plugin._daily_bytes() == 0
-    plugin, _mod = _plugin(tmp_path, poll_hours=99, daily_mb=2)
-    assert plugin._poll_hours() == 24
+    plugin, _mod = _plugin(tmp_path, poll_minutes=9999, daily_mb=2)
+    assert plugin._poll_minutes() == 1440
     assert plugin._daily_bytes() == 2 * 1024 * 1024
-    plugin, _mod = _plugin(tmp_path, poll_hours="x", daily_mb="y")
-    assert plugin._poll_hours() == 4
+    plugin, _mod = _plugin(tmp_path, poll_minutes="x", daily_mb="y")
+    assert plugin._poll_minutes() == 90
     assert plugin._daily_bytes() == 5 * 1024 * 1024
 
 
@@ -1212,8 +1212,8 @@ def test_worker_reads_the_census_and_counts_online_devices(tmp_path):
     tokens = {bytes.fromhex(w[0]._day["token"]).hex() for w in writers}
     assert tokens <= set(seen["entries"])
     assert seen["online"] == len(tokens) and reader._last_read["complete"]
-    # The next read comes about poll_hours on.
-    assert 0.9 * 4 * 3600 <= reader._next_read - reader._last_read["at"] <= 1.1 * 4 * 3600 + 120
+    # The next read comes about poll_minutes on.
+    assert 0.9 * 90 * 60 <= reader._next_read - reader._last_read["at"] <= 1.1 * 90 * 60 + 120
 
 
 def test_worker_gates_pause_it_and_it_resumes(tmp_path):
@@ -1624,3 +1624,29 @@ def test_hostile_state_files_never_reach_the_page(tmp_path):
     _run_for(plugin, clock, 60)
     body = _page(plugin)
     assert "script" not in body and "<i>" not in body
+
+
+def test_worker_reads_after_its_first_write_so_it_sees_itself(tmp_path):
+    plugin, _mod, net, clock = _worker(tmp_path)
+    reads = []
+    read = plugin._read
+
+    def logged(now):
+        reads.append(now)
+        read(now)
+    plugin._read = logged
+    _run_for(plugin, clock, 3600)
+    assert reads[0] >= plugin.writes[0] + 60
+    # Its own entry is in the first read: one device online, one active.
+    service = plugin.provide_census()
+    assert service["online"] == 1 and service["active_today"] == 1
+    # After a restart in an hour it has written, with no read saved, the read
+    # comes on the usual schedule, not after the next hour's write.
+    (tmp_path / "state-dev" / "seen.json").unlink()
+    again, _m, _n, clock2 = _worker(tmp_path, net=net)
+    clock2.now = clock.now
+    again._roll_day(clock2.now)
+    assert again._day["wrote"] is not None
+    again._plan_write(clock2.now)
+    again._plan_read(clock2.now)
+    assert again._next_read <= clock2.now + 600 + 120

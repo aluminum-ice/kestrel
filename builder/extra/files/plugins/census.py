@@ -366,9 +366,11 @@ class Census(Plugin):
             "help": "Fetch the census and show the totals. Off, the plugin "
                     "only reports, and uses much less data.",
         },
-        "poll_hours": {
-            "type": "int", "default": 4,
-            "help": "How often to fetch the whole census (1-24 hours).",
+        # An entry stays in its slot 60-120 minutes after its device's last
+        # write, so reading every 90 minutes catches nearly every device.
+        "poll_minutes": {
+            "type": "int", "default": 90,
+            "help": "How often to fetch the whole census, in minutes (60-1440).",
         },
         "tether_only": {
             "type": "bool", "default": True,
@@ -591,12 +593,19 @@ class Census(Plugin):
         self._next_write = at
 
     def _plan_read(self, now):
+        """A few minutes after the census starts, then every ``poll_minutes``.
+        A device that reports but hasn't written yet today reads only after its
+        first write has been checked, so its own entry is in what it reads."""
         if self._next_read is not None:
             return
         seen = self._seen_day(_utc(now)[0])
         read_at = seen.get("read_at") or 0.0
         at = max(now + self._rng.uniform(*_FIRST_READ),
-                 read_at + self._poll_hours() * 3600)
+                 read_at + self._poll_minutes() * 60)
+        if (self.options.get("report", True) and self._day.get("wrote") is None
+                and self._next_write is not None):
+            at = max(at, self._next_write + _CHECK_AFTER[1]
+                     + self._rng.uniform(*_FIRST_READ))
         self._next_read = self._apart(at)
 
     def _apart(self, at):
@@ -807,7 +816,7 @@ class Census(Plugin):
             self._summarize(now)
         with self._lock:
             self._last_read = {"at": now, "complete": not stopped}
-        self._next_read = self._apart(now + self._poll_hours() * 3600
+        self._next_read = self._apart(now + self._poll_minutes() * 60
                                       * self._rng.uniform(0.9, 1.1))
 
     @staticmethod
@@ -1098,11 +1107,11 @@ class Census(Plugin):
         return html
 
     # -- helpers -----------------------------------------------------------
-    def _poll_hours(self):
+    def _poll_minutes(self):
         try:
-            return min(24, max(1, int(self.options.get("poll_hours", 4))))
+            return min(1440, max(60, int(self.options.get("poll_minutes", 90))))
         except (TypeError, ValueError):
-            return 4
+            return 90
 
     def _daily_bytes(self):
         """The day's data budget in bytes; 0 means no limit."""
