@@ -47,9 +47,10 @@ between.)
 Releases come in two channels, told apart by the tag: a stable release is
 `X.Y.Z`, a beta is `X.Y.Z-beta.N` and is published as a Forgejo pre-release
 (see [Cutting a release](releasing.md#beta-releases)). By default the plugin
-only offers stable releases. Turn on the `beta` option (a checkbox on the
-plugin's settings page, or `sudo kestrel plugins enable updates --set
-beta=true`) to also be offered betas:
+only offers stable releases. Turn on the `beta` option from the terminal to
+also be offered betas: `sudo kestrel plugins set updates beta=true` (the
+settings page shows it read-only, since root's update engine acts on it; see
+[Security model](#security-model)):
 
 - versions compare by SemVer precedence, so `0.7.0-beta.1` < `0.7.0-beta.2` <
   `0.7.0`: a device on a beta is offered the final release once it is out;
@@ -398,9 +399,9 @@ All keys live under `[plugins.updates]` in `/etc/kestrel/config.toml`.
 | `host` | `https://git.3ntropy.io` | The Forgejo (or Gitea) server hosting `repo`. Must be `https://`; the check is skipped otherwise. |
 | `token` | `""` | Optional Forgejo access token for a **private** repo/fork (masked secret, device-only). Empty = unauthenticated, public releases only. See [Updating from a private repo](#updating-from-a-private-repo). |
 | `check_interval_seconds` | `21600` | At most this often, re-check while online. |
-| `timeout` | `30` | Per-request network timeout. |
-| `beta` | `false` | Also offer beta (`X.Y.Z-beta.N`) releases. See [Stable and beta releases](#stable-and-beta-releases). |
-| `backup_timeout_seconds` | `180` | How long the pre-update backup may run before the update gives up on it (so an unreachable remote can't hold the daemon down). `0` = wait indefinitely. See [If the pre-update backup fails](#if-the-pre-update-backup-fails). |
+| `timeout` | `30` | Per-request network timeout; root holds it to 5-120 s. Terminal only. |
+| `beta` | `false` | Also offer beta (`X.Y.Z-beta.N`) releases. Terminal only. See [Stable and beta releases](#stable-and-beta-releases). |
+| `backup_timeout_seconds` | `180` | How long the pre-update backup may run before the update gives up on it (so an unreachable remote can't hold the daemon down). `0` = wait indefinitely; any other value is held to 30-3600 s. Terminal only. See [If the pre-update backup fails](#if-the-pre-update-backup-fails). |
 
 ## How the device knows its own version
 

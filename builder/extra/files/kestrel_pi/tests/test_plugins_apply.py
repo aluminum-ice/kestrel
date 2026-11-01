@@ -127,29 +127,189 @@ class _Spent:
         self.sp_pwdp = hashed
 
 
+class _Pw:
+    def __init__(self, uid, shell="/bin/bash"):
+        self.pw_uid, self.pw_shell = uid, shell
+
+
+# Accounts as pwd sees them: a person (pi), root, a system account, nobody and
+# a person without a login shell.
+_PASSWD = {"pi": _Pw(1000), "u": _Pw(1001), "root": _Pw(0), "daemon": _Pw(1),
+           "nobody": _Pw(65534), "svc": _Pw(1002, "/usr/sbin/nologin")}
+
+
 def test_verify_system_password_matches_only_the_right_password():
     # A fake shadow lookup + a fake crypt (so the test needs no real account or
     # the removed-in-3.13 crypt module): crypt echoes salt$+password.
     shadow = {"pi": _Spent("$6$salt$HASH")}
     crypt_fn = lambda pw, h: "$6$salt$" + pw   # noqa: E731
     getspnam = shadow.__getitem__
+    getpwnam = _PASSWD.__getitem__
 
     def verify(user, pw):
         return ctl.verify_system_password(user, pw, getspnam=getspnam,
+                                          getpwnam=getpwnam,
                                           crypt_fn=lambda p, h: "$6$salt$HASH"
                                           if p == "right" else "$6$salt$NO")
 
     assert verify("pi", "right") is True
     assert verify("pi", "wrong") is False
     # Unknown user, and locked / password-less accounts never match.
-    assert ctl.verify_system_password("nobody", "x", getspnam=getspnam,
-                                      crypt_fn=crypt_fn) is False
+    assert ctl.verify_system_password("ghost", "x", getspnam=getspnam,
+                                      getpwnam=getpwnam, crypt_fn=crypt_fn) is False
     for bad in ("", "*", "!", "!locked"):
         locked = {"u": _Spent(bad)}
         assert ctl.verify_system_password("u", "x", getspnam=locked.__getitem__,
-                                          crypt_fn=crypt_fn) is False
+                                          getpwnam=getpwnam, crypt_fn=crypt_fn) is False
     assert ctl.verify_system_password("pi", "", getspnam=getspnam,
+                                      getpwnam=getpwnam, crypt_fn=crypt_fn) is False
+
+
+@pytest.mark.parametrize("user", ["root", "daemon", "nobody", "svc", "ghost"])
+def test_checkauth_refuses_non_person_accounts_at_the_same_cost(user):
+    # Root, system accounts, nobody, a no-login account and an unknown one never
+    # match, even with their right password, and each still costs one crypt
+    # (against the dummy setting), so timing doesn't tell them apart.
+    shadow = {name: _Spent("$6$salt$HASH") for name in _PASSWD}
+    calls = []
+
+    def crypt_fn(pw, setting):
+        calls.append(setting)
+        return "$6$salt$HASH"                 # "the right password" for any setting
+
+    assert ctl.verify_system_password(user, "right", getspnam=shadow.__getitem__,
+                                      getpwnam=_PASSWD.__getitem__,
                                       crypt_fn=crypt_fn) is False
+    assert calls == [ctl.AUTH_DUMMY_SETTING]
+
+
+def test_auth_account_ok_allows_only_people():
+    ok = {name for name in list(_PASSWD) + ["ghost"]
+          if ctl.auth_account_ok(name, getpwnam=_PASSWD.__getitem__)}
+    assert ok == {"pi", "u"}
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 1_000_000.0
+        self.slept = []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def _backoff(tmp_path, clock):
+    state = tmp_path / "auth"
+    return ctl.AuthBackoff(state_dir=str(state), clock=clock, sleep=clock.sleep)
+
+
+def test_backoff_spaces_checks_after_the_free_failures(tmp_path):
+    clock = _Clock()
+    b = _backoff(tmp_path, clock)
+    for _ in range(ctl.AUTH_FREE):
+        assert b.reserve() == 0
+        b.record(False)
+    # Past the free failures, back-to-back checks are spaced ever further apart.
+    waits = []
+    for _ in range(6):
+        waits.append(b.reserve())
+        b.record(False)
+    assert waits[0] == 0
+    assert waits[1:] == sorted(waits[1:]) and waits[1] > 0
+    assert max(waits) <= ctl.AUTH_MAX_DELAY * 6
+    # The state is root's alone.
+    assert oct((tmp_path / "auth").stat().st_mode & 0o777) == "0o700"
+    assert oct((tmp_path / "auth" / "fails.json").stat().st_mode & 0o777) == "0o600"
+    # A success clears it.
+    b.record(True)
+    assert b.reserve() == 0
+
+
+def test_backoff_says_busy_instead_of_queueing_too_long(tmp_path):
+    clock = _Clock()
+    b = _backoff(tmp_path, clock)
+    for _ in range(ctl.AUTH_FREE + 6):
+        b.record(False)
+    # Many callers at once each take the next slot until one would wait too long.
+    waits = []
+    while True:
+        w = b.reserve()
+        if w is None:
+            break
+        waits.append(w)
+    assert waits and max(waits) <= ctl.AUTH_MAX_WAIT
+
+
+def test_backoff_forgets_old_failures(tmp_path):
+    clock = _Clock()
+    b = _backoff(tmp_path, clock)
+    for _ in range(ctl.AUTH_FREE + 3):
+        b.record(False)
+    clock.now += ctl.AUTH_WINDOW + 1
+    assert b.reserve() == 0
+
+
+def test_backoff_refuses_a_symlinked_state_file(tmp_path):
+    state = tmp_path / "auth"
+    state.mkdir(mode=0o700)
+    target = tmp_path / "elsewhere"
+    target.write_text("keep")
+    (state / "fails.json").symlink_to(target)
+    with pytest.raises(OSError):
+        ctl.AuthBackoff(state_dir=str(state)).reserve()
+    assert target.read_text() == "keep"
+
+
+def test_backoff_refuses_a_shared_state_directory(tmp_path):
+    state = tmp_path / "auth"
+    state.mkdir(mode=0o755)
+    with pytest.raises(OSError):
+        ctl.AuthBackoff(state_dir=str(state)).reserve()
+
+
+def test_cmd_checkauth_waits_out_the_backoff_and_answers_busy(tmp_path, monkeypatch, capsys):
+    clock = _Clock()
+    b = _backoff(tmp_path, clock)
+    monkeypatch.setattr(ctl, "verify_system_password", lambda u, p: False)
+
+    def ask():
+        monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(
+            json.dumps({"username": "pi", "password": "nope"}).encode())))
+        ctl.cmd_checkauth(backoff=b)
+        out, err = capsys.readouterr()
+        return json.loads(out), err
+
+    for _ in range(ctl.AUTH_FREE + 4):
+        assert ask()[0] == {"ok": False}
+    assert clock.slept and max(clock.slept) > 0           # it waited before checking
+    # Pile up reservations so the next caller would wait too long.
+    while b.reserve() is not None:
+        pass
+    reply, err = ask()
+    assert reply == {"ok": False, "error": "busy"}
+    assert "pi: busy" in err and "nope" not in err
+
+
+def test_cmd_checkauth_still_checks_when_the_backoff_state_is_unusable(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ctl, "verify_system_password",
+                        lambda u, p: u == "pi" and p == "secret")
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(
+        json.dumps({"username": "pi", "password": "secret"}).encode())))
+    blocked = tmp_path / "file-not-dir"
+    blocked.write_text("")
+    ctl.cmd_checkauth(backoff=ctl.AuthBackoff(state_dir=str(blocked)))
+    out, err = capsys.readouterr()
+    assert json.loads(out) == {"ok": True} and "backoff state unavailable" in err
+
+
+@pytest.fixture(autouse=True)
+def _auth_state(tmp_path, monkeypatch):
+    # Never touch the real /run/kestrel-auth from a test.
+    monkeypatch.setattr(ctl, "AUTH_STATE_DIR", str(tmp_path / "auth-state"))
 
 
 def test_cmd_checkauth_round_trip(monkeypatch, capsys):
@@ -1058,6 +1218,11 @@ def test_config_settable_capture_keys_match_what_capture_reads():
     ("host", "https://forge.example.org"),
     ("repo", "someone/fork"),
     ("token", "not-a-real-token"),
+    # Root's update engine also acts on these: the channel it installs from,
+    # its request timeout and how long the pre-update backup may hold it.
+    ("beta", True),
+    ("timeout", 0),
+    ("backup_timeout_seconds", 0),
 ])
 def test_root_only_update_options_refused_from_the_socket(env, opt, value):
     # Root's `update apply` installs code from where these point, so a pi
@@ -1071,9 +1236,19 @@ def test_root_only_update_options_refused_from_the_socket(env, opt, value):
 
 def test_root_only_does_not_block_the_plugins_other_options(env):
     _auth_on(env)
-    reply = ctl.apply_change({"plugin": "updates", "set": {"beta": True}})
-    assert reply["ok"] is True and reply["changed"] == ["beta"]
-    assert _config(env)["plugins"]["updates"]["beta"] is True
+    reply = ctl.apply_change({"plugin": "updates",
+                              "set": {"check_interval_seconds": 7200}})
+    assert reply["ok"] is True and reply["changed"] == ["check_interval_seconds"]
+    assert _config(env)["plugins"]["updates"]["check_interval_seconds"] == 7200
+
+
+def test_remote_train_agent_dir_is_root_only(env):
+    # Root's `remote-train now` drops its trigger in this directory.
+    decl = ctl.static_plugins()["remote-train"][0]
+    assert decl["options"]["agent_dir"].get("root_only") is True
+    _auth_on(env)
+    reply = ctl.apply_change({"plugin": "remote-train", "set": {"agent_dir": "/etc"}})
+    assert reply["ok"] is False and "terminal" in reply["error"]
 
 
 def test_root_only_options_are_still_settable_from_the_cli(env, capsys):

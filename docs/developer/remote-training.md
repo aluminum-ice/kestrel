@@ -449,7 +449,9 @@ Under `[plugins.remote-train]` (ships disabled; all documented in `config.toml`)
 - `ssh_key` — reuse the backup/device key by default
   (`/home/pi/.ssh/id_ed25519`).
 - `agent_dir` — the on-device agent runtime dir (episodes + per-algorithm
-  models); default `/var/lib/kestrel/agent`.
+  models); default `/var/lib/kestrel/agent`. Set from the terminal only
+  (`root_only`): root's `remote-train now` drops its trigger there, and uses it
+  only if it's under `/var/lib/kestrel/`.
 
 ## Using it
 

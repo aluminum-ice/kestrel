@@ -523,6 +523,10 @@ def _restore_quietly(prior, runner=run):
 # paused daemon -- and the dashboard -- down for many minutes. Overridable via
 # [plugins.updates] backup_timeout_seconds; 0 there means wait indefinitely.
 BACKUP_TIMEOUT_DEFAULT = 180
+# The bounds root holds a set backup timeout to (0 still means "no bound").
+BACKUP_TIMEOUT_MIN, BACKUP_TIMEOUT_MAX = 30, 3600
+# The bounds root holds the per-request timeout to, whatever config.toml says.
+FETCH_TIMEOUT_MIN, FETCH_TIMEOUT_MAX, FETCH_TIMEOUT_DEFAULT = 5, 120, 30
 
 
 def backup_configured(config_file=CONFIG_FILE, key_file=BACKUP_KEY):
@@ -564,7 +568,9 @@ def backup_timeout(config_file=CONFIG_FILE):
         return BACKUP_TIMEOUT_DEFAULT
     if val == 0:
         return None            # explicit "wait as long as it takes"
-    return val if val > 0 else BACKUP_TIMEOUT_DEFAULT
+    if val < 0:
+        return BACKUP_TIMEOUT_DEFAULT
+    return min(BACKUP_TIMEOUT_MAX, max(BACKUP_TIMEOUT_MIN, val))
 
 
 def run_backup(runner=run, cli=BIN, timeout=None):
@@ -952,8 +958,16 @@ def read_updates_config(config_file=CONFIG_FILE):
         "host": (_text(table.get("host")) or DEFAULT_HOST).rstrip("/"),
         "token": _text(table.get("token")),
         "beta": table.get("beta") is True,
-        "timeout": table.get("timeout") if isinstance(table.get("timeout"), int) else 30,
+        "timeout": _fetch_timeout(table.get("timeout")),
     }
+
+
+def _fetch_timeout(value):
+    """The per-request timeout, held to FETCH_TIMEOUT_MIN..MAX (a missing or
+    non-integer value is the default)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return FETCH_TIMEOUT_DEFAULT
+    return min(FETCH_TIMEOUT_MAX, max(FETCH_TIMEOUT_MIN, value))
 
 
 def http_fetch(url, token="", timeout=30, limit=MAX_LIST_BYTES, attempts=3):

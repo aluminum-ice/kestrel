@@ -601,7 +601,7 @@ The `remote-train setup` step is terminal-only, because it prompts for the host 
 - The algorithm the agent runs is always trained, and first, even if `algorithms` leaves it out.
 - After setup the plugin runs on its own, launching a run for an algorithm once enough new episodes accrue since the host's last model of it (`remote_train_min_new_episodes`, default 300). There is no fixed timer, and the device's own training doesn't reset the count.
 - A finished model is pulled back and staged automatically; the agent then judges it exactly as it judges a model trained on the device: on held-out hours of your own data that neither ever trained on, by the same rule. It is promoted only if it is clearly better than the model in use and beats the scripted baseline, so neither side wins by default.
-- Other keys: `stale_lock_hours` (default 6), `timesteps` (default 200000), `interval_seconds` (default 3600), `timeout` (default 1800), `train_port`, `ssh_key`.
+- Other keys: `stale_lock_hours` (default 6), `timesteps` (default 200000), `interval_seconds` (default 3600), `timeout` (default 1800), `train_port`, `ssh_key`, `agent_dir` (default `/var/lib/kestrel/agent`; terminal only, and kept under `/var/lib/kestrel/`).
 - To kick off a run on demand, use the Train button on the remote-train plugin's row in the dashboard (with the login on), or `kestrel remote-train now` from the terminal. Either one forces a run immediately even when fewer than `remote_train_min_new_episodes` have accrued (the on-demand request overrides the data threshold), as long as there are some episodes to train on. If it cannot start, the plugin's card says why — no capture episodes recorded yet, the device is offline, the host is not set up, or a run is already in progress — instead of looking like nothing happened. `kestrel remote-train status` shows the host and its job markers. Uninstall with `plugins disable remote-train` (on the dashboard or the terminal) and delete `train_path` on the host.
 
 ---
@@ -660,7 +660,7 @@ Your `config.toml` is not overwritten. New keys fall back to their built-in defa
 
 ### Beta updates
 
-Releases are stable (`1.2.3`) or beta (`1.3.0-beta.1`). Only stable releases are offered unless you turn on the `beta` option: tick **beta** on the `updates` plugin's config page (with the login on), or from the terminal `sudo kestrel plugins enable updates --set beta=true`. With it on you are offered the newest release of either kind, and a beta device is offered the final release once it is out. Turning it off never downgrades you: you stay on your beta until a newer stable release arrives. `kestrel update status` shows the channel.
+Releases are stable (`1.2.3`) or beta (`1.3.0-beta.1`). Only stable releases are offered unless you turn on the `beta` option, from the terminal: `sudo kestrel plugins set updates beta=true` (the config page shows it read-only, because the root update engine acts on it). With it on you are offered the newest release of either kind, and a beta device is offered the final release once it is out. Turning it off never downgrades you: you stay on your beta until a newer stable release arrives. `kestrel update status` shows the channel.
 
 ### Updating from a private repo
 
@@ -680,7 +680,7 @@ read -rs TOKEN; printf '%s\n' "$TOKEN" | sudo kestrel plugins enable updates --s
 sudo kestrel plugins enable updates --set token=
 ```
 
-Keys under `[plugins.updates]`: `enabled` (default `false`), `repo` (the project's public repo by default; override for a fork), `host` (the Forgejo or Gitea server hosting `repo`, `https://` only; the project's server by default), `token` (default empty; masked secret), `check_interval_seconds` (default `21600`), `timeout` (default `30`), `beta` (default `false`; also offer beta releases). A wrong or expired token shows as an HTTP 401/403 from the server in the daemon log.
+Keys under `[plugins.updates]`: `enabled` (default `false`), `repo` (the project's public repo by default; override for a fork), `host` (the Forgejo or Gitea server hosting `repo`, `https://` only; the project's server by default), `token` (default empty; masked secret), `check_interval_seconds` (default `21600`), `timeout` (default `30`, held to 5-120), `beta` (default `false`; also offer beta releases), `backup_timeout_seconds` (default `180`; `0` waits indefinitely, else held to 30-3600). `repo`, `host`, `token`, `beta`, `timeout` and `backup_timeout_seconds` are set from the terminal only (`sudo kestrel plugins set updates ...`). A wrong or expired token shows as an HTTP 401/403 from the server in the daemon log.
 
 ### If you get locked out after an update
 

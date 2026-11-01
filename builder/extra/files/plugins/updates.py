@@ -201,20 +201,25 @@ class Updates(Plugin):
         # Off => only stable releases are offered. Turning it off while on a
         # beta keeps the device where it is (no downgrade) until a stable
         # release newer than that beta is out.
-        "beta": {"type": "bool", "default": False,
+        # root_only (beta, backup_timeout_seconds, timeout): root's update
+        # engine acts on them too, so like repo/host/token they're set only
+        # from the terminal: sudo kestrel plugins set updates beta=true.
+        "beta": {"type": "bool", "default": False, "root_only": True,
                  "help": "Also offer beta (X.Y.Z-beta.N) releases. Turning it "
-                         "off never downgrades a device already on a beta."},
+                         "off never downgrades a device already on a beta. "
+                         "Set from the terminal."},
         # Seconds to allow the pre-update backup (the remote mirror the update
         # takes before touching files) before the update gives up on it, so a
         # backup that can't reach the remote cannot hold the daemon -- and the
         # dashboard -- down for many minutes. The engine reads this directly;
         # 0 waits indefinitely (the old behaviour).
-        "backup_timeout_seconds": {"type": "int", "default": 180,
+        "backup_timeout_seconds": {"type": "int", "default": 180, "root_only": True,
                  "help": "Seconds to allow the pre-update backup before the "
-                         "update cancels it (0 = wait indefinitely)."},
+                         "update cancels it (0 = wait indefinitely; else 30-3600)."},
         # How often, at most, to re-check while online (6h default).
         "check_interval_seconds": {"type": "int", "default": 21600},
-        "timeout": {"type": "int", "default": 30},
+        # Seconds per request to the release server (5-120).
+        "timeout": {"type": "int", "default": 30, "root_only": True},
     }
 
     def on_loaded(self):

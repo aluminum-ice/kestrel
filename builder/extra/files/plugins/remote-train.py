@@ -150,7 +150,9 @@ class RemoteTrain(Plugin):
         # Per SSH/rsync operation (not the training run, which is detached).
         "timeout": {"type": "int", "default": 1800},
         # The on-device agent runtime dir (episodes + per-algorithm models).
-        "agent_dir": {"type": "str", "default": "/var/lib/kestrel/agent"},
+        # root_only: root's `remote-train now` drops its trigger file there.
+        "agent_dir": {"type": "str", "default": "/var/lib/kestrel/agent",
+                      "root_only": True},
     }
 
     # -- lifecycle -------------------------------------------------------
