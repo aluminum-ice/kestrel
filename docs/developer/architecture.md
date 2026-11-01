@@ -375,7 +375,7 @@ catalog.
 
 ## Versioned interfaces
 
-Three contracts let parts evolve independently:
+Four contracts let parts evolve independently:
 
 - **`HOOK_API_VERSION`** — the plugin hook contract, in
   `kestrel_pi/__init__.py`.
@@ -383,6 +383,9 @@ Three contracts let parts evolve independently:
   surface the agent and plugins read capture state through.
 - **`SPEC_VERSION`** in [Agent interface](agent-interface.md) — the learning
   agent's observation/action shapes and model format, in `agent/spec.py`.
+- **`kestrel-census/1`** in [Census protocol](census-protocol.md) — the public
+  format of the `census` plugin's DHT records, shared with the desktop report;
+  a new format gets a new protocol name.
 
 Bump the relevant one on a breaking change so a consumer can detect the mismatch
 instead of failing obscurely.

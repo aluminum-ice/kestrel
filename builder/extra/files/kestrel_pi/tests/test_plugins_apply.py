@@ -62,7 +62,7 @@ def test_declarations_read_statically(env):
     assert set(plugins) == {"gps", "memtemp", "session-stats", "wigle",
                             "wpa-sec", "backup", "updates",
                             "remote-train", "eink-ws213", "eink-ws27", "ups-ws", "ups-wsc", "ups-wsd", "ups-wse", "downloads", "map",
-                            "ntfy", "telegram"}
+                            "ntfy", "telegram", "census"}
     # downloads only serves the operator's own browser: no ack-gated network.
     assert "network" not in plugins["downloads"][0]["capabilities"]
     wpa, _src = plugins["wpa-sec"]

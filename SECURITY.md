@@ -37,6 +37,7 @@ In scope: everything in this repository, including:
 - the web dashboard;
 - Bluetooth and Wi-Fi onboarding;
 - the update path;
+- the `census` plugin's DHT client, which handles responses from untrusted hosts on the internet, and the census desktop report (`tools/census-report/`);
 - the release workflow.
 
 Ways for code running as the `pi` user to gain root are in scope: the root helpers are meant to be a privilege boundary.

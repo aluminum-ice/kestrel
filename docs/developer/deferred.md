@@ -243,3 +243,35 @@ How to use this file:
   `plugin-libraries.md`.
 - **Pick up when:** a second UPS plugin has been tested on hardware.
 
+
+## Census (`census` plugin)
+
+### Read and write the census over IPv6 too
+
+- **What:** the census DHT client is IPv4 only. BEP 32 adds an IPv6 DHT with
+  its own nodes and `nodes6` replies.
+- **Why deferred:** the IPv4 DHT is far larger, and every part of the client
+  (the node list, BEP 42 checks, the transport) would need an IPv6 path.
+- **What to do:** an IPv6 transport and node list in `_census_dht.py`, BEP 42's
+  IPv6 rule, and reading slots from both networks with the union merged as now.
+- **Pick up when:** devices are seen on IPv6-only links.
+
+### Make the census DHT client a plugin library
+
+- **What:** the DHT client lives in the `census` plugin's own helper file
+  (`_census_dht.py`), loaded by path by the desktop report too.
+- **Why deferred:** one plugin uses it; a library's API would be fixed before
+  a second user shows what it needs.
+- **What to do:** move it to `plugins/_lib_dht.py` (API 0, provisional), list
+  it in `plugin-libraries.md`, and load it from both plugins and the report.
+- **Pick up when:** a second plugin needs the DHT.
+
+### Show the census on the e-ink face
+
+- **What:** the `census` service (online, active today, win rates) could give
+  the e-ink faces a line, such as "23 Kestrels online".
+- **Why deferred:** the panels' rows are full, and the census needs reports
+  from more devices before the number means much.
+- **What to do:** an optional `census` read in the `eink_face` library and a
+  place for it in each plugin's layout (behind an option), with fixture frames.
+- **Pick up when:** the census has enough devices to be worth showing.

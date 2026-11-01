@@ -5,9 +5,9 @@ and serves the device web dashboard. The daemon ships **enabled** but does
 nothing on its own — it just runs its event loop and the status page until you
 enable a plugin. Every bundled plugin ships **disabled**.
 
-The eighteen reference plugins are: `memtemp`, `session-stats`, `gps`,
-`wpa-sec`, `wigle`, `backup`, `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-wse`, `eink-ws27`, `eink-ws213`, `updates`, `remote-train`, `downloads`, `map`, `ntfy`, and
-`telegram`.
+The nineteen reference plugins are: `memtemp`, `session-stats`, `gps`,
+`wpa-sec`, `wigle`, `backup`, `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-wse`, `eink-ws27`, `eink-ws213`, `updates`, `remote-train`, `downloads`, `map`, `ntfy`,
+`telegram`, and `census`.
 Each has its
 own setup guide where it needs one (see the [index](user-guides.md)).
 

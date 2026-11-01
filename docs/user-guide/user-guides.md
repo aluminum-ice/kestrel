@@ -49,6 +49,7 @@ for the person using the device.
 - [Downloads](downloads.md) — download your handshake files from the dashboard.
 - [Capture map](map.md) — every located captured network on one map, drawn on the device.
 - [Notifications](notifications.md) — the `ntfy` and `telegram` plugins: alerts for new handshakes, battery, updates.
+- [Census](census-setup.md) — an anonymous, serverless count of Kestrels in use: releases, learning setups and how often desktop training wins.
 
 ## The device web dashboard
 

@@ -56,6 +56,7 @@ FULL_CONFIG = {
         "map": {"enabled": True},
         "ntfy": {"enabled": True},
         "telegram": {"enabled": True},
+        "census": {"enabled": True},
     }
 }
 
@@ -82,11 +83,13 @@ def test_all_reference_plugins_load(tmp_path):
         names = {r.name for r in loaded}
         assert names == {"memtemp", "session-stats", "gps", "wpa-sec", "wigle",
                          "backup", "ups-ws", "updates", "remote-train",
-                         "downloads", "map", "ntfy", "telegram"}
+                         "downloads", "map", "ntfy", "telegram", "census"}
         # gps provides position; wigle optionally requires it, so when gps is
         # enabled the loader still orders it ahead.
         order = [r.name for r in loaded]
         assert order.index("gps") < order.index("wigle")
+        # census optionally requires remote-train's service: ordered after it.
+        assert order.index("remote-train") < order.index("census")
         assert loader.services.has("position")
         # every declared capability is from the fixed set
         for rec in loaded:

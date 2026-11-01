@@ -357,6 +357,9 @@ It never carries the host name, user, path, port or key path. When
 `services.get("remote-training")` returns `None`. Keys may be added later;
 existing keys keep their meaning.
 
+The `census` plugin reads it to report one remote-training code (0-4) for the
+device ([census protocol](census-protocol.md)), never the host's details.
+
 ## Security posture
 
 Same as the uploaders and backup: the plugin declares the `network` capability,
