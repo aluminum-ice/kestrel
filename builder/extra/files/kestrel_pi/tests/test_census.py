@@ -1003,3 +1003,102 @@ def test_publish_skips_a_slot_with_no_reachable_nodes():
     done = proto.publish(dht, client, pool, None, DAY, 1, _entry(rng), 600, rng, bits=8)
     assert done.alt is None
     assert [why for _alt, why in done.skipped] == ["no nodes"] * (proto.ALTERNATES + 1)
+
+
+# -- step 9: what this device reports ------------------------------------------------
+
+NOW = 1_800_000_000.0
+
+
+def _status(running=True, policy="learned", algorithm="PPO", age=60, tally=None):
+    return {"running": running, "policy": policy, "algorithm": algorithm,
+            "updated": NOW - age, "promotion_tally": tally or {}}
+
+
+def test_agent_state_from_its_status(tmp_path):
+    _plugin_obj, mod = _plugin(tmp_path)
+    assert mod.agent_fields(None, NOW) == (proto.AGENT_NONE, 0)
+    assert mod.agent_fields("junk", NOW) == (proto.AGENT_NONE, 0)
+    assert mod.agent_fields(_status(), NOW) == (proto.AGENT_LEARNED, 2)
+    assert mod.agent_fields(_status(policy="baseline", algorithm="RecurrentPPO"),
+                            NOW) == (proto.AGENT_SWEEP, 1)
+    # Stopped (it says so), or a status too old to trust: not running, with
+    # the configured algorithm still reported.
+    assert mod.agent_fields(_status(running=False, algorithm="QR-DQN"),
+                            NOW) == (proto.AGENT_STOPPED, 4)
+    assert mod.agent_fields(_status(age=7 * 3600, algorithm="DQN"),
+                            NOW) == (proto.AGENT_STOPPED, 3)
+    assert mod.agent_fields(_status(algorithm="SAC"), NOW) == (proto.AGENT_LEARNED, 0)
+
+
+def test_remote_state_from_the_service(tmp_path):
+    _plugin_obj, mod = _plugin(tmp_path)
+    hour, day = 3600, 86400
+    ok = {"configured": True, "host_state": "reachable", "stack": "ready",
+          "last_contact": NOW - hour, "last_model": NOW - 2 * day, "running": []}
+    assert mod.remote_state(None, NOW) == proto.REMOTE_OFF
+    assert mod.remote_state(dict(ok, configured=False), NOW) == proto.REMOTE_UNCONFIGURED
+    assert mod.remote_state(dict(ok, stack="failed"), NOW) == proto.REMOTE_FAILING
+    assert mod.remote_state(dict(ok, last_contact=None), NOW) == proto.REMOTE_FAILING
+    assert mod.remote_state(dict(ok, last_contact=NOW - 25 * hour), NOW) == proto.REMOTE_FAILING
+    assert mod.remote_state(dict(ok, last_model=None), NOW) == proto.REMOTE_IDLE
+    assert mod.remote_state(dict(ok, last_model=NOW - 8 * day), NOW) == proto.REMOTE_IDLE
+    assert mod.remote_state(ok, NOW) == proto.REMOTE_WORKING
+    # An unreachable host reached within the day still counts: a desktop
+    # that's off overnight isn't failing.
+    assert mod.remote_state(dict(ok, host_state="unreachable"), NOW) == proto.REMOTE_WORKING
+    assert mod.remote_state(dict(ok, last_contact="soon"), NOW) == proto.REMOTE_FAILING
+
+
+def test_contest_counts_and_the_daily_baseline(tmp_path):
+    _plugin_obj, mod = _plugin(tmp_path)
+    tally = {"local": {"won": 3, "lost": 9}, "remote": {"won": 2, "lost": "x"},
+             "before_fair_promotion": {"local": 40, "remote": 7}}
+    assert mod.contest_counts(None) is None
+    assert mod.contest_counts(_status(tally=tally)) == [3, 9, 2, 0]
+    assert mod.contest_counts({"promotion_tally": "junk"}) == [0, 0, 0, 0]
+    # The first reading of the day becomes the baseline.
+    today, base = mod.contests_today([3, 9, 2, 0], None)
+    assert today == [0, 0, 0, 0] and base == [3, 9, 2, 0]
+    today, base = mod.contests_today([5, 9, 3, 1], base)
+    assert today == [2, 0, 1, 1] and base == [3, 9, 2, 0]
+    # A tally that went down (the agent's state was reset) resets the baseline.
+    today, base = mod.contests_today([1, 0, 0, 0], base)
+    assert today == [0, 0, 0, 0] and base == [1, 0, 0, 0]
+    # Saturating at 255; no agent status counts nothing and keeps the baseline.
+    assert mod.contests_today([400, 0, 0, 0], [0, 0, 0, 0])[0] == [255, 0, 0, 0]
+    assert mod.contests_today(None, [1, 2, 3, 4]) == ([0, 0, 0, 0], [1, 2, 3, 4])
+
+
+def test_facts_from_services_with_the_remote_state_fixed_for_the_day(tmp_path):
+    plugin, mod = _plugin(tmp_path)
+    mod.device_version = lambda: "1.0.12-beta.2"
+    remote = {"configured": True, "stack": "ready", "last_contact": NOW - 60,
+              "last_model": NOW - 60}
+    status = _status(tally={"local": {"won": 1, "lost": 2}, "remote": {"won": 0, "lost": 0}})
+    plugin.context.services.provide("agent", lambda: status, owner="daemon")
+    plugin.context.services.provide("remote-training", lambda: dict(remote),
+                                     owner="remote-train")
+    day = {}
+    version, agent, contests = plugin._facts(NOW, day)
+    assert proto.decode_version(version) == "1.0.12-beta.2"
+    assert proto.decode_agent(agent) == (proto.AGENT_LEARNED, 2, proto.REMOTE_WORKING)
+    assert contests == [0, 0, 0, 0] and day["baseline"] == [1, 2, 0, 0]
+    # Later the same day: the host fails, but the day's remote state stands.
+    remote["stack"] = "failed"
+    status["promotion_tally"]["remote"]["won"] = 1
+    _v, agent, contests = plugin._facts(NOW + 600, day)
+    assert proto.decode_agent(agent)[2] == proto.REMOTE_WORKING
+    assert contests == [0, 0, 1, 0]
+
+
+def test_facts_without_services_or_with_a_provider_that_raises(tmp_path):
+    plugin, mod = _plugin(tmp_path)
+    mod.device_version = lambda: "master"
+
+    def broken():
+        raise RuntimeError("provider failed")
+    plugin.context.services.provide("agent", broken, owner="daemon")
+    version, agent, contests = plugin._facts(NOW, {})
+    assert version == 0 and contests == [0, 0, 0, 0]
+    assert proto.decode_agent(agent) == (proto.AGENT_NONE, 0, proto.REMOTE_OFF)

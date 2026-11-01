@@ -46,7 +46,21 @@ import os
 import re
 import threading
 
-from kestrel_pi import Plugin, load_helper
+from kestrel_pi import Plugin, device_version, load_helper
+
+dht = load_helper(__file__, "_census_dht.py")
+proto = load_helper(__file__, "_census_proto.py")
+
+_DAY = 86400
+# The agent rewrites its status every decision (30 s by default) and when a
+# training run starts; a status older than this says it stopped without
+# saying so (a crash, or the service killed).
+_AGENT_STALE_SECONDS = 6 * 3600
+# Remote training counts as failing when the host hasn't been reached for a
+# day, and as working while it delivered a model in the last week: a desktop
+# that's off overnight, or only on now and then, still counts as working.
+_REMOTE_CONTACT_SECONDS = _DAY
+_REMOTE_MODEL_SECONDS = 7 * _DAY
 
 _HOST_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 
@@ -67,6 +81,80 @@ def parse_bootstrap(raw):
         else:
             bad.append(item[:64])
     return routers, bad
+
+
+def _num(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# -- what this device reports ----------------------------------------------------
+
+def agent_fields(status, now):
+    """``(state, algorithm)`` codes from the ``agent`` service (the agent's
+    ``status.json``, or None). The algorithm is the configured one, whatever
+    the state."""
+    if not isinstance(status, dict):
+        return proto.AGENT_NONE, 0
+    algorithm = proto.ALGORITHMS.get(status.get("algorithm"), 0)
+    updated = _num(status.get("updated"))
+    if (not status.get("running")
+            or (updated is not None and now - updated > _AGENT_STALE_SECONDS)):
+        return proto.AGENT_STOPPED, algorithm
+    if status.get("policy") == "learned":
+        return proto.AGENT_LEARNED, algorithm
+    return proto.AGENT_SWEEP, algorithm
+
+
+def remote_state(service, now):
+    """The remote-training code (0-4) from the ``remote-training`` service."""
+    if not isinstance(service, dict):
+        return proto.REMOTE_OFF
+    if not service.get("configured"):
+        return proto.REMOTE_UNCONFIGURED
+    contact = _num(service.get("last_contact"))
+    if (service.get("stack") == "failed" or contact is None
+            or now - contact > _REMOTE_CONTACT_SECONDS):
+        return proto.REMOTE_FAILING
+    model = _num(service.get("last_model"))
+    if model is None or now - model > _REMOTE_MODEL_SECONDS:
+        return proto.REMOTE_IDLE
+    return proto.REMOTE_WORKING
+
+
+def contest_counts(status):
+    """The agent's lifetime contest results, ``[local won, local lost, remote
+    won, remote lost]``, or None without a status. The adoption counts from
+    before contests (``before_fair_promotion``) aren't counted."""
+    if not isinstance(status, dict):
+        return None
+    tally = status.get("promotion_tally")
+    tally = tally if isinstance(tally, dict) else {}
+    counts = []
+    for source in ("local", "remote"):
+        side = tally.get(source)
+        side = side if isinstance(side, dict) else {}
+        for key in ("won", "lost"):
+            value = _num(side.get(key))
+            counts.append(max(0, int(value)) if value is not None else 0)
+    return counts
+
+
+def contests_today(counts, baseline):
+    """``(today, baseline)``: the contests since the day's ``baseline`` (the
+    lifetime counts at UTC midnight), each saturating at 255. With no baseline
+    yet, or a tally that went down (the agent's state was reset), the current
+    counts become the baseline."""
+    if counts is None:
+        return [0, 0, 0, 0], baseline
+    if (not isinstance(baseline, list) or len(baseline) != 4
+            or any(now < then for now, then in zip(counts, baseline))):
+        baseline = list(counts)
+    return [min(255, now - then) for now, then in zip(counts, baseline)], baseline
 
 
 class Census(Plugin):
@@ -128,8 +216,8 @@ class Census(Plugin):
     # -- lifecycle -------------------------------------------------------
     def on_loaded(self):
         self.log = self.context.logger
-        self._dht = load_helper(__file__, "_census_dht.py")
-        self._proto = load_helper(__file__, "_census_proto.py")
+        self._dht = dht
+        self._proto = proto
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -145,6 +233,21 @@ class Census(Plugin):
     def provide_census(self):
         """The fleet totals for other plugins, or None before the first read."""
         return None
+
+    # -- this device's entry ------------------------------------------------
+    def _facts(self, now, day):
+        """``(version, agent byte, contests)`` for this device's entry. The
+        remote-training state is worked out at the day's first write and kept
+        all day (in ``day``, the day's state), so a device's reports don't
+        flicker; the contest baseline is kept there too."""
+        services = self.context.services
+        status = services.get("agent")
+        state, algorithm = agent_fields(status, now)
+        if day.get("remote") not in proto.REMOTE_STATES:
+            day["remote"] = remote_state(services.get("remote-training"), now)
+        today, day["baseline"] = contests_today(contest_counts(status), day.get("baseline"))
+        return (proto.encode_version(device_version()),
+                proto.encode_agent(state, algorithm, day["remote"]), today)
 
     # -- the page ----------------------------------------------------------
     def on_webhook(self, path, request):
