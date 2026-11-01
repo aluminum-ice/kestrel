@@ -28,8 +28,8 @@ sudo kestrel plugins enable census
 With the defaults it waits for your phone's Bluetooth tether (see
 [Which connection does the census use?](#which-connection-does-the-census-use)),
 joins the DHT, and writes its first report 5-30 minutes later, then once an
-hour at a random minute. It reads the whole census a few minutes after it
-starts and then every `poll_hours`.
+hour at a random minute. It reads the whole census a few minutes after that
+first report (so its own report is in the totals), then every `poll_hours`.
 
 ## What leaves the device
 

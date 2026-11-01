@@ -591,12 +591,19 @@ class Census(Plugin):
         self._next_write = at
 
     def _plan_read(self, now):
+        """A few minutes after the census starts, then every ``poll_hours``.
+        A device that reports but hasn't written yet today reads only after its
+        first write has been checked, so its own entry is in what it reads."""
         if self._next_read is not None:
             return
         seen = self._seen_day(_utc(now)[0])
         read_at = seen.get("read_at") or 0.0
         at = max(now + self._rng.uniform(*_FIRST_READ),
                  read_at + self._poll_hours() * 3600)
+        if (self.options.get("report", True) and self._day.get("wrote") is None
+                and self._next_write is not None):
+            at = max(at, self._next_write + _CHECK_AFTER[1]
+                     + self._rng.uniform(*_FIRST_READ))
         self._next_read = self._apart(at)
 
     def _apart(self, at):

@@ -1624,3 +1624,29 @@ def test_hostile_state_files_never_reach_the_page(tmp_path):
     _run_for(plugin, clock, 60)
     body = _page(plugin)
     assert "script" not in body and "<i>" not in body
+
+
+def test_worker_reads_after_its_first_write_so_it_sees_itself(tmp_path):
+    plugin, _mod, net, clock = _worker(tmp_path)
+    reads = []
+    read = plugin._read
+
+    def logged(now):
+        reads.append(now)
+        read(now)
+    plugin._read = logged
+    _run_for(plugin, clock, 3600)
+    assert reads[0] >= plugin.writes[0] + 60
+    # Its own entry is in the first read: one device online, one active.
+    service = plugin.provide_census()
+    assert service["online"] == 1 and service["active_today"] == 1
+    # After a restart in an hour it has written, with no read saved, the read
+    # comes on the usual schedule, not after the next hour's write.
+    (tmp_path / "state-dev" / "seen.json").unlink()
+    again, _m, _n, clock2 = _worker(tmp_path, net=net)
+    clock2.now = clock.now
+    again._roll_day(clock2.now)
+    assert again._day["wrote"] is not None
+    again._plan_write(clock2.now)
+    again._plan_read(clock2.now)
+    assert again._next_read <= clock2.now + 600 + 120
