@@ -2163,7 +2163,15 @@ def _update_failure(run_state):
         return {"detail": detail, "backup": True,
                 "verdict": "The device was not changed. Retry when the backup "
                            "host is reachable, or update without a fresh backup."}
-    if "restart failed" in low or "rolled back" in low or "interrupted" in low:
+    # Checked before "rolled back", which its detail also contains: the new
+    # version didn't fail here, the update was cut short (a power cut, say)
+    # and the boot-time recovery put the previous version back.
+    if "interrupted" in low:
+        return {"detail": detail, "backup": False,
+                "verdict": "The update was cut short, by a power cut or a crash, "
+                           "and the previous version was restored when the device "
+                           "started again. It is safe to retry, on steady power."}
+    if "restart failed" in low or "rolled back" in low:
         return {"detail": detail, "backup": False,
                 "verdict": "The previous version was restored. The new version "
                            "did not come up, so retrying the same release may "

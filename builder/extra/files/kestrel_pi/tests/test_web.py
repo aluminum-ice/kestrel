@@ -2370,6 +2370,21 @@ def test_update_card_restart_failure_warns_against_blind_retry(monkeypatch, tmp_
     assert "Retry without a fresh backup" not in body
 
 
+def test_update_card_interrupted_update_says_it_was_cut_short(monkeypatch, tmp_path):
+    # The recovery's detail also says "rolled back", but the new version never
+    # failed: the card must not claim it "did not come up".
+    client, _ = _update_client(monkeypatch, tmp_path, state=_OFFERABLE)
+    monkeypatch.setattr(web, "_read_update_run_state", lambda path=None: {
+        "status": "error",
+        "detail": "the update to 0.5.0 was interrupted and has been rolled back"})
+    body = client.get("/", headers=_basic()).get_data(as_text=True)
+    assert "The last update attempt failed." in body
+    assert "cut short, by a power cut or a crash" in body
+    assert "safe to retry" in body
+    assert "did not come up" not in body
+    assert "Retry without a fresh backup" not in body
+
+
 def test_update_card_clean_when_last_run_ok(monkeypatch, tmp_path):
     client, _ = _update_client(monkeypatch, tmp_path, state=_OFFERABLE)
     monkeypatch.setattr(web, "_read_update_run_state", lambda path=None: {
