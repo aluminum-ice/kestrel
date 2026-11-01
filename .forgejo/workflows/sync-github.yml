@@ -1,0 +1,177 @@
+name: Sync Release to GitHub
+
+# Copies each Forgejo release (notes, pre-release flag and files) to the GitHub
+# mirror, so the release also appears there. Devices keep updating from the
+# Forgejo releases; the GitHub copy is for people who find the project there.
+#
+# - published: the Release workflow creates the release and then uploads the
+#   image, so this waits until the release's files are all attached.
+# - edited: the notes are often rewritten after publishing; the copy follows.
+# - workflow_dispatch: sync (or re-sync) one release by tag, e.g. an older one.
+#
+# Needs the GH_TOKEN secret: a GitHub fine-grained token for the mirror repo
+# with "Contents: read and write". Without it the job does nothing. The commit
+# being released must already be on GitHub (a push mirror of this repository),
+# or GitHub refuses to create the tag.
+on:
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to sync, e.g. 1.0.12'
+        required: true
+        type: string
+
+jobs:
+  sync-to-github:
+    runs-on: docker
+    container:
+      image: python:3.12-bookworm
+    steps:
+      - name: Sync the release to GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_REPO: aluminum-ice/kestrel
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          ACTION: ${{ github.event.action }}
+        run: |
+          python3 -u - <<'PY'
+          import hashlib, json, os, sys, tempfile, time
+          import urllib.error, urllib.parse, urllib.request
+
+          TAG = os.environ["TAG"]
+          GH_REPO = os.environ["GH_REPO"]
+          GH_TOKEN = os.environ.get("GH_TOKEN", "")
+          FJ_API = "%s/api/v1/repos/%s" % (os.environ["GITHUB_SERVER_URL"],
+                                           os.environ["GITHUB_REPOSITORY"])
+          GH_API = "https://api.github.com/repos/" + GH_REPO
+          GH_UPLOAD = "https://uploads.github.com/repos/" + GH_REPO
+          WAIT_SECONDS = 1800       # for the image to finish uploading
+          if not GH_TOKEN:
+              print("GH_TOKEN not set; skipping the GitHub sync.")
+              sys.exit(0)
+          if not TAG:
+              sys.exit("no release tag")
+          quote = lambda s: urllib.parse.quote(s, safe="")
+
+          def call(url, method="GET", data=None, github=False, headers=None, timeout=120):
+              """A request; the GitHub token goes only to GitHub. The Forgejo
+              repository is public, so its API and files need no token."""
+              h = dict(headers or {})
+              if github:
+                  h.update({"Authorization": "Bearer " + GH_TOKEN,
+                            "Accept": "application/vnd.github+json",
+                            "X-GitHub-Api-Version": "2022-11-28"})
+              if isinstance(data, dict):
+                  data = json.dumps(data).encode()
+                  h["Content-Type"] = "application/json"
+              req = urllib.request.Request(url, data=data, method=method, headers=h)
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def get_json(url, **kw):
+              with call(url, **kw) as resp:
+                  body = resp.read()
+              return json.loads(body) if body else None
+
+          def forgejo_release():
+              return get_json("%s/releases/tags/%s" % (FJ_API, quote(TAG)))
+
+          # 1. The Forgejo release, once all its files are attached.
+          rel = forgejo_release()
+          if rel.get("draft"):
+              print("%s is a draft; not syncing." % TAG)
+              sys.exit(0)
+          if os.environ.get("ACTION") == "published":
+              expected = {"kestrel-%s.7z" % TAG, "kestrel-%s.7z.sha256" % TAG,
+                          "update-manifest.json"}
+              deadline = time.time() + WAIT_SECONDS
+              while True:
+                  missing = expected - {a["name"] for a in rel.get("assets") or []}
+                  if not missing:
+                      break
+                  if time.time() > deadline:
+                      sys.exit("timed out waiting for %s on the Forgejo release"
+                               % ", ".join(sorted(missing)))
+                  print("waiting for %s to be attached..." % ", ".join(sorted(missing)))
+                  time.sleep(30)
+                  rel = forgejo_release()
+          commit = get_json("%s/tags/%s" % (FJ_API, quote(TAG)))["commit"]["sha"]
+
+          # 2. The GitHub release: created, or brought up to date.
+          fields = {"name": rel.get("name") or TAG,
+                    "body": (rel.get("body") or "").rstrip()
+                            + "\n\n_Mirrored from %s._\n" % rel["html_url"],
+                    "prerelease": bool(rel.get("prerelease")), "draft": False}
+
+          def github_release():
+              try:
+                  return get_json("%s/releases/tags/%s" % (GH_API, quote(TAG)), github=True)
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      return None
+                  raise
+
+          gh = github_release()
+          if gh is None:
+              try:
+                  gh = get_json(GH_API + "/releases", method="POST", github=True,
+                                data=dict(fields, tag_name=TAG, target_commitish=commit))
+                  print("created the GitHub release %s" % TAG)
+              except urllib.error.HTTPError as exc:
+                  detail = exc.read().decode("utf-8", "replace")[:300]
+                  gh = github_release() if exc.code == 422 else None
+                  if gh is None:
+                      sys.exit("GitHub refused the release (HTTP %d): %s\nIs commit %s on "
+                               "GitHub? Push this repository there (a push mirror) first."
+                               % (exc.code, detail, commit))
+          if gh.get("body") != fields["body"] or gh.get("name") != fields["name"] \
+                  or gh.get("prerelease") != fields["prerelease"]:
+              gh = get_json("%s/releases/%d" % (GH_API, gh["id"]), method="PATCH",
+                            data=fields, github=True)
+              print("updated the GitHub release's notes")
+
+          # 3. The files: copy the ones GitHub doesn't have (or has at another size),
+          # checking any file that has a .sha256 beside it.
+          sums = {}
+          for a in rel.get("assets") or []:
+              if a["name"].endswith(".sha256"):
+                  with call(a["browser_download_url"]) as resp:
+                      parts = resp.read().decode("utf-8", "replace").split()
+                  if parts:
+                      target = parts[1].lstrip("*") if len(parts) > 1 else a["name"][:-7]
+                      sums[target] = parts[0].lower()
+          have = {a["name"]: a for a in get_json(
+              "%s/releases/%d/assets?per_page=100" % (GH_API, gh["id"]), github=True)}
+          for a in rel.get("assets") or []:
+              name = a["name"]
+              held = have.get(name)
+              if held and held["size"] == a["size"]:
+                  print("%s: already on GitHub" % name)
+                  continue
+              if held:
+                  call("%s/releases/assets/%d" % (GH_API, held["id"]), method="DELETE",
+                       github=True).close()
+              with tempfile.NamedTemporaryFile() as tmp:
+                  digest = hashlib.sha256()
+                  with call(a["browser_download_url"], timeout=1800) as resp:
+                      for block in iter(lambda: resp.read(1 << 20), b""):
+                          digest.update(block)
+                          tmp.write(block)
+                  tmp.flush()
+                  if name in sums and digest.hexdigest() != sums[name]:
+                      sys.exit("%s: the download doesn't match its .sha256" % name)
+                  size = os.path.getsize(tmp.name)
+                  print("%s: uploading %d MB" % (name, size >> 20))
+                  with open(tmp.name, "rb") as handle:
+                      try:
+                          call("%s/releases/%d/assets?name=%s" % (GH_UPLOAD, gh["id"], quote(name)),
+                               method="POST", data=handle, github=True, timeout=3600,
+                               headers={"Content-Type": "application/octet-stream",
+                                        "Content-Length": str(size)}).close()
+                      except urllib.error.HTTPError as exc:
+                          if exc.code != 422:   # 422: another run uploaded it first
+                              raise
+                          print("%s: already uploaded by another run" % name)
+          print("synced %s to https://github.com/%s/releases/tag/%s" % (TAG, GH_REPO, TAG))
+          PY

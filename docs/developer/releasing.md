@@ -148,6 +148,38 @@ Older releases (0.0.1–0.6.0) were back-filled with the same grouped format;
 regenerate or edit any release body in the Forgejo web UI (or with
 `PATCH /api/v1/repos/{owner}/{repo}/releases/{id}`).
 
+## Mirroring releases to GitHub
+
+The **Sync Release to GitHub** workflow (`.forgejo/workflows/sync-github.yml`)
+copies each Forgejo release to the GitHub mirror, `aluminum-ice/kestrel`: the
+title, the notes (with a "Mirrored from" link back), the pre-release flag, and
+every attached file. Devices still update from the Forgejo releases; the GitHub
+copy is for people who find the project there.
+
+- **When it runs.**
+  - When a release is **published**. It first waits, up to 30 minutes, until the
+    release has its `.7z`, `.sha256` and `update-manifest.json`, because the
+    Release workflow creates the release before it uploads the image.
+  - When a release is **edited**, so notes rewritten after publishing reach
+    GitHub too.
+  - By hand (`workflow_dispatch`, with a `tag`), to sync or re-sync one release,
+    such as one from before the workflow existed.
+- **Safe to run again.** It creates the GitHub release only if it's missing,
+  updates the notes only when they differ, and uploads only the files GitHub
+  doesn't have, or has at a different size.
+- **Checked.** A file with a `.sha256` beside it, such as the image, is checked
+  against it after download, and isn't uploaded if they differ.
+- **Needs** the `GH_TOKEN` secret: a GitHub fine-grained token for the mirror
+  repository only, with "Contents: read and write". Without it the job skips.
+  The token goes only to GitHub; the Forgejo release and its files are read
+  without one, since the repository is public.
+- **Needs the commit on GitHub.** The released commit and its tag must already
+  be there, from a push mirror of this repository (Forgejo's repository
+  settings, *Mirror settings*). Otherwise GitHub refuses to create the release,
+  and the job says so.
+- **Runs on** the `docker` runner, in `python:3.12-bookworm`, and needs to reach
+  `api.github.com` and `uploads.github.com`.
+
 ## Publishing the `kestrel-pi` package to PyPI
 
 The on-device Python package (`builder/extra/files/kestrel_pi/`) is published
