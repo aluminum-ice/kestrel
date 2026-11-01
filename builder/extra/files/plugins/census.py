@@ -155,14 +155,20 @@ def _hex(value, size):
     return True
 
 
+def _is_day(value):
+    if not isinstance(value, str) or len(value) != 10:
+        return False
+    try:
+        time.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
 def _valid_day(data, bits=proto.POW_BITS):
     """The saved day state, or None when it's missing or malformed (a new day
     starts then; a broken file is never fatal)."""
-    if not isinstance(data, dict) or not isinstance(data.get("day"), str):
-        return None
-    try:
-        time.strptime(data["day"], "%Y-%m-%d")
-    except ValueError:
+    if not isinstance(data, dict) or not _is_day(data.get("day")):
         return None
     if (not _hex(data.get("token"), 8) or not _int_in(data.get("slot"), 0, proto.SLOTS - 1)
             or not _int_in(data.get("alt"), 0, proto.ALTERNATES)
@@ -198,7 +204,8 @@ def _valid_seen(data):
     days = data.get("days") if isinstance(data, dict) else None
     out = {}
     for day, seen in (days.items() if isinstance(days, dict) else ()):
-        if not isinstance(seen, dict) or not isinstance(seen.get("entries"), dict):
+        if (not _is_day(day) or not isinstance(seen, dict)
+                or not isinstance(seen.get("entries"), dict)):
             continue
         entries = {t: r for t, r in seen["entries"].items() if _hex(t, 8) and _valid_row(r)}
         read_at = seen.get("read_at")
@@ -218,7 +225,7 @@ def _valid_history(data):
     days = data.get("days") if isinstance(data, dict) else None
     out = {}
     for day, row in (days.items() if isinstance(days, dict) else ()):
-        if (isinstance(day, str) and isinstance(row, dict)
+        if (_is_day(day) and isinstance(row, dict)
                 and all(_int_in(row.get(k), 0, 1 << 20) for k in ("active", "online", "capped"))
                 and _valid_counts(row.get("contests")) and _valid_counts(row.get("working"))):
             out[day] = {k: row[k] for k in ("active", "online", "capped", "contests", "working")}
@@ -227,6 +234,46 @@ def _valid_history(data):
 
 def _sum_counts(rows, key):
     return [sum(row[key][i] for row in rows) for i in range(4)]
+
+
+def contest_line(week):
+    """The card's contest line, from the week's ``[local won, local lost,
+    remote won, remote lost]``."""
+    judged = week[2] + week[3]
+    if not judged:
+        return "no training contests this week"
+    return "desktop won %d of %d training contests this week" % (week[2], judged)
+
+
+def _won(won, lost):
+    judged = won + lost
+    if not judged:
+        return "\u2014"
+    return "%d of %d (%d%%)" % (won, judged, round(100 * won / judged))
+
+
+def _clock(ts):
+    return time.strftime("%H:%M UTC", time.gmtime(ts))
+
+
+def _size(count):
+    if count >= 1024 * 1024:
+        return "%.1f MB" % (count / (1024 * 1024))
+    return "%d KB" % round(count / 1024)
+
+
+def _card(title, lines, esc):
+    """A card of short lines. The page uses these rather than tables: the
+    shared stylesheet turns every table into a stack of cards at phone width,
+    which makes short counts very long."""
+    return ('<div class="card pad"><h2>%s</h2>' % esc(title)
+            + "".join("<p>%s</p>" % esc(line) for line in lines) + "</div>")
+
+
+def _shares(rows, total):
+    """``label: N (S%)`` lines, each with its share of ``total``."""
+    return ["%s: %d (%d%%)" % (label, count, round(100 * count / total) if total else 0)
+            for label, count in rows]
 
 
 # -- what this device reports ----------------------------------------------------
@@ -903,11 +950,152 @@ class Census(Plugin):
         return (proto.encode_version(device_version()),
                 proto.encode_agent(state, algorithm, day["remote"]), today)
 
+    # -- the card ------------------------------------------------------------
+    def on_ui_setup(self, ui):
+        ui.add_element("online", "-", label="Kestrels online", kind="number")
+        ui.add_element("active", "-", label="Active today", kind="number")
+        ui.add_element("contests", "-", label="Training contests")
+
+    def on_ui_update(self, ui, state):
+        with self._lock:
+            summary = self._summary
+        if not self.options.get("read", True) or summary is None or summary["read_at"] is None:
+            for name in ("online", "active", "contests"):
+                ui.set(name, "-")
+            return
+        ui.set("online", summary["online"])
+        ui.set("active", summary["tally"].active)
+        ui.set("contests", contest_line(summary["week"]))
+
     # -- the page ----------------------------------------------------------
     def on_webhook(self, path, request):
         if path not in ("", "index"):
             return self.context.page("Census", "<p>There's nothing here.</p>", status=404)
-        return self.context.page("Census", "<p>The census hasn't been read yet.</p>")
+        with self._lock:
+            summary = self._summary
+            last_write = dict(self._last_write) if self._last_write else None
+            last_read = dict(self._last_read) if self._last_read else None
+            day = dict(self._day) if self._day else {}
+        esc = self.context.esc
+        now = self._now()
+        body = ('<p class="hint">Approximate and unverified. Counts only Kestrels with the '
+                "census plugin on.</p>")
+        body += ('<div class="card pad"><h2>Status</h2>'
+                 + "".join("<p>" + esc(line) + "</p>"
+                           for line in self._status_lines(last_write, last_read, day, now))
+                 + "</div>")
+        if not self.options.get("read", True):
+            body += "<p>Reading is off, so this device doesn't fetch the census.</p>"
+        elif summary is None or summary["read_at"] is None:
+            body += "<p>The census hasn't been read yet today.</p>"
+        else:
+            body += self._totals_html(summary, esc)
+        if summary is not None and summary["history"]:
+            body += self._history_html(summary, esc)
+        body += self._own_report_html(day, now, esc)
+        return self.context.page("Census", body)
+
+    def _status_lines(self, last_write, last_read, day, now):
+        lines = []
+        if self._paused == "starting":
+            lines.append("Starting.")
+        elif self._paused:
+            lines.append("Paused: %s." % self._paused)
+        elif self._link_error:
+            lines.append(self._link_error[:1].upper() + self._link_error[1:] + ".")
+        else:
+            lines.append("Running.")
+        if not self.options.get("report", True):
+            lines.append("Reporting is off, so this device isn't counted.")
+        elif last_write:
+            if last_write["ok"]:
+                held = last_write.get("held")
+                lines.append("Last report: %s%s." % (
+                    _clock(last_write["at"]),
+                    ", checked: %d of %d storing nodes hold it" % held if held else ""))
+            else:
+                lines.append("Last report at %s couldn't be stored; it's tried again "
+                             "next hour." % _clock(last_write["at"]))
+        if last_read:
+            lines.append("Last read: %s%s." % (_clock(last_read["at"]), "" if last_read["complete"]
+                                                else " (stopped part-way)"))
+        budget = self._daily_bytes()
+        used = day.get("bytes", 0) if day.get("day") == _utc(now)[0] else 0
+        lines.append("Data used today: %s%s." % (
+            _size(used), " of a %s budget" % _size(budget) if budget else " (no limit set)"))
+        return lines
+
+    def _totals_html(self, summary, esc):
+        tally = summary["tally"]
+        active = tally.active
+        week = ""
+        if summary["active_avg"] is not None:
+            week = " &middot; last 7 days: %s a day on average, %d at most" % (
+                esc(summary["active_avg"]), summary["active_peak"])
+        html = ('<div class="card pad"><h2>Today (UTC)</h2><p>Kestrels online: %d &middot; '
+                "active today: %d%s.</p><p>%s.</p></div>"
+                % (summary["online"], active, week, esc(contest_line(summary["week"]).capitalize())))
+        if not active:
+            return html
+        html += _card("Releases", _shares(tally.version_rows(), active), esc)
+        lines = _shares([(proto.AGENT_STATES[code], tally.states[code])
+                         for code in sorted(tally.states, reverse=True)], active)
+        if tally.algorithms:
+            lines += ["Learned with " + line for line in _shares(
+                [(proto.ALGORITHM_NAMES.get(code, "other"), tally.algorithms[code])
+                 for code in sorted(tally.algorithms)], sum(tally.algorithms.values()))]
+        html += _card("Learning agent", lines, esc)
+        html += _card("Remote training", _shares(
+            [(proto.REMOTE_STATES.get(code, "other"), tally.remotes[code])
+             for code in sorted(tally.remotes)], active), esc)
+        lines = []
+        for heading, key in (("All devices", ""), ("Devices with remote training working",
+                                                    "_working")):
+            lines.append(heading + ":")
+            for span, counts in (("today", tally.working if key else tally.contests),
+                                 ("7 days", summary["week" + key]),
+                                 ("30 days", summary["month" + key])):
+                lines.append("%s: on-device won %s, remote won %s" % (
+                    span.capitalize(), _won(counts[0], counts[1]), _won(counts[2], counts[3])))
+        if tally.capped:
+            lines.append("%d report(s) claimed more contests than a day can hold; their "
+                         "contests aren't counted." % tally.capped)
+        html += _card("Training contests", lines, esc)
+        return html
+
+    @staticmethod
+    def _history_html(summary, esc):
+        lines = []
+        for day, row in summary["history"]:
+            c = row["contests"]
+            lines.append("%s: %d active, %d online at most; on-device won %s, remote won %s"
+                         % (day, row["active"], row["online"], _won(c[0], c[1]),
+                            _won(c[2], c[3])))
+        return _card("Last 30 days (UTC)", lines, esc)
+
+    def _own_report_html(self, day, now, esc):
+        """What this device puts in the census today, in words: exactly the
+        fields that leave it, read the same way the worker reads them."""
+        preview = {k: day.get(k) for k in ("remote", "baseline")}
+        version, agent, contests = self._facts(now, preview)
+        state, algorithm, remote = proto.decode_agent(agent)
+        setup = proto.AGENT_STATES[state]
+        if algorithm:
+            setup += " (%s)" % proto.ALGORITHM_NAMES[algorithm]
+        lines = ["Release: " + proto.decode_version(version),
+                 "Learning agent: " + setup,
+                 "Remote training: " + proto.REMOTE_STATES[remote],
+                 "Contests today: on-device won %d, lost %d; remote won %d, lost %d"
+                 % tuple(contests),
+                 "Sent over: " + ("the phone's Bluetooth tether only" if self._tether_only()
+                                  else "any connection"),
+                 "Also sent: a random number that changes every UTC day, the hour of the "
+                 "report, and a proof-of-work. Nothing from your captures, no network "
+                 "names, no location."]
+        html = _card("What this device reports today", lines, esc)
+        if not self.options.get("report", True):
+            html += "<p>Reporting is off, so none of this is sent.</p>"
+        return html
 
     # -- helpers -----------------------------------------------------------
     def _poll_hours(self):

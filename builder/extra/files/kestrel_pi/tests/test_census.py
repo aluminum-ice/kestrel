@@ -1518,3 +1518,109 @@ def test_corrupt_history_is_dropped_not_fatal(tmp_path):
                                                  "2027-01-13": [1, 2]}})
     _run_for(plugin, clock, 1800)
     assert set(plugin._history) == {"2027-01-15"}
+
+
+# -- step 12: the card and the page ---------------------------------------------------------
+
+def _card(plugin):
+    from kestrel_pi.ui import StubUI, UIState
+    ui = StubUI()
+    view = ui.for_plugin("census")
+    plugin.on_ui_setup(view)
+    plugin.on_ui_update(view, UIState())
+    return {e["name"]: e for e in ui.widgets()["census"]}
+
+
+def _page(plugin, path="index"):
+    page = plugin.on_webhook(path, None)
+    return page.body if hasattr(page, "body") else page
+
+
+def _read_census(tmp_path, writers=2, contests=(2, 1, 3, 1), remote=None, **opts):
+    """A reader that has read a census of ``writers`` devices."""
+    net = FakeDHT(invalid=0.2, seed=44)
+    service = {"configured": True, "stack": "ready", "last_contact": NOW - 60,
+               "last_model": NOW - 60}
+    for i in range(writers):
+        writer, _m, _n, clock = _worker(tmp_path, net=net, seed=90 + i, name="w%d" % i,
+                                        read=False)
+        tally = {"local": {"won": 0, "lost": 0}, "remote": {"won": 0, "lost": 0}}
+        writer.context.services.provide("agent", lambda t=tally: _status(tally=t), owner="daemon")
+        writer.context.services.provide("remote-training", lambda: service, owner="remote-train")
+        _run_for(writer, clock, 100)                 # joined; baseline at zero
+        writer._facts(clock.now, writer._day)
+        tally["local"].update(won=contests[0], lost=contests[1])
+        tally["remote"].update(won=contests[2], lost=contests[3])
+        _run_for(writer, clock, 3500)
+    reader, mod, _n, clock = _worker(tmp_path, net=net, seed=99, name="r", report=False, **opts)
+    _run_for(reader, clock, 3600)
+    return reader, mod
+
+
+def test_card_shows_the_fleet_and_the_contest_line(tmp_path):
+    reader, _mod = _read_census(tmp_path)
+    card = _card(reader)
+    assert card["online"]["value"] == 2 and card["active"]["value"] == 2
+    assert card["contests"]["value"] == "desktop won 6 of 8 training contests this week"
+
+
+def test_card_contest_line_with_no_contests_and_without_data(tmp_path):
+    reader, mod = _read_census(tmp_path, contests=(1, 0, 0, 0))
+    assert _card(reader)["contests"]["value"] == "no training contests this week"
+    assert mod.contest_line([0, 0, 1, 0]) == "desktop won 1 of 1 training contests this week"
+    plugin, _mod = _plugin(tmp_path)
+    assert {e["value"] for e in _card(plugin).values()} == {"-"}
+    reader.options["read"] = False
+    assert {e["value"] for e in _card(reader).values()} == {"-"}
+
+
+def test_page_before_anything_is_read(tmp_path):
+    plugin, _mod = _plugin(tmp_path)
+    body = _page(plugin)
+    assert "Approximate and unverified" in body and "Starting." in body
+    assert "The census hasn't been read yet today." in body
+    assert "What this device reports today" in body
+    assert "Bluetooth tether only" in body and "no agent" in body
+    assert plugin.on_webhook("nope", None).status == 404
+
+
+def test_page_with_a_census_read(tmp_path):
+    reader, _mod = _read_census(tmp_path)
+    body = _page(reader)
+    assert "Running." in body and "Last read:" in body
+    assert "Kestrels online: 2 &middot; active today: 2" in body
+    assert "<p>1.0.12: 2 (100%)</p>" in body and "<p>learned: 2 (100%)</p>" in body
+    assert "<p>Learned with PPO: 2 (100%)</p>" in body
+    assert "<p>working: 2 (100%)</p>" in body
+    assert ("<p>Today: on-device won 4 of 6 (67%), remote won 6 of 8 (75%)</p>") in body
+    # Short counts stay short at phone width: no tables on this page.
+    assert "<table" not in body
+    assert "Last 30 days" in body
+    # The device's own report: reporting is off on this reader, and says so.
+    assert "Reporting is off, so this device isn" in body
+    # No token or node address on the page.
+    assert reader._day["token"] not in body
+    assert not any(net in body for net in ("192.0.2.", "198.51.100.", "203.0.113."))
+
+
+def test_page_says_why_it_is_paused_and_escapes_what_it_shows(tmp_path):
+    plugin, _mod, _net, clock = _worker(tmp_path)
+    plugin.context.connectivity.online = False
+    _run_for(plugin, clock, 120)
+    assert "Paused: offline." in _page(plugin)
+    plugin._paused = ""
+    plugin._link_error = "can't bind to <b>bnep0</b>"
+    body = _page(plugin)
+    assert "&lt;b&gt;bnep0&lt;/b&gt;" in body and "<b>bnep0" not in body
+
+
+def test_hostile_state_files_never_reach_the_page(tmp_path):
+    plugin, _mod, _net, clock = _worker(tmp_path, report=False)
+    plugin._save_json("history.json", {"days": {"<script>x</script>": {
+        "active": 1, "online": 1, "capped": 0, "contests": [0, 0, 0, 0],
+        "working": [0, 0, 0, 0]}}})
+    plugin._save_json("seen.json", {"days": {"<i>2027-01-15</i>": {
+        "entries": {}, "read_at": 1, "online": 0, "rejected": 0}}})
+    _run_for(plugin, clock, 60)
+    body = _page(plugin)
+    assert "script" not in body and "<i>" not in body
