@@ -212,6 +212,10 @@ _LINK_ERRNOS = frozenset({errno.ENODEV, errno.ENETDOWN, errno.ENETUNREACH,
                           errno.EADDRNOTAVAIL})
 
 
+_SO_BINDTODEVICE = getattr(socket, "SO_BINDTODEVICE", 25)
+_IFNAMSIZ = 16
+
+
 class TetherBindError(OSError):
     """The socket couldn't be bound to the requested interface."""
 
@@ -223,25 +227,51 @@ class LinkDown(OSError):
 class UdpTransport:
     """A non-blocking UDP socket on an ephemeral port, optionally bound to one
     interface (``SO_BINDTODEVICE``, allowed for an unprivileged user since
-    Linux 5.7), so that its packets leave only by that interface."""
+    Linux 5.7), so that its packets leave only by that interface.
+
+    The binding is to the interface as it was when the socket opened: a tether
+    that drops and comes back is a new interface under the same name, so every
+    send first checks the socket is still bound to the one it opened on, and
+    raises LinkDown when it isn't, for the caller to open a fresh socket."""
 
     def __init__(self, bind_device=None):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._device, self._ifindex = bind_device or None, None
         if bind_device:
             try:
-                sock.setsockopt(socket.SOL_SOCKET,
-                                getattr(socket, "SO_BINDTODEVICE", 25),
+                self._ifindex = socket.if_nametoindex(bind_device)
+                sock.setsockopt(socket.SOL_SOCKET, _SO_BINDTODEVICE,
                                 bind_device.encode() + b"\0")
             except OSError as exc:
                 sock.close()
                 raise TetherBindError(exc.errno, "can't bind to %s: %s"
                                       % (bind_device, exc.strerror)) from None
+        self._sock = sock
+        if bind_device and not self.bound():
+            sock.close()
+            raise TetherBindError(errno.ENODEV, "can't bind to %s: %s"
+                                  % (bind_device, os.strerror(errno.ENODEV)))
         sock.bind(("0.0.0.0", 0))
         sock.setblocking(False)
-        self._sock = sock
+
+    def bound(self):
+        """True when the socket is still bound to the interface it opened on
+        (always, without one)."""
+        if not self._device:
+            return True
+        try:
+            name = self._sock.getsockopt(socket.SOL_SOCKET, _SO_BINDTODEVICE, _IFNAMSIZ)
+            return (name.rstrip(b"\0") == self._device.encode()
+                    and socket.if_nametoindex(self._device) == self._ifindex)
+        except OSError:
+            return False
 
     def send(self, data, addr):
-        """True when the packet went out; LinkDown when the interface is gone."""
+        """True when the packet went out; LinkDown when the interface is gone,
+        or isn't the one the socket was bound to."""
+        if not self.bound():
+            raise LinkDown(errno.ENODEV, "%s is no longer the interface this socket "
+                           "was bound to" % self._device)
         try:
             self._sock.sendto(data, addr)
             return True

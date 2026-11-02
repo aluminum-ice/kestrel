@@ -653,6 +653,11 @@ class Census(Plugin):
     def _link(self, now):
         """True once the socket is open and the node pool fresh enough to use,
         joining (or rejoining) the DHT when it isn't."""
+        if self._client is not None and not self._client.transport.bound():
+            # The tether dropped and came back between cycles: the socket is
+            # bound to the interface that went away, so open a fresh one.
+            self.log.info("census: the tether reconnected; opening a fresh socket")
+            self._drop_link()
         if self._client is None:
             try:
                 transport = self._open_transport(_TETHER if self._tether_only() else None)
