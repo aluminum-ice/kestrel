@@ -70,7 +70,7 @@ The `wpa-sec` card shows:
 ## Viewing recovered networks
 
 With the web login on (`[web] auth`), the `wpa-sec` row on the **Plugins** page
-has a **Show** button. It opens a page listing the **SSID and recovered
+has a **View** button. It opens a page listing the **SSID and recovered
 passphrase** of every recovered network from your downloaded potfile, with:
 
 - a **search box** that filters by SSID, and

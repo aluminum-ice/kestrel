@@ -2412,7 +2412,7 @@ def _req(method="GET", args=None, form=None):
     return types.SimpleNamespace(method=method, args=args or {}, form=form or {})
 
 
-# -- wpa-sec: the "Show" cracked-networks page -------------------------------
+# -- wpa-sec: the "View" cracked-networks page -------------------------------
 _POTFILE = (
     "001122334455:66778899aabb:HomeNet:s3cret-pass\n"
     "001122334466:66778899aacc:Cafe\\:Wifi:latte123\n"   # ESSID with a colon
@@ -2436,10 +2436,10 @@ def _write_potfile(plugin, text):
         handle.write(text)
 
 
-def test_wpa_sec_declares_a_single_show_action(tmp_path):
+def test_wpa_sec_declares_a_single_view_action(tmp_path):
     plugin = _make_wpa_sec(tmp_path, online=False)
     assert plugin.__actions__ == (
-        {"label": "Show", "path": "cracked", "method": "get"},)
+        {"label": "View", "path": "cracked", "method": "get"},)
     assert plugin.webhook_actions() == plugin.__actions__
 
 
