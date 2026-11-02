@@ -56,9 +56,9 @@ class WpaSec(Plugin):
 
     __target_api__ = 2
     __capabilities__ = ("capture-read", "network", "ui")
-    # One row button on the Plugins page: "Show" opens the cracked-networks
+    # One row button on the Plugins page: "View" opens the cracked-networks
     # page this plugin renders itself (on_webhook, path "cracked").
-    __actions__ = ({"label": "Show", "path": "cracked", "method": "get"},)
+    __actions__ = ({"label": "View", "path": "cracked", "method": "get"},)
     __options__ = {
         "api_key": {"type": "str", "required": True, "secret": True},
         "endpoint": {"type": "str", "default": "https://wpa-sec.stanev.org"},
@@ -293,7 +293,7 @@ class WpaSec(Plugin):
         except OSError:
             return 0
 
-    # -- cracked-networks page (the "Show" row button) -------------------
+    # -- cracked-networks page (the "View" row button) -------------------
     def on_webhook(self, path, request):
         """The ``/plugins/wpa-sec/cracked`` page: the SSID and passphrase of
         every network recovered under this wpa-sec key, searchable by SSID and

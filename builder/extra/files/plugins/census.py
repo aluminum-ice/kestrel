@@ -388,8 +388,8 @@ class Census(Plugin):
     # The agent's state and contest tally, and remote training's state, for
     # this device's report. Both optional: without them the report says so.
     __optional_requires__ = ("agent", "remote-training")
-    # One row button on the Plugins page: "Census" shows the census page.
-    __actions__ = ({"label": "Census", "path": "index", "method": "get"},)
+    # One row button on the Plugins page: "View" shows the census page.
+    __actions__ = ({"label": "View", "path": "index", "method": "get"},)
     __options__ = {
         "report": {
             "type": "bool", "default": True,

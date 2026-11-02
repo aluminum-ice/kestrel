@@ -70,7 +70,7 @@ addresses and uses those next time, so the lookup is rare.
 
 ## Reading the page
 
-Press **Census** on the plugin's row on the Plugins page:
+Press **View** on the plugin's row on the Plugins page:
 
 - **Status:** running or paused (and why); whether the phone's Bluetooth
   tether is up and the census can be read and written right now; the date and
