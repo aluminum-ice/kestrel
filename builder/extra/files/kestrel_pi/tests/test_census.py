@@ -258,6 +258,10 @@ class FakeTransport:
         self.inbox = []
         self.max_outstanding = 0
         self._since_recv = 0
+        self.unbound = False
+
+    def bound(self):
+        return not self.unbound
 
     def send(self, data, addr):
         self.sent.append((data, addr))
@@ -379,6 +383,75 @@ def test_udp_transport_bind_to_a_missing_interface_fails_clearly():
     import pytest
     with pytest.raises(dht.TetherBindError):
         dht.UdpTransport(bind_device="kcensus-none0")
+
+
+def _bound_to_loopback():
+    import pytest
+    try:
+        return dht.UdpTransport(bind_device="lo")
+    except dht.TetherBindError as exc:
+        pytest.skip("can't bind to lo here: %s" % exc)
+
+
+class _LostBinding:
+    """A socket whose interface binding has gone, as after the tether drops."""
+
+    def __init__(self, sock):
+        self._real = sock
+
+    def getsockopt(self, *args):
+        return b"\0" * 16
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_udp_transport_bound_to_an_interface_sends_while_it_lasts():
+    import socket
+    peer = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    peer.bind(("127.0.0.1", 0))
+    transport = _bound_to_loopback()
+    try:
+        assert transport.bound()
+        assert transport.send(b"hello", peer.getsockname())
+        assert peer.recvfrom(64)[0] == b"hello"
+    finally:
+        transport.close()
+        peer.close()
+
+
+def test_udp_transport_sends_nothing_once_its_binding_is_lost():
+    import pytest
+    import socket
+    peer = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    peer.bind(("127.0.0.1", 0))
+    peer.setblocking(False)
+    transport = _bound_to_loopback()
+    real = transport._sock
+    try:
+        transport._sock = _LostBinding(real)
+        assert not transport.bound()
+        with pytest.raises(dht.LinkDown):
+            transport.send(b"hello", peer.getsockname())
+        with pytest.raises(BlockingIOError):
+            peer.recvfrom(64)
+    finally:
+        real.close()
+        peer.close()
+
+
+def test_udp_transport_sends_nothing_once_its_interface_is_replaced(monkeypatch):
+    import pytest
+    transport = _bound_to_loopback()
+    try:
+        # The tether came back: the same name, a new interface.
+        index = dht.socket.if_nametoindex("lo")
+        monkeypatch.setattr(dht.socket, "if_nametoindex", lambda name: index + 100)
+        assert not transport.bound()
+        with pytest.raises(dht.LinkDown):
+            transport.send(b"hello", ("127.0.0.1", 9))
+    finally:
+        transport.close()
 
 
 # -- step 5: node pool, bootstrap, persistence --------------------------------------
@@ -1282,6 +1355,20 @@ def test_worker_link_down_mid_write_pauses_and_the_next_hour_writes(tmp_path):
     day = plugin._day
     assert len(plugin.opened) >= 2
     assert bytes.fromhex(day["token"]) in _stored(net, day["day"], day["slot"], day["alt"])
+
+
+def test_worker_opens_a_fresh_socket_when_the_tether_came_back_between_cycles(tmp_path):
+    plugin, _mod, net, clock = _worker(tmp_path, read=False)
+    _run_for(plugin, clock, 200)
+    assert plugin._joined and plugin.opened == ["bnep0"]
+    old = plugin.transport
+    # Between cycles the tether drops and returns: the old socket's binding is gone.
+    old.unbound = True
+    sent = len(old.sent)
+    _run_for(plugin, clock, 2 * 3600)
+    assert len(old.sent) == sent and old.closed
+    assert plugin.opened == ["bnep0", "bnep0"] and plugin.transport is not old
+    assert plugin.writes and plugin._joined
 
 
 def test_worker_bootstraps_from_saved_router_addresses_before_names(tmp_path):

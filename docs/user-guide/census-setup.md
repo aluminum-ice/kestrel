@@ -125,6 +125,7 @@ folder to clear it.
 | The census is full today: some reports weren't counted | More reports arrived than one day's census can hold (12,544), so the extra ones aren't in the totals. It starts afresh at UTC midnight. |
 | can't join the DHT | No router or saved node answered. Some networks block BitTorrent traffic; try another connection. It tries again every 10 minutes. |
 | can't bind to bnep0 | The tether went away while the plugin was opening its connection. It tries again. |
+| paused: the network link went down | The tether dropped during a census cycle. The plugin opens a fresh connection once it's back (it does the same when the tether dropped and came back between cycles), and the rest of the hour's work carries on. |
 | paused: over today's data budget | It has used 1.5 × `daily_mb` today and stops until UTC midnight. Raise `daily_mb`, or turn `read` off. |
 
 `sudo journalctl -u kestrel-daemon | grep census` shows what the plugin did.
