@@ -31,7 +31,7 @@ Press **Map** on the plugin's row on the Plugins page.
 - **A pin** is a network whose location was recorded by your GPS.
 - **A ring with `~`** is an estimated location.
 - **A square with a number** is several networks close together. Tap it to zoom
-  in; **Reset view** (next to the filters) zooms back out. Networks captured from
+  in; **Reset view** (in the map's top-left corner) zooms back out. Networks captured from
   the same spot share its location, so no zoom separates them: tapping their
   square lists them under the map instead.
 - **Green with a lock** means the network's passphrase has been recovered;
@@ -41,8 +41,8 @@ Press **Map** on the plugin's row on the Plugins page.
   as on Captured networks. The passphrase itself is never shown on the map.
 - **A single network** links to its row on Captured networks, which has its
   OpenStreetMap link.
-- **Filters** above the map: all, recorded only, estimated only, or the last 7
-  days.
+- **Filters** above the map: all, recorded only, estimated only, or the networks
+  located in the last 24 hours or the last 7 days.
 
 **← Plugins** and **Dashboard** at the top take you back.
 
