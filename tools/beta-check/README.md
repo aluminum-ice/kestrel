@@ -65,6 +65,9 @@ these. They come on top of the [Non-negotiable rules](../../CLAUDE.md#non-negoti
   after proves the real file is unchanged.
 - No request off the device (only the optional dashboard call on `127.0.0.1`),
   and nothing heavy: no torch or model load, low CPU and I/O priority.
+- A running process's socket is inspected through a copy of its descriptor
+  (`pidfd_getfd`), asked only what it's bound to and closed at once; nothing
+  is sent, read or changed on it.
 - Files the device user owns are read as that user (`as_dev`), never as root,
   so a planted symlink can't redirect a root read (see "Anything `pi` can write
   is untrusted input to root" in CLAUDE.md).
