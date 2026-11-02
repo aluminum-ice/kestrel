@@ -219,7 +219,10 @@ def _lock_badge(cx, cy):
     return ('<circle cx="%.1f" cy="%.1f" r="7.5" fill="#fff" stroke="%s" '
             'stroke-width="1.2"/>' % (cx, cy, RECOVERED_FILL) + _lock(cx, cy, RECOVERED_FILL))
 FILTERS = (("all", "All"), ("recorded", "Recorded"), ("estimated", "Estimated"),
-           ("week", "Last 7 days"))
+           ("day", "Last 24 hours"), ("week", "Last 7 days"))
+# How far back each time filter reaches, by when the location was recorded or
+# estimated.
+RECENT = {"day": timedelta(hours=24), "week": timedelta(days=7)}
 
 
 def _nice(value):
@@ -384,14 +387,14 @@ class CaptureMap(Plugin):
     def _points(self, which, now=None):
         """``[(bssid, Location), ...]`` for the chosen filter."""
         found = GeoStore(self.context.capture.store_dir).locations()
-        cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=7)
+        cutoff = (now or datetime.now(timezone.utc)) - RECENT.get(which, timedelta(0))
         out = []
         for bssid, loc in sorted(found.items()):
             if which == "recorded" and not loc.recorded:
                 continue
             if which == "estimated" and loc.recorded:
                 continue
-            if which == "week":
+            if which in RECENT:
                 when = _parse_when(loc.when)
                 if when is None or when < cutoff:
                     continue
@@ -549,11 +552,12 @@ class CaptureMap(Plugin):
             else:
                 parts.append('<a href="' + esc(self._url(key, bbox, token)) + '">'
                              + esc(label) + "</a>")
-        reset = ""
-        if bbox:
-            reset = (' &middot; <a href="' + esc(self._url(which, None, token))
-                     + '"><b>Reset view</b></a>')
-        return '<p class="smeta">Show: ' + " &middot; ".join(parts) + reset + "</p>"
+        # Each option keeps its words together, so a narrow screen wraps the
+        # row between options, never inside one.
+        last = len(parts) - 1
+        return ('<p class="smeta">Show: ' + "".join(
+            '<span style="white-space:nowrap">' + part + (" &middot;" if i < last else "")
+            + "</span>" + (" " if i < last else "") for i, part in enumerate(parts)) + "</p>")
 
     def _map(self, proj, groups, names, which, bbox, token, css, tiles, recovered=()):
         """One rendering: the tile layer (if any) under a see-through SVG."""
@@ -573,6 +577,8 @@ class CaptureMap(Plugin):
             out.append(self._tiles(proj, tiles))
         out.append(self._svg(proj, groups, names, which, bbox, token, bool(tiles), recovered))
         out.append("</div>")
+        if bbox:
+            out.append(self._reset_control(which, token, tiles))
         if tiles:
             # The tile policy asks for the attribution on the map itself.
             out.append('<div style="position:absolute;right:0;bottom:0;font-size:11px;'
@@ -582,6 +588,19 @@ class CaptureMap(Plugin):
                        "contributors</div>")
         out.append("</div></div>")
         return "".join(out)
+
+    def _reset_control(self, which, token, tiles):
+        """Reset view, in the map's top-left corner (the north arrow has the
+        right): it belongs to the map, and keeps the filter row short enough
+        for a phone. Outside the layer a drag moves, so it stays put."""
+        esc = self.context.esc
+        colours = ("background:rgba(255,255,255,.88);color:#1b1b1f" if tiles else
+                   "background:var(--card);color:var(--fg);border:1px solid var(--border)")
+        return ('<a href="' + esc(self._url(which, None, token)) + '" style="position:absolute;'
+                "left:8px;top:8px;display:inline-flex;align-items:center;gap:.35em;"
+                "min-height:44px;padding:0 .8em;border-radius:6px;font-size:.88rem;"
+                "font-weight:600;text-decoration:none;cursor:pointer;" + colours + '">'
+                '<span aria-hidden="true">&#8634;</span>Reset view</a>')
 
     def _tiles(self, proj, url):
         """``<img>`` tiles covering exactly the view, at the zoom whose tiles are

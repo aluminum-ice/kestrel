@@ -47,7 +47,7 @@ def store(tmp_path):
     now = datetime.now(timezone.utc)
     (d / "My Network.hc22000").write_text(_line(A, "My Network") + "\n"
                                          + _line(B, "<b>Cafe</b>") + "\n")
-    # A recorded fix for A (fresh) and an old one for C; an estimate for B.
+    # A recorded fix for A (fresh) and an old one for C; a 3-day-old estimate for B.
     (d / "My Network.hc22000.gps.json").write_text(json.dumps({
         A.replace(":", "").lower(): {"lat": LAT, "lon": LON, "fix_time": _iso(now),
                                     "source": "gpsd"},
@@ -58,7 +58,7 @@ def store(tmp_path):
     (d / "geo").mkdir()
     (d / "geo" / "wigle-cache.json").write_text(json.dumps({
         B: {"bssid": B, "lat": LAT + 0.01, "lon": LON - 0.01,
-            "query_time": _iso(now), "source": "wigle-search"}}))
+            "query_time": _iso(now - timedelta(days=3)), "source": "wigle-search"}}))
     return d
 
 
@@ -144,6 +144,10 @@ def test_filters(store, tmp_path):
     week = _page(p, f="week").body                    # the 30-day-old fix is gone
     assert "2 of 2" in week
     assert "<b>Last 7 days</b>" in week
+    day = _page(p, f="day").body                      # so is the 3-day-old estimate
+    assert "1 of 1" in day
+    assert "<b>Last 24 hours</b>" in day
+    assert "?f=week" in day                           # the other options stay links
 
 
 def test_zoom_box_and_show_all(store, tmp_path):
@@ -152,6 +156,11 @@ def test_zoom_box_and_show_all(store, tmp_path):
     body = _page(p, bbox=box).body
     assert "2 of 3 located networks in view" in body
     assert "Reset view" in body
+    # On the map (once per rendering), not in the filter row, and it keeps the filter.
+    bar = body.split('<p class="smeta">', 1)[1].split("</p>", 1)[0]
+    assert "Reset view" not in bar
+    assert body.count("Reset view</a>") == 2
+    assert '<a href="./?f=day" style="position:absolute' in _page(p, bbox=box, f="day").body
     assert "Reset view" not in _page(p).body          # nothing to reset
     assert "in view" in _page(p, bbox="nonsense").body   # a bad box is ignored
 
