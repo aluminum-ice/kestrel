@@ -411,6 +411,24 @@ PY
     tether_up=up
   fi
   bound=$(ss -uanp 2>/dev/null | grep "pid=${dpid:-none}," | grep -c '%bnep0:' || true)
+  # Why, when it isn't: the daemon's UDP sockets by the interface they're bound
+  # to (names only, no address or port), when this daemon started, and the
+  # census's own pause and failure lines from this daemon process (time and
+  # message only; the census logs no addresses).
+  if [ "$census_tether" = true ]; then
+    socks=$(ss -uanp 2>/dev/null | grep "pid=${dpid:-none}," | awk '{
+      a = $4; n = index(a, "%"); if (!n) { print "any"; next }
+      a = substr(a, n + 1); sub(/:[0-9*]+$/, "", a); print a }' | sort | uniq -c \
+      | awk '{printf "%s=%s ", $2, $1}')
+    echo "  daemon started: $(systemctl show -p ActiveEnterTimestamp --value kestrel-daemon.service 2>/dev/null)"
+    echo "  daemon UDP sockets by interface: ${socks:-none}"
+    echo "  bnep0: $tether_up"
+    clog=$(journalctl -q --no-pager -o short-iso _PID="${dpid:-0}" 2>/dev/null \
+      | grep -E 'census (paused|cycle failed)|census: (the link went down|couldn.t write slot|entry missing)' \
+      | sed -E 's/^([^ ]+) [^ ]+ [^:]+: /\1 /')
+    echo "  census pauses and failures since the daemon started: $(printf '%s' "$clog" | grep -c . || true)"
+    printf '%s\n' "$clog" | grep . | tail -8 | jscrub
+  fi
   if [ "$census_tether" != true ]; then
     check 9.8 SKIP "the census socket is bound to the tether" "tether_only is off"
   elif [ "$tether_up" != up ]; then
@@ -418,7 +436,7 @@ PY
   elif [ "${bound:-0}" -ge 1 ]; then
     check 9.8 PASS "the census socket is bound to the tether" "$bound daemon UDP socket(s) on bnep0"
   else
-    check 9.8 FAIL "the census socket is bound to the tether" "no daemon UDP socket on bnep0 (paused, or between cycles?)"
+    check 9.8 FAIL "the census socket is bound to the tether" "no daemon UDP socket on bnep0 (see the sockets and census lines above)"
   fi
 fi
 check 9.10 MANUAL "see the checklist" "by hand (the tether off and on)"
