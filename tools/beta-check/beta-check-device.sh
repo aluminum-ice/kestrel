@@ -187,16 +187,46 @@ else
   if [ "$tether_up" = unknown ] && [ $((tether_flags & 1)) -eq 1 ]; then
     tether_up=up
   fi
-  bound=$(ss -uanp 2>/dev/null | grep "pid=${dpid:-none}," | grep -c '%bnep0:' || true)
-  # Why, when it isn't: the daemon's UDP sockets by the interface they're bound
-  # to (names only, no address or port), when this daemon started, and the
+  # The kernel's own answer: each of the daemon's UDP sockets, by the interface
+  # it's bound to (names and counts only). A copy of each descriptor is asked and
+  # closed at once (pidfd_getfd, as root); the daemon's sockets are untouched. Not
+  # ss: without the udp_diag module it reads /proc/net/udp, which never shows the
+  # interface, so a bound socket looks unbound there.
+  socks=$(/usr/bin/python3 -I - "${dpid:-0}" <<'PY' 2>/dev/null
+import collections, ctypes, os, socket, sys
+pid = int(sys.argv[1])
+try:
+    pidfd = os.pidfd_open(pid)
+except (OSError, AttributeError, ValueError) as exc:
+    print("unknown(%s)" % type(exc).__name__)
+    sys.exit(0)
+libc = ctypes.CDLL(None, use_errno=True)
+counts = collections.Counter()
+for name in os.listdir("/proc/%d/fd" % pid):
+    try:
+        if not os.readlink("/proc/%d/fd/%s" % (pid, name)).startswith("socket:"):
+            continue
+    except OSError:
+        continue
+    dup = libc.syscall(438, pidfd, int(name), 0)   # pidfd_getfd
+    if dup < 0:
+        counts["not-inspected"] += 1
+        continue
+    s = socket.socket(fileno=dup)
+    try:
+        if s.family == socket.AF_INET and s.type == socket.SOCK_DGRAM:
+            dev = s.getsockopt(socket.SOL_SOCKET, 25, 16).rstrip(b"\0").decode()
+            counts[dev or "any"] += 1
+    finally:
+        s.close()
+print(" ".join("%s=%d" % kv for kv in sorted(counts.items())))
+PY
+)
+  bound=$(printf '%s\n' "$socks" | grep -oE '(^| )bnep0=[0-9]+' | cut -d= -f2)
+  # Why, when it isn't: the sockets above, when this daemon started, and the
   # census's own pause and failure lines from this daemon process (time and
   # message only; the census logs no addresses).
   if [ "$census_tether" = true ]; then
-    socks=$(ss -uanp 2>/dev/null | grep "pid=${dpid:-none}," | awk '{
-      a = $4; n = index(a, "%"); if (!n) { print "any"; next }
-      a = substr(a, n + 1); sub(/:[0-9*]+$/, "", a); print a }' | sort | uniq -c \
-      | awk '{printf "%s=%s ", $2, $1}')
     echo "  daemon started: $(systemctl show -p ActiveEnterTimestamp --value kestrel-daemon.service 2>/dev/null)"
     echo "  daemon UDP sockets by interface: ${socks:-none}"
     echo "  bnep0: $tether_up"
@@ -210,6 +240,8 @@ else
     check 2.2 SKIP "the census socket is bound to the tether" "tether_only is off"
   elif [ "$tether_up" != up ]; then
     check 2.2 SKIP "the census socket is bound to the tether" "bnep0 is $tether_up"
+  elif [ "${socks#unknown}" != "$socks" ]; then
+    check 2.2 INFO "the census socket is bound to the tether" "can't read the daemon's sockets: $socks"
   elif [ "${bound:-0}" -ge 1 ]; then
     check 2.2 PASS "the census socket is bound to the tether" "$bound daemon UDP socket(s) on bnep0"
   else
@@ -1267,9 +1299,10 @@ elif mode in ("basic", "system"):
 try:
     s = json.load(urllib.request.urlopen(req, timeout=15))
 except Exception as exc:
-    print("(not available: %s)" % type(exc).__name__)
+    why = type(exc).__name__ + (" %s" % exc.code if isinstance(exc, urllib.error.HTTPError) else "")
+    print("(not available: %s)" % why)
     chk("16.19", "FAIL" if mode in ("basic", "system") else "INFO",
-        "loopback /status.json with Basic credentials", type(exc).__name__)
+        "loopback /status.json with Basic credentials", why)
     skip_all("no /status.json", basic=False)
     sys.exit(0)
 if mode in ("basic", "system"):
