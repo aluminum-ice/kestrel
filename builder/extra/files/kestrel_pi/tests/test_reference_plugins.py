@@ -310,6 +310,27 @@ def test_wigle_firstseen_is_wigle_timestamp_format(tmp_path):
     assert ts in csv_text
 
 
+def test_wigle_skips_apless_handshakes(tmp_path):
+    # An AP-less handshake's BSSID is the capture tool's rogue address and its
+    # name is a network a phone asked for: no observation, and no lookup.
+    from kestrel_pi.capture import parse_hashline
+
+    fix = {"lat": 12.34567, "lon": -45.6789, "fix_time": "2024-01-15T14:30:00Z"}
+    plugin = _make_wigle(tmp_path, position=fix, online=False)
+    line = ("WPA*02*%032x*00005e00537e*00005e0053e1*%s*0*0*10"
+            % (1, "Cafe Guest".encode().hex()))
+    plugin.on_handshake(parse_hashline(line))
+    assert plugin._observations == []
+    real = parse_hashline(line[:-2] + "00")
+    plugin.on_handshake(real)
+    assert [o["bssid"] for o in plugin._observations] == ["00:00:5E:00:53:7E"]
+
+    (tmp_path / "g").mkdir()
+    looker = _make_wigle(tmp_path / "g", online=False, geolocate=True)
+    looker.on_handshake(parse_hashline(line))
+    assert looker._geo_queue == []
+
+
 def test_wigle_upload_honors_response_success(tmp_path, monkeypatch):
     # A 200 with success=false is a rejection: the observation stays queued.
     import requests

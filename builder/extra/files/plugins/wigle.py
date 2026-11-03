@@ -216,6 +216,11 @@ class Wigle(Plugin):
     def _record(self, event):
         if not event.bssid:
             return
+        # An AP-less handshake is filed under the capture tool's own rogue
+        # address with the name a phone asked for: neither an access point nor
+        # a network seen here, so it is neither uploaded nor looked up.
+        if getattr(event, "apless", False):
+            return
         fix = self.context.services.get("position")
         if fix and fix.get("lat") is not None and fix.get("lon") is not None:
             with self._lock:
