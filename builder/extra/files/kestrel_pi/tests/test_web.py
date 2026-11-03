@@ -779,9 +779,10 @@ class _FakeLoader:
 
 
 class _FakeCapture:
-    def __init__(self, networks, access_points=None):
+    def __init__(self, networks, access_points=None, apless_keys=()):
         self._networks = networks
         self._access_points = access_points or []
+        self._apless_keys = frozenset(apless_keys)
 
     def captured_networks(self):
         return self._networks
@@ -789,16 +790,31 @@ class _FakeCapture:
     def captured_access_points(self):
         return self._access_points
 
+    def handshake_keys(self):
+        # AP-less (bssid, station, essid) keys are passed in; the real-AP keys
+        # follow the other by-AP rows.
+        from kestrel_pi.capture import HandshakeKeys
+        rogue = {key[0] for key in self._apless_keys}
+        infra = frozenset((ap["bssid"], essid) for ap in self._access_points
+                          if ap["bssid"] not in rogue
+                          for essid in (ap.get("essids") or [""]))
+        return HandshakeKeys(infra, self._apless_keys)
+
 
 class _FakeRecovered:
-    """A stand-in for RecoveredStore: records as (bssid, essid, psk) triples, plus
-    an ``ingest`` that records the text and returns a canned result."""
+    """A stand-in for RecoveredStore: records as (bssid, essid, psk) triples, or
+    (bssid, essid, psk, station) for an AP-less result, matched to the fake
+    capture by the real ``match_records``, plus an ``ingest`` that records the
+    text and returns a canned result."""
 
     def __init__(self, records=(), ingest_result=None):
-        self._by_bssid, self._by_essid = {}, {}
-        for bssid, essid, psk in records:
-            rec = types.SimpleNamespace(bssid=bssid, essid=essid, psk=psk,
-                                        source="test")
+        from kestrel_pi.recovered import RecoveredRecord
+
+        self._by_bssid, self._by_essid, self._records = {}, {}, []
+        for bssid, essid, psk, *station in records:
+            rec = RecoveredRecord(bssid=bssid, essid=essid, psk=psk,
+                                  source="test", station=(station or [""])[0])
+            self._records.append(rec)
             self._by_bssid.setdefault(bssid, rec)
             if essid:
                 self._by_essid.setdefault(essid, []).append(rec)
@@ -810,6 +826,10 @@ class _FakeRecovered:
 
     def lookup_essid(self, essid):
         return list(self._by_essid.get(essid, ()))
+
+    def capture_matches(self, capture):
+        from kestrel_pi.recovered import match_records
+        return match_records(self._records, capture.handshake_keys())
 
     def ingest(self, text, *, max_lines=None):
         self.ingested.append((text, max_lines))
@@ -851,7 +871,7 @@ class _FakeServices:
 class _FakeDaemon:
     def __init__(self, web_cfg, plugin_table, networks=None,
                  access_points=None, output_mode=None, recovered=None,
-                 recovered_cfg=None, geo=None):
+                 recovered_cfg=None, geo=None, apless_keys=()):
         import logging
         from kestrel_pi.loader import PluginRecord
 
@@ -866,7 +886,7 @@ class _FakeDaemon:
             self.config["capture"] = {"output": {"mode": output_mode}}
         if recovered_cfg is not None:
             self.config["recovered"] = recovered_cfg
-        self.capture = _FakeCapture(networks or [], access_points)
+        self.capture = _FakeCapture(networks or [], access_points, apless_keys)
         self.services = _FakeServices(recovered, geo)
         self.recovered = recovered      # the import route writes through this
         self.geo = geo
@@ -891,7 +911,7 @@ def _basic(user="pi", password="hunter2"):
 
 def _client(monkeypatch, tmp_path, web_cfg, table=None, replies=None, networks=None,
             access_points=None, output_mode=None, recovered=None, recovered_cfg=None,
-            geo=None):
+            geo=None, apless_keys=()):
     pytest.importorskip("flask")
     sent = []
 
@@ -907,7 +927,8 @@ def _client(monkeypatch, tmp_path, web_cfg, table=None, replies=None, networks=N
     daemon = _FakeDaemon(web_cfg, table if table is not None else {"enabled": False},
                          networks=networks, access_points=access_points,
                          output_mode=output_mode, recovered=recovered,
-                         recovered_cfg=recovered_cfg, geo=geo)
+                         recovered_cfg=recovered_cfg, geo=geo,
+                         apless_keys=apless_keys)
     return web.create_app(daemon).test_client(), sent
 
 
@@ -1848,6 +1869,59 @@ def test_networks_ap_view_shows_passphrase_for_the_radio(monkeypatch, tmp_path):
     assert _CRK_PSK in body
     # Only the recovered radio carries the badge.
     assert body.count(">recovered</span>") == 1
+
+
+# A rogue address (an AP-less capture's) that collected three names from two
+# clients in one run, with a result for one client's "Cafe Guest" only.
+_ROGUE = "00:00:5E:00:53:7E"
+_ROGUE_KEYS = [(_ROGUE, "00:00:5E:00:53:E1", "Cafe Guest"),
+               (_ROGUE, "00:00:5E:00:53:E1", "My Network"),
+               (_ROGUE, "00:00:5E:00:53:E2", "Library WiFi")]
+
+
+def _rogue_result():
+    return _FakeRecovered([(_ROGUE, "Cafe Guest", "pw-cafe", "00:00:5E:00:53:E1")])
+
+
+def test_networks_rogue_address_lends_its_passphrase_to_no_other_name(
+        monkeypatch, tmp_path):
+    client, _ = _client(
+        monkeypatch, tmp_path, BASIC, output_mode="per-ssid",
+        networks=_nets("Cafe Guest", "My Network", "Library WiFi"),
+        access_points=[{"bssid": _ROGUE, "handshakes": 3,
+                        "essids": ["Cafe Guest", "Library WiFi", "My Network"]}],
+        apless_keys=_ROGUE_KEYS, recovered=_rogue_result())
+    body = client.get("/networks", headers=_basic()).get_data(as_text=True)
+    assert body.count(">recovered</span>") == 1
+    assert body.count("pw-cafe") == 1
+    row = body.split("Cafe Guest", 1)[1].split("</tr>", 1)[0]
+    assert "pw-cafe" in row
+    assert _ROGUE + " · client 00:00:5E:00:53:E1" in row
+
+
+def test_networks_ap_view_labels_a_rogue_address_result_with_its_network(
+        monkeypatch, tmp_path):
+    client, _ = _client(
+        monkeypatch, tmp_path, BASIC, output_mode="per-ap",
+        access_points=[{"bssid": _ROGUE, "handshakes": 3,
+                        "essids": ["Cafe Guest", "Library WiFi", "My Network"]}],
+        apless_keys=_ROGUE_KEYS, recovered=_rogue_result())
+    body = client.get("/networks?view=ap", headers=_basic()).get_data(as_text=True)
+    assert body.count("pw-cafe") == 1
+    assert "Cafe Guest · client 00:00:5E:00:53:E1" in body
+    assert "Passphrase: <code>" not in body
+
+
+def test_networks_result_for_another_name_at_a_captured_ap_is_not_shown(
+        monkeypatch, tmp_path):
+    # The AP was captured as "My Network"; a result for "Office" at the same
+    # address belongs to a network that wasn't captured.
+    client, _ = _client(
+        monkeypatch, tmp_path, BASIC, output_mode="per-ap",
+        access_points=_aps(("My Network", _CRK_BSSID)),
+        recovered=_FakeRecovered([(_CRK_BSSID, "Office", _CRK_PSK)]))
+    body = client.get("/networks?view=ap", headers=_basic()).get_data(as_text=True)
+    assert _CRK_PSK not in body and ">recovered</span>" not in body
 
 
 def test_networks_passphrase_is_escaped(monkeypatch, tmp_path):

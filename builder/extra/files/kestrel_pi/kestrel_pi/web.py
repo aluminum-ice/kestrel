@@ -3061,52 +3061,66 @@ def _ago(epoch, now=None):
 
 def _recovered_maps(daemon, view, data):
     """Build the recovered-annotation maps for ``/networks`` from the ``recovered``
-    service. Returns ``(recovered_by_bssid, recovered_by_essid)`` -- both empty when
-    the store is absent or unreadable, so the page just shows no recovered markers.
+    service. Returns ``(recovered_by_bssid, recovered_by_essid)``, each mapping a
+    row's BSSID (by-AP view) or ESSID (by-network view) to a list of
+    ``(label, psk)`` pairs -- both empty when the store is absent or unreadable,
+    so the page just shows no recovered markers.
 
-    By-AP view: each captured BSSID joined to its passphrase. By-network view: a
-    network is recovered if any of its captured BSSIDs is recovered (grouped under
-    the names that AP advertised) or an ESSID-name record matches; each distinct
-    ``(bssid, psk)`` is kept so differing passphrases under one name are shown."""
+    Passphrases come from the store's per-network matching
+    (``capture_matches``): a real AP's by its BSSID and name, an AP-less
+    capture's by its rogue address, client and name, so one address never lends
+    its passphrase to the other names captured under it. A label says which
+    network a passphrase belongs to where the row alone doesn't: the name in the
+    by-AP view when a radio has more than one, the BSSID in the by-network view,
+    plus the client for an AP-less match. In the by-network view a record for an
+    address that was never captured still shows under its name, with its BSSID."""
     recovered = daemon.services.get("recovered")
     by_bssid, by_essid = {}, {}
     if recovered is None:
         return by_bssid, by_essid
-    try:
-        if view == "ap":
-            for row in data:
-                bssid = row.get("bssid")
-                if not bssid:
-                    continue
-                rec = recovered.lookup_bssid(bssid)
-                if rec:
-                    by_bssid[bssid] = rec.psk
-        else:
-            def _add(essid, rec):
-                pairs = by_essid.setdefault(essid, [])
-                if (rec.bssid, rec.psk) not in pairs:
-                    pairs.append((rec.bssid, rec.psk))
 
-            for ap in daemon.capture.captured_access_points():
-                bssid = ap.get("bssid")
-                rec = recovered.lookup_bssid(bssid) if bssid else None
-                if rec:
-                    for essid in ap.get("essids") or []:
-                        _add(essid, rec)
+    def _add(table, key, label, psk):
+        pairs = table.setdefault(key, [])
+        if (label, psk) not in pairs:
+            pairs.append((label, psk))
+
+    try:
+        matches = recovered.capture_matches(daemon.capture)
+        if view == "ap":
+            per_radio = {}
+            for m in matches:
+                per_radio.setdefault(m.bssid, []).append(m)
+            for bssid, found in per_radio.items():
+                named = (any(m.apless for m in found)
+                         or len({m.essid for m in found}) > 1)
+                for m in found:
+                    name = m.essid or "(hidden)"
+                    label = (name + " · client " + m.station if m.apless
+                             else name if named else "")
+                    _add(by_bssid, bssid, label, m.psk)
+        else:
+            for m in matches:
+                label = (m.bssid + " · client " + m.station if m.apless
+                         else m.bssid)
+                _add(by_essid, m.essid, label, m.psk)
+            captured = {ap.get("bssid")
+                        for ap in daemon.capture.captured_access_points()}
             for row in data:
                 essid = row.get("essid")
                 if essid:
                     for rec in recovered.lookup_essid(essid):
-                        _add(essid, rec)
+                        if rec.bssid not in captured:
+                            _add(by_essid, essid, rec.bssid, rec.psk)
     except Exception:  # noqa: BLE001 - a recovered-store read must never break the page
         return {}, {}
     return by_bssid, by_essid
 
 
-def _recovered_cell(summary_html, pairs, auth_on, show_passphrases, with_bssid):
+def _recovered_cell(summary_html, pairs, auth_on, show_passphrases):
     """Wrap a row's name/BSSID cell so a recovered row shows the badge and, when
     allowed, its passphrase in a ``<details>`` disclosure. ``pairs`` is a list of
-    ``(bssid, psk)``.
+    ``(label, psk)``; a label (see :func:`_recovered_maps`) prefixes its
+    passphrase, and an empty one reads "Passphrase:".
 
     The passphrase is a secret, shown only when BOTH gates pass; the badge is
     not a secret and always shows:
@@ -3123,10 +3137,10 @@ def _recovered_cell(summary_html, pairs, auth_on, show_passphrases, with_bssid):
                  "(<code>show_passphrases = true</code> to reveal)</div>")
     else:
         parts = []
-        for bssid, psk in pairs:
-            if with_bssid and bssid:
+        for label, psk in pairs:
+            if label:
                 parts.append('<div class="crk-p"><span class="bssid">'
-                             + _esc(bssid) + "</span> <code>" + _esc(psk)
+                             + _esc(label) + "</span> <code>" + _esc(psk)
                              + "</code></div>")
             else:
                 parts.append('<div class="crk-p">Passphrase: <code>'
@@ -3279,10 +3293,11 @@ def _render_networks(rows_in, control=None, query="", page=1,
 
     A row whose network/AP has a known passphrase gets a "recovered" badge (never
     colour alone), and -- only when ``auth_on`` and ``show_passphrases`` -- the
-    passphrase itself in a disclosure. ``recovered_by_bssid`` maps a BSSID to its
-    passphrase (by-AP view); ``recovered_by_essid`` maps an ESSID to its distinct
-    ``(bssid, psk)`` pairs (by-network view). Both are built by the handler from
-    the core recovered service; empty means nothing to annotate."""
+    passphrase itself in a disclosure. ``recovered_by_bssid`` (by-AP view) and
+    ``recovered_by_essid`` (by-network view) map a row's BSSID or ESSID to its
+    ``(label, psk)`` pairs. Both are built by the handler from the core
+    recovered service (:func:`_recovered_maps`); empty means nothing to
+    annotate."""
     rows_in = rows_in or []
     recovered_by_bssid = recovered_by_bssid or {}
     recovered_by_essid = recovered_by_essid or {}
@@ -3338,8 +3353,8 @@ def _render_networks(rows_in, control=None, query="", page=1,
             radio = (_esc(bssid) if bssid
                      else '<span class="smeta">(unknown BSSID)</span>')
             if bssid and bssid in recovered_by_bssid:
-                radio = _recovered_cell(radio, [(bssid, recovered_by_bssid[bssid])],
-                                      auth_on, show_passphrases, with_bssid=False)
+                radio = _recovered_cell(radio, recovered_by_bssid[bssid],
+                                      auth_on, show_passphrases)
             # A known location is appended inside the primary cell, after any
             # recovered disclosure, so an absent location adds nothing (no empty
             # column) and the 4-column layout holds.
@@ -3362,8 +3377,7 @@ def _render_networks(rows_in, control=None, query="", page=1,
             name = _esc(essid) if essid else '<span class="smeta">(hidden)</span>'
             pairs = recovered_by_essid.get(essid) if essid else None
             if pairs:
-                name = _recovered_cell(name, pairs, auth_on, show_passphrases,
-                                     with_bssid=True)
+                name = _recovered_cell(name, pairs, auth_on, show_passphrases)
             loc_hit = location_by_essid.get(essid) if essid else None
             if loc_hit:
                 loc, extra = loc_hit

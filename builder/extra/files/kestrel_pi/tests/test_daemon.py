@@ -436,6 +436,32 @@ def test_status_reports_recovered_aps_joined_to_captured(tmp_path, monkeypatch):
     assert cap["recovered_aps"] == 1       # N: one of them has a known passphrase
 
 
+def test_status_counts_neither_apless_captures_nor_other_names(tmp_path, monkeypatch):
+    # The store holds radio 1 under "Home" and "Guest" and, under a rogue
+    # address, an AP-less capture of a client's "Home". A result for "Guest"
+    # recovers radio 1 (one AP); results for an uncaptured name at radio 1 or
+    # for the AP-less capture add nothing to the "N of M access points".
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[web]\nenabled = false\n"
+                   "[capture]\nenabled = false\nwhitelist = []\n")
+    apless = ("WPA*02*0123456789abcdef0123456789abcdef*00005e00537e*00005e0053e0"
+              "*486f6d65*0*0*10")
+    (tmp_path / "store.hc22000").write_text(
+        "\n".join([_R1_HOME, _R1_GUEST, apless]) + "\n")
+    recovered_dir = tmp_path / "cracked"
+    recovered_dir.mkdir()
+    (recovered_dir / "wpa-sec.potfile").write_text(
+        "aabbccddeeff:112233445566:Guest:pw-guest\n"
+        "aabbccddeeff:112233445566:Office:pw-office\n"
+        "00005e00537e:00005e0053e0:Home:pw-home\n")
+    d = daemon_mod.Daemon(config_path=str(cfg), capture_store=str(tmp_path))
+    monkeypatch.setattr(d, "_capture_state", lambda: "stopped")
+    monkeypatch.setattr(d, "_bt_paired", lambda: False)
+
+    cap = d.status()["capture"]
+    assert cap["recovered_aps"] == 1
+
+
 def test_status_omits_recovered_aps_when_the_store_read_fails(tmp_path, monkeypatch):
     # A recovered-store read failure must not break status(); the key is omitted
     # so the navcard simply shows no recovered figure.
@@ -447,10 +473,10 @@ def test_status_omits_recovered_aps_when_the_store_read_fails(tmp_path, monkeypa
     monkeypatch.setattr(d, "_capture_state", lambda: "stopped")
     monkeypatch.setattr(d, "_bt_paired", lambda: False)
 
-    def _boom(_bssid):
+    def _boom(_capture):
         raise RuntimeError("potfile unreadable")
 
-    monkeypatch.setattr(d.recovered, "lookup_bssid", _boom)
+    monkeypatch.setattr(d.recovered, "recovered_bssids", _boom)
     cap = d.status()["capture"]
     assert "recovered_aps" not in cap
     assert cap["access_points"] == 1     # the rest of the capture card is intact

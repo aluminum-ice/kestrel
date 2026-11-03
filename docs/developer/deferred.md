@@ -113,9 +113,11 @@ How to use this file:
 
 ### Show imported-but-not-captured records
 
-- **What:** a recovered record whose BSSID matches no captured access point is not
-  shown on `/networks` (there is nothing to annotate); it still counts in
-  `RecoveredStore.counts()`. Such records are simply invisible today.
+- **What:** a recovered record that matches no captured network (by BSSID and
+  name, plus the client for an AP-less capture) is not shown on `/networks`
+  (there is nothing to annotate), except in the by-network view under its name
+  when its BSSID was never captured; it still counts in
+  `RecoveredStore.counts()`. Such records are otherwise invisible today.
 - **Why deferred:** needs its own small "imported, not captured" list/section and
   a decision on how it reconciles when the network is later captured; out of
   scope for annotating captures.

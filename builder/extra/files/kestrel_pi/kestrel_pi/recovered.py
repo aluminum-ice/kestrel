@@ -32,6 +32,11 @@ adjacent MAC pair, or nothing after the station MAC, is skipped -- which is how
 the *default* ``hashcat.potfile`` line (``<WPA* hash>:<password>``, no MAC pair)
 is skipped (supporting it would need a second parser that decodes the WPA* hash;
 deferred, see ``docs/developer/deferred.md``).
+
+A record is matched to a captured network, never to an address alone (see
+:func:`match_records`): a handshake with a real AP by its (BSSID, ESSID), and an
+AP-less one, whose BSSID is the capture tool's rogue address and collects many
+unrelated names in one run, by its (BSSID, client, ESSID).
 """
 
 from __future__ import annotations
@@ -56,10 +61,9 @@ POTFILE_SUFFIX = ".potfile"
 DEFAULT_IMPORT_MB = 2
 DEFAULT_IMPORT_LINES = 50_000
 
-# A synthetic station MAC written into imported potfiles. The parser needs an
-# adjacent MAC pair, and an import keeps only (BSSID, ESSID, PSK) -- the original
-# station MAC is dropped on the way in -- so a canonical zero MAC stands in. It
-# round-trips cleanly because the parser ignores the station MAC.
+# The station MAC written into an imported potfile when the source line had none
+# (an all-zero one): the parser needs an adjacent MAC pair, and reads it back as
+# "no client". Imports before 1.0.13 wrote it on every line.
 _ZERO_STA = "000000000000"
 
 _HEX = frozenset("0123456789abcdefABCDEF")
@@ -86,6 +90,7 @@ class RecoveredRecord:
     essid: str   # as captured (not decoded); "" when hidden/absent in the source
     psk: str     # never contains ':' (it is the last ':'-split field)
     source: str = ""
+    station: str = ""  # normalized client MAC; "" when absent or all-zero
 
 
 def parse_potfile_line(line):
@@ -119,14 +124,68 @@ def parse_potfile_line(line):
     essid = ":".join(rest[:-1])
     if not psk and not essid:
         return None
-    return RecoveredRecord(bssid=bssid, essid=essid, psk=psk, source="")
+    station = _normalize_mac(fields[anchor + 1])
+    station = _format_mac(station) if station != _ZERO_STA else ""
+    return RecoveredRecord(bssid=bssid, essid=essid, psk=psk, source="",
+                           station=station)
 
 
 def _dedup_key(rec):
-    """Records are deduped on (BSSID, ESSID, PSK), ignoring the station MAC: the
-    same AP recurs across many potfile lines with differing station MACs but one
-    passphrase, and those are one record."""
-    return (rec.bssid, rec.essid, rec.psk)
+    """Records are deduped on (BSSID, station, ESSID, PSK). The station MAC is
+    kept because an AP-less result is known only for its client (see
+    :func:`match_records`); for a real AP the matching folds them back together."""
+    return (rec.bssid, rec.station, rec.essid, rec.psk)
+
+
+@dataclass(frozen=True)
+class RecoveredMatch:
+    """A known passphrase for one captured network. ``station`` is the client
+    for an AP-less match (``apless``), whose ``bssid`` is a rogue address, and
+    ``""`` for a real AP."""
+
+    bssid: str
+    essid: str
+    psk: str
+    station: str = ""
+    apless: bool = False
+    source: str = ""
+
+
+def match_records(records, keys):
+    """The :class:`RecoveredMatch`\\ es between ``records`` and the store's
+    :class:`~kestrel_pi.capture.HandshakeKeys`, deduped, in record order.
+
+    - A real AP's handshake matches on (BSSID, ESSID); the client doesn't
+      matter. A record with no ESSID matches each name captured at its BSSID.
+    - An AP-less handshake matches only on (BSSID, client, ESSID): its BSSID is
+      a rogue address that one capture run answers many clients from, each for
+      a network it remembers, so the address alone says nothing about which
+      network a passphrase belongs to. A record with no client never matches one.
+
+    Different passphrases for one network (it changed, or two results disagree)
+    are all kept."""
+    names_at = {}
+    for bssid, essid in keys.infrastructure:
+        names_at.setdefault(bssid, set()).add(essid)
+    out, seen = [], set()
+
+    def _add(match):
+        key = (match.bssid, match.essid, match.station, match.apless, match.psk)
+        if key not in seen:
+            seen.add(key)
+            out.append(match)
+
+    for rec in records:
+        if rec.essid:
+            names = [rec.essid] if rec.essid in names_at.get(rec.bssid, ()) else []
+        else:
+            names = sorted(names_at.get(rec.bssid, ()))
+        for essid in names:
+            _add(RecoveredMatch(rec.bssid, essid, rec.psk, source=rec.source))
+        if rec.station and (rec.bssid, rec.station, rec.essid) in keys.apless:
+            _add(RecoveredMatch(rec.bssid, rec.essid, rec.psk, station=rec.station,
+                                apless=True, source=rec.source))
+    return out
 
 
 class RecoveredStore:
@@ -150,6 +209,9 @@ class RecoveredStore:
         # (signature, by_bssid, by_essid, records); guarded because the web
         # server is threaded.
         self._cache = None
+        # (keys, records, matches): capture_matches() for the objects it was
+        # computed from, both reused by their caches until a file changes.
+        self._match_cache = None
         self._lock = threading.Lock()
 
     def _potfiles(self):
@@ -220,8 +282,10 @@ class RecoveredStore:
         return by_bssid, by_essid, records
 
     def lookup_bssid(self, bssid):
-        """The :class:`RecoveredRecord` for ``bssid`` (normalized before lookup),
-        or ``None``. The exact, unambiguous by-AP join."""
+        """The first :class:`RecoveredRecord` for ``bssid`` (normalized before
+        lookup), or ``None``. An address alone doesn't identify a network (an
+        AP-less capture's rogue address stands for many), so annotating captures
+        uses :meth:`capture_matches` instead."""
         if not bssid:
             return None
         key = _format_mac(_normalize_mac(bssid))
@@ -239,6 +303,27 @@ class RecoveredStore:
             return []
         _by_bssid, by_essid, _records = self._parse()
         return list(by_essid.get(essid, ()))
+
+    def capture_matches(self, capture):
+        """The :class:`RecoveredMatch`\\ es for the networks ``capture`` (a
+        :class:`~kestrel_pi.capture.CaptureInterface`) holds handshakes for; see
+        :func:`match_records`. Cached until a potfile or the store changes."""
+        keys = capture.handshake_keys()
+        _by_bssid, _by_essid, records = self._parse()
+        with self._lock:
+            cached = self._match_cache
+        if cached is not None and cached[0] is keys and cached[1] is records:
+            return cached[2]
+        matches = match_records(records, keys)
+        with self._lock:
+            self._match_cache = (keys, records, matches)
+        return matches
+
+    def recovered_bssids(self, capture):
+        """The captured real APs' BSSIDs with a known passphrase: the dashboard's
+        "recovered N of M" and the map's markers. AP-less matches don't count,
+        since their address is a rogue one, not an access point."""
+        return {m.bssid for m in self.capture_matches(capture) if not m.apless}
 
     def counts(self):
         """``{"recovered_aps", "recovered_essids"}`` -- distinct recovered BSSIDs and
@@ -292,8 +377,9 @@ def ingest_text(store_dir, text, *, source_label="imported",
     Returns ``{"imported": N, "skipped": M}``: ``N`` distinct records written,
     ``M`` non-blank lines that did not parse (including lines past ``max_lines``).
     Nothing is written when no line parses. The record set is deduped and written
-    in canonical 4-field form (``<bssid>:<zero-sta>:<essid>:<psk>``, bare-hex
-    MACs) so :class:`RecoveredStore` re-parses it identically. ``source_label`` is
+    in canonical 4-field form (``<bssid>:<station>:<essid>:<psk>``, bare-hex
+    MACs, an all-zero station when the line had none) so :class:`RecoveredStore`
+    re-parses it identically. ``source_label`` is
     accepted for symmetry with future sources but the on-disk name is always
     ``imported-<stamp>.potfile``.
     """
@@ -327,5 +413,6 @@ def ingest_text(store_dir, text, *, source_label="imported",
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         for rec in records:
             bare = rec.bssid.replace(":", "").lower()
-            handle.write("%s:%s:%s:%s\n" % (bare, _ZERO_STA, rec.essid, rec.psk))
+            sta = rec.station.replace(":", "").lower() or _ZERO_STA
+            handle.write("%s:%s:%s:%s\n" % (bare, sta, rec.essid, rec.psk))
     return {"imported": len(records), "skipped": skipped}

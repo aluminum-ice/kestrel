@@ -16,6 +16,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 # The best-effort "what's in range" file the collector writes into the store
 # (contract_version 3). Read by the daemon for the Environment readout; absent,
@@ -74,9 +75,17 @@ class HandshakeEvent:
     bssid: str         # AP MAC as AA:BB:CC:DD:EE:FF, or ""
     type: str          # "pmkid", "eapol", or "unknown"
     raw: str = field(repr=False, default="")
+    station: str = ""  # client MAC as AA:BB:CC:DD:EE:FF, or ""
+    # An AP-less handshake: a client answered the capture tool's own rogue
+    # address for a network it remembers (the 0x10 bit of the EAPOL line's
+    # message-pair byte), so ``bssid`` is that rogue address, not a real AP.
+    apless: bool = False
 
 
 _HC22000_TYPE = {"01": "pmkid", "02": "eapol"}
+# hcxtools' message-pair bit for an AP-less handshake (AngryOxide sets it on a
+# rogue M2, recorded under the rogue address it answered the client from).
+_APLESS_BIT = 0x10
 
 
 def _format_mac(hex12):
@@ -90,9 +99,9 @@ def parse_hashline(line):
     """Parse one ``.hc22000`` line into a :class:`HandshakeEvent` (path left
     blank; the caller fills it). Returns ``None`` for a blank/garbage line.
 
-    Layout: ``WPA*TYPE*PMKID_or_MIC*MAC_AP*MAC_STA*ESSID_hex*...`` (fields are
-    ``*``-separated). Only the AP MAC, type, and ESSID are extracted; the line
-    is never rewritten.
+    Layout: ``WPA*TYPE*PMKID_or_MIC*MAC_AP*MAC_STA*ESSID_hex*ANONCE*EAPOL*MP``
+    (fields are ``*``-separated). The AP and client MACs, type, ESSID and the
+    message-pair byte's AP-less bit are extracted; the line is never rewritten.
     """
     line = line.strip()
     if not line:
@@ -108,7 +117,21 @@ def parse_hashline(line):
         essid = bytes.fromhex(essid_hex).decode("utf-8", "replace") if essid_hex else ""
     except ValueError:
         essid = ""
-    return HandshakeEvent(path="", essid=essid, bssid=bssid, type=htype, raw=line)
+    apless = False
+    if htype == "eapol" and len(fields) >= 9:
+        try:
+            apless = bool(int(fields[8], 16) & _APLESS_BIT)
+        except ValueError:
+            apless = False
+    return HandshakeEvent(path="", essid=essid, bssid=bssid, type=htype, raw=line,
+                          station=_format_mac(fields[4]), apless=apless)
+
+
+class HandshakeKeys(NamedTuple):
+    """The capture identities in the store; see :meth:`CaptureInterface.handshake_keys`."""
+
+    infrastructure: frozenset
+    apless: frozenset
 
 
 class CaptureInterface:
@@ -206,9 +229,15 @@ class CaptureInterface:
             return cached[1], cached[2]
         nets = {}
         mtime_by_bssid = {}
+        infrastructure, apless = set(), set()
         for path in paths:
             fmtime = mtimes.get(path, 0)
             for event in self.read_events(path):
+                if event.bssid:
+                    if event.apless:
+                        apless.add((event.bssid, event.station, event.essid))
+                    else:
+                        infrastructure.add((event.bssid, event.essid))
                 slot = nets.get(event.essid)
                 if slot is None:
                     slot = nets[event.essid] = {
@@ -221,9 +250,23 @@ class CaptureInterface:
                         mtime_by_bssid[event.bssid] = fmtime
                 else:
                     slot["no_bssid"] += 1
+        keys = HandshakeKeys(frozenset(infrastructure), frozenset(apless))
         with self._networks_lock:
-            self._networks_cache = (signature, nets, mtime_by_bssid)
+            self._networks_cache = (signature, nets, mtime_by_bssid, keys)
         return nets, mtime_by_bssid
+
+    def handshake_keys(self):
+        """What the store holds handshakes *for*, the identities a recovered
+        passphrase can be matched against (a :class:`HandshakeKeys`), from the
+        same cached parse; the object is reused until the store changes.
+
+        ``infrastructure`` is ``{(bssid, essid)}`` for handshakes with a real
+        AP. ``apless`` is ``{(bssid, station, essid)}`` for AP-less ones, whose
+        ``bssid`` is a rogue address that collects many unrelated names in one
+        capture run, so only the client and name together identify the network."""
+        self._parse_store()
+        with self._networks_lock:
+            return self._networks_cache[3]
 
     def _read_seen(self):
         """``{bssid: last_epoch}`` from the collector's ``capture-seen.json``
