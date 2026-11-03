@@ -445,7 +445,7 @@ Uploads captured handshakes to [wpa-sec.stanev.org](https://wpa-sec.stanev.org),
 
 ### wigle (wardriving uploads)
 
-Submits the networks you observe, with their GPS coordinates, to [wigle.net](https://wigle.net), the crowd-sourced wardriving database. Off by default, a network plugin, and needs GPS to actually upload. WiGLE uploads only ever carry real GPS fixes.
+Submits the networks you observe, with their GPS coordinates, to [wigle.net](https://wigle.net), the crowd-sourced wardriving database. Off by default, a network plugin, and needs GPS to actually upload. WiGLE uploads only ever carry real GPS fixes, and never a handshake from a phone answering the capture tool for a network it remembers (it's filed under the capture tool's own made-up address, not an access point).
 
 - Credentials: make a free account at [wigle.net](https://wigle.net), then under Account use "Show my token" to find the API Name (looks like `AIDxxxxxxxx...`) and the API Token (a long random string). Use those two, not your website login, and ignore the "Encoded for use" blob. Swapping them or pasting the wrong one is the usual cause of an HTTP 401.
 - Enable: `sudo kestrel plugins enable wigle` in a terminal, which asks for the API Name and the API Token (the token with the input hidden), or enter the two values on the plugin's web config page. For scripts, pass the token on stdin with `--set-stdin api_token` and the name with `--set api_name=...`.

@@ -85,6 +85,10 @@ the `geolocate` option (the dashboard card shows it as **Mode**):
 - **idle** — no GPS and `geolocate = false`. Nothing to do: enable the `gps`
   plugin or set `geolocate = true`.
 
+In every mode, a handshake from a phone answering the capture tool for a network
+it remembers (an *AP-less* capture) is skipped: it's filed under the capture
+tool's own made-up address, so it's neither uploaded nor looked up.
+
 ## The dashboard card
 
 The `wigle` card shows:
