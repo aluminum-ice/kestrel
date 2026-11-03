@@ -26,11 +26,13 @@ jobs:
 
     - name: Install test dependencies
       # The kestrel_pi suite needs flask/requests (web + plugins), numpy (the
-      # agent spec imports it at module load), pillow (the e-ink renderer) and
-      # cryptography (the dashboard's HTTPS certificate).
+      # agent spec imports it at module load), pillow (the e-ink renderer),
+      # cryptography (the dashboard's HTTPS certificate) and gymnasium (the
+      # agent's capture env; its tests are skipped without it), pinned to the
+      # image's version (builder/config.yml, pip.local.constraints).
       # torch/SB3 are lazy-imported and stubbed in the tests, so the heavy agent
       # stack is deliberately not installed here.
-      run: python -m pip install pytest flask requests numpy pillow cryptography
+      run: python -m pip install pytest flask requests numpy pillow cryptography "gymnasium==1.4.0"
 
     - name: Test
       run: make test

@@ -107,7 +107,7 @@ make lint
 
 `make lint` runs `ansible-playbook --syntax-check` on the playbook, `yamllint` (config: `.yamllint`) on all YAML, `shellcheck --severity=error` on all `*.sh`, and the real-data check (`tools/real-data-check/`, see [Nothing real in the repo](#2-nothing-real-in-the-repo)). The same target runs in the **Lint** workflow (`.forgejo/workflows/lint.yml`) on every push and PR. Run it before committing. A passing lint does not mean the image builds; say so instead of claiming a build was validated.
 
-The on-device `kestrel_pi` package also has unit tests: `make test` runs them (venv `pytest`, needs `flask`/`requests` plus `numpy` for the agent spec import, `pillow` for the e-ink renderer and `cryptography` for the dashboard certificate; `torch`/SB3 are stubbed, not required), then the real-data check's own tests; `make lint` only byte-compiles the package. The **Test** workflow (`.forgejo/workflows/test.yml`) runs `make test` on every push and PR, alongside the Lint workflow.
+The on-device `kestrel_pi` package also has unit tests: `make test` runs them (venv `pytest`, needs `flask`/`requests` plus `numpy` for the agent spec import, `pillow` for the e-ink renderer, `cryptography` for the dashboard certificate and `gymnasium` (the image's pinned version) for the agent env tests, which are skipped without it; `torch`/SB3 are stubbed, not required), then the real-data check's own tests; `make lint` only byte-compiles the package. The **Test** workflow (`.forgejo/workflows/test.yml`) runs `make test` on every push and PR, alongside the Lint workflow.
 
 ## Verifying a beta
 
