@@ -82,12 +82,15 @@ device, if you could).
 
 Some plugins drive hardware that hasn't been tested on a real device yet, such
 as `eink-ws213` for the Waveshare 2.13" e-Paper HAT and `ups-wsc`/`ups-wsd`/`ups-wse`
-for the Waveshare UPS HAT (C), (D) and (E); their guides say so. If you
-try one, a report helps even without a patch. Email **patches@3ntropy.io**, or
+for the Waveshare UPS HAT (C), (D) and (E); their guides say so. Community
+feedback suggests Kestrel also works on the Raspberry Pi 3B and 4B, which the
+maintainer hasn't verified on hardware either. If you try one, a report helps
+even without a patch. Email **patches@3ntropy.io**, or
 open an issue on the [GitHub mirror](https://github.com/aluminum-ice/kestrel),
 with:
 
-- the plugin and the Kestrel version (`cat /etc/kestrel/version`);
+- the plugin and the Kestrel version (`cat /etc/kestrel/version`), or for a
+  board, its model and RAM (`cat /proc/device-tree/model` and `free -h`);
 - the hardware and its revision (for an e-Paper HAT, the sticker on the back of
   the panel) and the options you set (such as `variant`);
 - what worked and what didn't: for an e-ink plugin, whether the face draws the

@@ -31,6 +31,8 @@ The image is based on **Raspberry Pi OS Lite (64-bit), bookworm (Debian 12, Pyth
 
 Target boards: the **Raspberry Pi 5** is the primary, standard board. The Raspberry Pi Zero 2 W is also supported as a smaller, lower-power option, within the constraints noted below (2.4 GHz-only Wi-Fi, and too little RAM to train the learning agent on-device). Both require an external USB WiFi adapter for packet capture (see WiFi capture adapter below).
 
+Community feedback suggests Kestrel also works on the **Raspberry Pi 3B** and the **Raspberry Pi 4B**, but the maintainer hasn't verified that through hardware testing. If you try one, see [Reporting hardware test results](CONTRIBUTING.md#reporting-hardware-test-results). The same limits apply: the 3B has 2.4 GHz-only Wi-Fi and 1 GB of RAM, too little to train the learning agent on-device, and a 4B trains on-device only with 4 GB of RAM or more. Either needs the external USB WiFi adapter too.
+
 ## Authorized use only
 
 Kestrel exists for research and education: learning how WPA/WPA2 handshakes, capture tooling and adaptive scanning work, on networks you are allowed to test.
