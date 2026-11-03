@@ -8,6 +8,21 @@ for the person using the device.
 - [Philosophy and the reason why](philosophy.md) — what kestrel is for and
   the thinking behind it. (A stub for now.)
 
+## Which Raspberry Pi?
+
+The **Raspberry Pi 5** is the primary board, and the **Raspberry Pi Zero 2 W** is
+supported as a smaller, lower-power option (2.4 GHz-only Wi-Fi, and too little
+RAM to train the learning agent on the device). Either needs an external USB
+Wi-Fi adapter for capture.
+
+Community feedback suggests kestrel also works on the **Raspberry Pi 3B** and
+the **Raspberry Pi 4B**, but the maintainer hasn't verified that through
+hardware testing. The 3B has the Zero 2 W's limits (2.4 GHz-only Wi-Fi, too
+little RAM to train on the device); a 4B trains on the device only with 4 GB of
+RAM or more (see [The learning capture agent](agent-setup.md)). If you try one,
+a report helps: see
+[Reporting hardware test results](../../CONTRIBUTING.md#reporting-hardware-test-results).
+
 ## Getting started
 
 - [Preparing the card before first boot](boot-partition-provisioning.md) —
