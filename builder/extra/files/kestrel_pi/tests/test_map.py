@@ -362,8 +362,8 @@ def test_declarations_are_readable_by_root():
 def test_an_apless_capture_never_turns_its_rogue_address_green(tmp_path):
     # An AP-less handshake (message-pair bit 0x10) is filed under the capture
     # tool's rogue address. A result for it is the client's network, not an AP
-    # at that address, so its marker stays gray; a result for a real AP under
-    # a name the rogue address also collected doesn't color it either.
+    # at that address, so it never colors a marker; and the rogue address
+    # isn't an access point, so it isn't drawn at all.
     d = tmp_path / "capture"
     d.mkdir()
     rogue = "00:00:5E:00:53:7E"
@@ -378,4 +378,4 @@ def test_an_apless_capture_never_turns_its_rogue_address_green(tmp_path):
                  station="00005e0053e0")
     body = _page(p).body
     assert 'title="passphrase recovered"' not in body
-    assert "&#128274;" not in _svg(body)
+    assert rogue not in body and "Cafe Guest" not in body

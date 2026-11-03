@@ -193,7 +193,8 @@ def test_captured_access_points_folds_missing_bssid(tmp_path):
     (tmp_path / "Home.hc22000").write_text("\n".join([NO_BSSID, NO_BSSID.replace(
         "112233445566", "112233445599")]) + "\n")
     aps = CaptureInterface(str(tmp_path)).captured_access_points()
-    assert aps == [{"bssid": "", "essids": [], "handshakes": 2, "last_seen": None}]
+    assert aps == [{"bssid": "", "essids": [], "handshakes": 2, "last_seen": None,
+                    "apless": False}]
 
 
 def _write_seen(tmp_path, aps):
@@ -229,7 +230,8 @@ def test_last_seen_none_when_no_index_and_mtime_unknown(tmp_path):
     # The unknown-BSSID fold row has no AP to date.
     (tmp_path / "Home.hc22000").write_text(NO_BSSID + "\n")
     aps = CaptureInterface(str(tmp_path)).captured_access_points()
-    assert aps == [{"bssid": "", "essids": [], "handshakes": 1, "last_seen": None}]
+    assert aps == [{"bssid": "", "essids": [], "handshakes": 1, "last_seen": None,
+                    "apless": False}]
 
 
 def test_seen_index_wins_over_mtime(tmp_path):
@@ -278,6 +280,31 @@ def test_ap_bssids_counts_distinct_access_points(tmp_path):
         "11:11:11:11:11:11", "AA:BB:CC:DD:EE:01",
     }
     assert len(iface.ap_bssids()) == 4
+
+
+def test_a_rogue_address_counts_handshakes_but_no_access_point(tmp_path):
+    # AP-less handshakes from two clients, filed under one rogue address with
+    # the names they asked for, next to one real AP's.
+    rogue = "00005e00537e"
+    lines = [EAPOL] + [
+        "WPA*02*%032x*%s*%s*%s*0*0*10" % (i, rogue, sta, name.encode().hex())
+        for i, (sta, name) in enumerate([("00005e0053e1", "Home"),
+                                         ("00005e0053e1", "Cafe Guest"),
+                                         ("00005e0053e2", "Library WiFi")])]
+    (tmp_path / "x.hc22000").write_text("\n".join(lines) + "\n")
+    iface = CaptureInterface(str(tmp_path))
+    assert iface.apless_addresses() == {"00:00:5E:00:53:7E"}
+    assert iface.capture_counts() == {"handshakes": 4, "access_points": 1,
+                                      "networks": 3}
+    assert iface.ap_bssids() == {"AA:BB:CC:DD:EE:FF"}
+    rows = {ap["bssid"]: ap for ap in iface.captured_access_points()}
+    assert rows["00:00:5E:00:53:7E"]["apless"] is True
+    assert rows["00:00:5E:00:53:7E"]["handshakes"] == 3
+    assert rows["AA:BB:CC:DD:EE:FF"]["apless"] is False
+    nets = {n["essid"]: n for n in iface.captured_networks()}
+    assert nets["Home"]["bssids"] == 1          # the real AP; not the rogue address
+    assert nets["Home"]["handshakes"] == 2
+    assert nets["Cafe Guest"]["bssids"] == 0
 
 
 # -- environment readout -------------------------------------------------

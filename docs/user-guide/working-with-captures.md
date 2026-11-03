@@ -50,7 +50,11 @@ your `config.toml` has; set `per-ap` there to switch.)
   views you can toggle between: **by network** (one row per SSID, with its
   distinct-BSSID count and handshakes) and **by access point** (one row per
   BSSID, so APs that reuse a name stay separate; search also matches a pasted
-  BSSID). It defaults to match your `[capture.output] mode`, but you can flip the
+  BSSID). Some handshakes come from phones answering the capture tool for
+  networks they remember, with no access point involved; one capture run files
+  them all under one made-up address. That address gets a row marked **Not an
+  access point**: its handshakes count, but it never counts as an access point,
+  shows a location or appears on the map. It defaults to match your `[capture.output] mode`, but you can flip the
   view anytime — it reads the whole store either way, regardless of how each
   handshake was captured. Both are searchable and paginated, sortable by name
   (default) or by **most recently captured**, and show a **last seen** column

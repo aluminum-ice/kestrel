@@ -173,12 +173,13 @@ class CaptureInterface:
 
     def ap_bssids(self):
         """The set of unique AP BSSIDs across the store, i.e. the distinct access
-        points we hold a handshake from. Reads every hashline file, so a caller
-        should snapshot it (e.g. at startup) rather than call it per tick."""
+        points we hold a handshake from (an AP-less handshake's rogue address
+        isn't one). Reads every hashline file, so a caller should snapshot it
+        (e.g. at startup) rather than call it per tick."""
         bssids = set()
         for path in self.hashline_files():
             for event in self.read_events(path):
-                if event.bssid:
+                if event.bssid and not event.apless:
                     bssids.add(event.bssid)
         return bssids
 
@@ -251,9 +252,19 @@ class CaptureInterface:
                 else:
                     slot["no_bssid"] += 1
         keys = HandshakeKeys(frozenset(infrastructure), frozenset(apless))
+        rogue = (frozenset(k[0] for k in apless)
+                 - frozenset(k[0] for k in infrastructure))
         with self._networks_lock:
-            self._networks_cache = (signature, nets, mtime_by_bssid, keys)
+            self._networks_cache = (signature, nets, mtime_by_bssid, keys, rogue)
         return nets, mtime_by_bssid
+
+    def apless_addresses(self):
+        """The BSSIDs that hold only AP-less handshakes: rogue addresses the
+        capture tool answered clients from, not access points. They count as
+        handshakes but never as access points, from the same cached parse."""
+        self._parse_store()
+        with self._networks_lock:
+            return self._networks_cache[4]
 
     def handshake_keys(self):
         """What the store holds handshakes *for*, the identities a recovered
@@ -302,7 +313,8 @@ class CaptureInterface:
         """Unique captured networks across the whole store, keyed by ESSID.
 
         Returns a list of ``{"essid", "bssids", "handshakes", "last_seen"}``
-        (``bssids`` is the count of distinct APs seen under that ESSID;
+        (``bssids`` is the count of distinct APs seen under that ESSID, not
+        counting a rogue address (:meth:`apless_addresses`);
         ``last_seen`` is the newest capture epoch across them, or ``None``)
         sorted by ESSID (case-insensitive; an empty/hidden ESSID sorts last). A
         caller rendering it should search and paginate the returned list rather
@@ -310,12 +322,14 @@ class CaptureInterface:
         :meth:`captured_access_points` is the by-access-point view over the same
         cached parse."""
         nets, mtime_by_bssid = self._parse_store()
+        rogue = self.apless_addresses()
         seen = self._read_seen()
         out = []
         for essid, data in nets.items():
             times = [t for t in (self._last_seen(b, seen, mtime_by_bssid)
                                  for b in data["bssids"]) if t is not None]
-            out.append({"essid": essid, "bssids": len(data["bssids"]),
+            aps = sum(1 for b in data["bssids"] if b not in rogue)
+            out.append({"essid": essid, "bssids": aps,
                         "handshakes": data["handshakes"],
                         "last_seen": max(times) if times else None})
         out.sort(key=lambda net: (net["essid"] == "", net["essid"].lower()))
@@ -325,19 +339,22 @@ class CaptureInterface:
         """One entry per distinct access point -- that is, per **radio (BSSID)**
         -- across the store.
 
-        Returns a list of ``{"bssid", "essids", "handshakes", "last_seen"}``
-        where ``essids`` is the sorted list of distinct names that radio was seen
+        Returns a list of ``{"bssid", "essids", "handshakes", "last_seen",
+        "apless"}`` where ``essids`` is the sorted list of distinct names that radio was seen
         advertising (so a radio captured hidden and later named lists both names
         and is still ONE access point), ``handshakes`` is its total across those
         names and ``last_seen`` its newest capture epoch (or ``None``). Sorted by
         the first name (case-insensitive; a radio only ever seen hidden sorts
-        last) then BSSID. Handshakes whose BSSID could not be parsed (a corrupt
+        last) then BSSID. ``apless`` marks an address that holds only AP-less
+        handshakes (:meth:`apless_addresses`): its names are networks clients
+        asked for, and it is listed but not an access point. Handshakes whose BSSID could not be parsed (a corrupt
         line) are folded into a single trailing entry with an empty ``bssid``
         (the page renders it as the "(unknown BSSID)" row); it is a handshake but
         not an access point, so it is excluded from the access-point count. This
         is the by-access-point view; :meth:`captured_networks` is the by-network
         view."""
         nets, mtime_by_bssid = self._parse_store()
+        rogue = self.apless_addresses()
         seen = self._read_seen()
         by_bssid = {}   # bssid -> {"essids": set, "handshakes": int}
         unknown = 0
@@ -357,13 +374,14 @@ class CaptureInterface:
                 "essids": sorted(slot["essids"], key=str.lower),
                 "handshakes": slot["handshakes"],
                 "last_seen": self._last_seen(bssid, seen, mtime_by_bssid),
+                "apless": bssid in rogue,
             })
         out.sort(key=lambda ap: (not ap["essids"],
                                  ap["essids"][0].lower() if ap["essids"] else "",
                                  ap["bssid"]))
         if unknown:
             out.append({"bssid": "", "essids": [], "handshakes": unknown,
-                        "last_seen": None})
+                        "last_seen": None, "apless": False})
         return out
 
     def capture_counts(self):
@@ -373,7 +391,8 @@ class CaptureInterface:
 
         - ``handshakes``: total captured hashlines across the store.
         - ``access_points``: distinct **radios** (BSSIDs). A radio seen under
-          more than one name (hidden, then named) counts once.
+          more than one name (hidden, then named) counts once, and a rogue
+          address (:meth:`apless_addresses`) not at all.
         - ``networks``: distinct network names (ESSIDs).
 
         One definition each, used by the dashboard navcard, the /networks page
@@ -384,6 +403,7 @@ class CaptureInterface:
         bssids = set()
         for data in nets.values():
             bssids.update(data["bssids"])
+        bssids -= self.apless_addresses()
         return {
             "handshakes": sum(d["handshakes"] for d in nets.values()),
             "access_points": len(bssids),

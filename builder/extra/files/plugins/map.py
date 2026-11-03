@@ -388,8 +388,16 @@ class CaptureMap(Plugin):
         """``[(bssid, Location), ...]`` for the chosen filter."""
         found = GeoStore(self.context.capture.store_dir).locations()
         cutoff = (now or datetime.now(timezone.utc)) - RECENT.get(which, timedelta(0))
+        # A rogue address that holds only AP-less handshakes isn't an access
+        # point: its location is where the device was, so it isn't drawn.
+        try:
+            rogue = self.context.capture.apless_addresses()
+        except Exception:  # noqa: BLE001 - a store read never breaks the map
+            rogue = frozenset()
         out = []
         for bssid, loc in sorted(found.items()):
+            if bssid in rogue:
+                continue
             if which == "recorded" and not loc.recorded:
                 continue
             if which == "estimated" and loc.recorded:

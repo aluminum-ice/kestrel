@@ -308,6 +308,11 @@ your plugin with no daemon and no hardware (see [Testing](#testing)).
 - `captured_networks()` — unique APs across the whole store
   (`{"essid", "bssids", "handshakes"}`); this reads every file, so paginate the
   result rather than calling it on a hot path.
+- `captured_access_points()` — one entry per BSSID (`{"bssid", "essids",
+  "handshakes", "last_seen", "apless"}`); `apless` marks a rogue address that
+  holds only AP-less handshakes, which is listed but isn't an access point.
+  `apless_addresses()` gives those addresses, and `capture_counts()`'s
+  `access_points` leaves them out.
 - `handshake_keys()` — what the store holds handshakes for, from the same
   cached parse: `infrastructure`, a set of `(bssid, essid)` for handshakes with
   a real AP, and `apless`, a set of `(bssid, station, essid)` for AP-less ones.

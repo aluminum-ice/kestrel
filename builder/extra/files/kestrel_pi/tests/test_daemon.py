@@ -460,6 +460,7 @@ def test_status_counts_neither_apless_captures_nor_other_names(tmp_path, monkeyp
 
     cap = d.status()["capture"]
     assert cap["recovered_aps"] == 1
+    assert cap["access_points"] == 1      # the rogue address isn't one
 
 
 def test_status_omits_recovered_aps_when_the_store_read_fails(tmp_path, monkeypatch):
