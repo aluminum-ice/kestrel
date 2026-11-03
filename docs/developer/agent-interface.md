@@ -328,7 +328,7 @@ Row schema:
 | `transmit` | `"active"` \| `"passive"` | decoded transmit mode |
 | `window_seconds` | int | wall-clock length of the window |
 | `new_hashlines` | int | new unique hashlines captured in the window |
-| `new_networks` | int | distinct AP BSSIDs among those hashlines |
+| `new_networks` | int | distinct AP BSSIDs among those hashlines, not counting AP-less ones (their BSSID is the capture tool's rogue address); a reporting figure only, never part of the reward or training |
 | `discoverable` | int | discoverable (non-whitelisted) AP-windows |
 | `reward` | float | the window's reward |
 | `obs` | list[float] | the 395-wide observation that led to `action` (rounded to 5 dp) |

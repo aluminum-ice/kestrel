@@ -122,6 +122,20 @@ def test_step_rewards_new_unique_hashlines_from_the_store_delta(store):
     assert env.observation_space.contains(obs)
 
 
+def test_apless_handshakes_count_as_handshakes_but_not_networks(store):
+    # AP-less handshakes (message-pair bit 0x10) are filed under the capture
+    # tool's rogue address with the names phones asked for: three of them add
+    # three handshakes to the reward, but no access point to the coverage.
+    env = _env(store)
+    env.reset()
+    rogue = [_hashline(9, sta_index=i, essid=name) + "*10"
+             for i, name in enumerate(("lab", "cafe", "library"), start=1)]
+    _write(store, rogue + [_hashline(1)])
+    _obs, _reward, _t, _tr, info = env.step(0)
+    assert info["new_hashlines"] == 4
+    assert info["new_networks"] == 1          # the one real AP
+
+
 def test_duplicate_lines_are_not_counted_again(store):
     env = _env(store, status={"aps": []})
     env.reset()

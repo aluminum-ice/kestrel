@@ -206,11 +206,14 @@ class CaptureEnv(gym.Env):
 
     def _distinct_bssids(self, new_lines):
         """Distinct AP BSSIDs among this window's new hashlines (the per-window
-        coverage signal the metrics module turns into networks/hour)."""
+        coverage signal the metrics module turns into networks/hour). An
+        AP-less handshake doesn't count: its BSSID is the capture tool's rogue
+        address, one per capture run, not an access point. It still counts as
+        a handshake in the reward."""
         bssids = set()
         for line in new_lines:
             event = parse_hashline(line)
-            if event is not None and event.bssid:
+            if event is not None and event.bssid and not event.apless:
                 bssids.add(event.bssid.upper())
         return len(bssids)
 
