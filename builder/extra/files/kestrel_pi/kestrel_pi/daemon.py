@@ -663,18 +663,17 @@ class Daemon:
         if agent_elements:
             widgets[agent_readout.CARD_NAME] = agent_elements
         # How many captured access points have a known passphrase, for the
-        # dashboard's "recovered N of M" figure (N of M captured APs). Join each
-        # captured BSSID to the recovered store; both sides are mtime-cached so
-        # this stays cheap on a repeat render. A store-read failure omits the
+        # dashboard's "recovered N of M" figure (N of M captured APs). Each
+        # captured network is matched to the recovered store by name as well as
+        # address (an AP-less capture's rogue address doesn't count); both sides
+        # are mtime-cached so this stays cheap on a repeat render. A store-read failure omits the
         # key (the navcard then shows no recovered figure) rather than breaking
         # status(); the key is never a secret, so it is always safe to include.
         recovered_aps = None
         located_aps = None
         try:
             aps = self.capture.captured_access_points()
-            recovered_aps = sum(
-                1 for ap in aps
-                if ap.get("bssid") and self.recovered.lookup_bssid(ap["bssid"]))
+            recovered_aps = len(self.recovered.recovered_bssids(self.capture))
             # Captured APs with a known location (recorded or estimated), the
             # "located N of M" figure, joined the same cached way. A location is
             # not a secret, so this is always safe to include.

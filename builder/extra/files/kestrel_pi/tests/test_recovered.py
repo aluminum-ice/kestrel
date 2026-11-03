@@ -113,12 +113,16 @@ def test_store_merges_and_dedupes_across_potfiles(tmp_path):
     _write_potfile(str(tmp_path), "wpa-sec.potfile",
                    "%s:%s:My Network:pw-a\n" % (BSSID_BARE, STA_BARE))
     # A second file repeats the same (bssid, essid, psk) under a different
-    # station MAC -- it must collapse -- and adds a distinct AP.
+    # station MAC -- kept, since an AP-less result is known only for its
+    # client -- repeats the first line exactly (it collapses) and adds a
+    # distinct AP.
     _write_potfile(str(tmp_path), "imported-x.potfile",
                    "%s:00005e0053ff:My Network:pw-a\n"
-                   "%s:%s:Other:pw-b\n" % (BSSID_BARE, BSSID2_BARE, STA_BARE))
+                   "%s:%s:My Network:pw-a\n"
+                   "%s:%s:Other:pw-b\n"
+                   % (BSSID_BARE, BSSID_BARE, STA_BARE, BSSID2_BARE, STA_BARE))
     store = RecoveredStore(str(tmp_path))
-    assert len(store.all()) == 2
+    assert len(store.all()) == 3
     assert store.counts() == {"recovered_aps": 2, "recovered_essids": 2}
 
 
@@ -185,6 +189,105 @@ def test_store_cache_reparses_only_on_change(tmp_path, monkeypatch):
     assert calls["n"] > after_first
 
 
+# -- matching records to captured networks ---------------------------------
+
+ROGUE = "00:00:5E:00:53:7E"        # an AP-less capture's rogue address
+CLIENT1 = "00:00:5E:00:53:E1"
+CLIENT2 = "00:00:5E:00:53:E2"
+
+
+def _keys(infrastructure=(), apless=()):
+    from kestrel_pi.capture import HandshakeKeys
+    return HandshakeKeys(frozenset(infrastructure), frozenset(apless))
+
+
+def _rec(bssid, essid, psk, station=""):
+    return recovered.RecoveredRecord(bssid=bssid, essid=essid, psk=psk,
+                                     source="test", station=station)
+
+
+def test_a_rogue_address_never_lends_its_passphrase_to_other_names():
+    # One rogue address collected four names from two clients in one run; a
+    # result is known for one client's "Cafe Guest" only.
+    keys = _keys(apless=[(ROGUE, CLIENT1, "Cafe Guest"), (ROGUE, CLIENT1, "My Network"),
+                         (ROGUE, CLIENT2, "Library WiFi"), (ROGUE, CLIENT2, "Home")])
+    found = recovered.match_records([_rec(ROGUE, "Cafe Guest", "pw-cafe", CLIENT1)], keys)
+    assert [(m.essid, m.station, m.psk, m.apless) for m in found] == [
+        ("Cafe Guest", CLIENT1, "pw-cafe", True)]
+
+
+def test_apless_results_stay_with_their_own_client():
+    # Two clients remember different networks under one name; each keeps its own.
+    keys = _keys(apless=[(ROGUE, CLIENT1, "Home"), (ROGUE, CLIENT2, "Home")])
+    found = recovered.match_records(
+        [_rec(ROGUE, "Home", "pw-one", CLIENT1), _rec(ROGUE, "Home", "pw-two", CLIENT2)],
+        keys)
+    assert {(m.station, m.psk) for m in found} == {(CLIENT1, "pw-one"),
+                                                   (CLIENT2, "pw-two")}
+
+
+def test_a_result_with_no_client_never_matches_an_apless_capture():
+    # Imports before 1.0.13 wrote an all-zero client, read back as none.
+    keys = _keys(apless=[(ROGUE, CLIENT1, "Home")])
+    old = parse_potfile_line("00005e00537e:000000000000:Home:pw-home")
+    assert old.station == ""
+    assert recovered.match_records([old], keys) == []
+
+
+def test_a_real_ap_matches_on_its_name_whatever_the_client():
+    keys = _keys(infrastructure=[(BSSID_NORM, "My Network"), (BSSID_NORM, "Guest")])
+    found = recovered.match_records([
+        _rec(BSSID_NORM, "My Network", "pw-a", CLIENT1),
+        _rec(BSSID_NORM, "My Network", "pw-a", CLIENT2),   # same result, another client
+        _rec(BSSID_NORM, "Office", "pw-office"),           # a name not captured there
+        _rec(BSSID2_NORM, "My Network", "pw-b"),           # an address not captured
+    ], keys)
+    assert [(m.bssid, m.essid, m.psk, m.apless) for m in found] == [
+        (BSSID_NORM, "My Network", "pw-a", False)]
+
+
+def test_a_result_with_no_name_matches_each_name_at_its_address():
+    keys = _keys(infrastructure=[(BSSID_NORM, "My Network"), (BSSID_NORM, "Guest")],
+                 apless=[(BSSID_NORM, CLIENT1, "Home")])
+    found = recovered.match_records([_rec(BSSID_NORM, "", "pwonly", CLIENT1)], keys)
+    assert sorted((m.essid, m.apless) for m in found) == [("Guest", False),
+                                                          ("My Network", False)]
+
+
+def test_differing_passphrases_for_one_network_are_all_kept():
+    keys = _keys(infrastructure=[(BSSID_NORM, "My Network")])
+    found = recovered.match_records([_rec(BSSID_NORM, "My Network", "old-pw"),
+                                     _rec(BSSID_NORM, "My Network", "new-pw")], keys)
+    assert [m.psk for m in found] == ["old-pw", "new-pw"]
+
+
+def _hc(bssid_bare, station_bare, essid, pair="00"):
+    return "WPA*02*%s*%s*%s*%s*0*0*%s" % (HASH32, bssid_bare, station_bare,
+                                         essid.encode().hex(), pair)
+
+
+def test_store_matches_captures_and_counts_only_real_aps(tmp_path):
+    from kestrel_pi.capture import CaptureInterface
+
+    (tmp_path / "x.hc22000").write_text("\n".join([
+        _hc(BSSID_BARE, STA_BARE, "My Network"),
+        _hc("00005e00537e", "00005e0053e1", "Cafe Guest", "10"),
+        _hc("00005e00537e", "00005e0053e2", "Home", "10"),
+    ]) + "\n")
+    _write_potfile(str(tmp_path), "wpa-sec.potfile",
+                   "%s:%s:My Network:pw-a\n"
+                   "00005e00537e:00005e0053e1:Cafe Guest:pw-cafe\n" % (BSSID_BARE, STA_BARE))
+    store, cap = RecoveredStore(str(tmp_path)), CaptureInterface(str(tmp_path))
+    found = store.capture_matches(cap)
+    assert {(m.bssid, m.essid, m.psk) for m in found} == {
+        (BSSID_NORM, "My Network", "pw-a"), (ROGUE, "Cafe Guest", "pw-cafe")}
+    assert store.recovered_bssids(cap) == {BSSID_NORM}
+    assert store.capture_matches(cap) is found           # cached
+    _write_potfile(str(tmp_path), "imported-y.potfile",
+                   "00005e00537e:00005e0053e2:Home:pw-home\n")
+    assert len(store.capture_matches(cap)) == 3          # a new potfile re-matches
+
+
 # -- ingest_text -----------------------------------------------------------
 
 def _mode(path):
@@ -214,6 +317,16 @@ def test_ingest_result_round_trips_through_the_store(tmp_path):
     other = store.lookup_bssid(BSSID2_NORM)
     assert other.essid == "My: Net"
     assert other.psk == "pw-b"
+
+
+def test_ingest_keeps_the_client(tmp_path):
+    # An AP-less result is known only for its client, so an import keeps it;
+    # a line without one is written with an all-zero client, read back as none.
+    ingest_text(str(tmp_path), "00005e00537e:00005e0053e1:Cafe Guest:pw-cafe\n"
+                               "%s:000000000000:My Network:pw-a\n" % BSSID_BARE)
+    store = RecoveredStore(str(tmp_path))
+    assert {(r.bssid, r.station) for r in store.all()} == {
+        (ROGUE, "00:00:5E:00:53:E1"), (BSSID_NORM, "")}
 
 
 def test_ingest_dedupes_and_counts_skips(tmp_path):

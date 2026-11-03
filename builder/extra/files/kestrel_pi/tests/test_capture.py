@@ -31,6 +31,36 @@ def test_parse_pmkid_unknown_essid():
     assert event.essid == ""
 
 
+def test_parse_reads_the_client_and_the_apless_bit():
+    # The message-pair byte's 0x10 bit marks an AP-less handshake: the
+    # capture tool's rogue address answered a client for a remembered network.
+    event = parse_hashline(EAPOL)
+    assert event.station == "11:22:33:44:55:66"
+    assert event.apless is False
+    assert parse_hashline(EAPOL[:-2] + "10").apless is True
+    assert parse_hashline(EAPOL[:-2] + "92").apless is True     # other bits too
+    assert parse_hashline(PMKID).apless is False                # PMKID: no such bit
+    assert parse_hashline(EAPOL[:-2] + "zz").apless is False    # unreadable byte
+
+
+def test_handshake_keys_split_real_aps_from_apless_captures(tmp_path):
+    # One rogue address collects several names in one run; a real AP keys on
+    # its name, an AP-less capture on its client and name.
+    rogue = "00005e00537e"
+    lines = [
+        EAPOL,
+        "WPA*02*%032x*%s*00005e0053e0*%s*0*0*10" % (1, rogue, "Cafe Guest".encode().hex()),
+        "WPA*02*%032x*%s*00005e0053e1*%s*0*0*10" % (2, rogue, "My Network".encode().hex()),
+    ]
+    (tmp_path / "x.hc22000").write_text("\n".join(lines) + "\n")
+    cap = CaptureInterface(str(tmp_path))
+    keys = cap.handshake_keys()
+    assert keys.infrastructure == {("AA:BB:CC:DD:EE:FF", "Home")}
+    assert keys.apless == {("00:00:5E:00:53:7E", "00:00:5E:00:53:E0", "Cafe Guest"),
+                           ("00:00:5E:00:53:7E", "00:00:5E:00:53:E1", "My Network")}
+    assert cap.handshake_keys() is keys          # cached until the store changes
+
+
 def test_parse_garbage_is_none():
     assert parse_hashline("") is None
     assert parse_hashline("not a hashline") is None

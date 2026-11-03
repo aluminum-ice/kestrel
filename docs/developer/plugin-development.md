@@ -308,11 +308,20 @@ your plugin with no daemon and no hardware (see [Testing](#testing)).
 - `captured_networks()` — unique APs across the whole store
   (`{"essid", "bssids", "handshakes"}`); this reads every file, so paginate the
   result rather than calling it on a hot path.
+- `handshake_keys()` — what the store holds handshakes for, from the same
+  cached parse: `infrastructure`, a set of `(bssid, essid)` for handshakes with
+  a real AP, and `apless`, a set of `(bssid, station, essid)` for AP-less ones.
 - `sidecar_path(capture_path, suffix)` — the path for a sidecar next to a
   capture (e.g. a `.gps.json`).
 
 A `HandshakeEvent` has `path`, `essid` (`""` if hidden/unknown), `bssid`
-(`AA:BB:CC:DD:EE:FF` or `""`), `type` (`"pmkid"`, `"eapol"`, `"unknown"`).
+(`AA:BB:CC:DD:EE:FF` or `""`), `type` (`"pmkid"`, `"eapol"`, `"unknown"`),
+`station` (the client's MAC, or `""`) and `apless`. `apless` is true for an
+AP-less handshake (bit `0x10` of an EAPOL line's message-pair byte): a client
+answered AngryOxide's own rogue address for a network it remembers, so `bssid`
+is that rogue address, not an access point. One rogue address collects many
+unrelated network names in a capture run (AngryOxide picks a new one each
+time it starts), so don't treat it as an AP or key anything on it alone.
 
 ### Connectivity
 
@@ -490,7 +499,7 @@ The services that ship with Kestrel:
 | `position` | `gps` | The current fix (with signal readings), or `None` without one. |
 | `battery` | the UPS plugins (`ups-ws`, `ups-wsc`, `ups-wsd`, `ups-wse`) | The battery reading: `percent`, `status` (charging, discharging, ...), `voltage`, `current_ma`, `power_w`. |
 | `agent` | the daemon | The learning agent's published status, or `None` when it has published nothing. |
-| `recovered` | the daemon | The recovered-networks store (known passphrases). |
+| `recovered` | the daemon | The recovered-networks store (known passphrases). `capture_matches(self.context.capture)` gives the passphrases matched to captured networks (a real AP's by BSSID and name, an AP-less capture's by BSSID, client and name), and `recovered_bssids(self.context.capture)` the captured APs with one; `lookup_bssid()` alone doesn't identify a network. |
 | `geo` | the daemon | The network-location store. |
 | `remote-training` | `remote-train` | The training host's state, without the host's details ([remote training](remote-training.md#the-remote-training-service)). |
 | `census` | `census` | The fleet's totals: `online`, `active_today`, `active_7d_avg`, `versions`, `local_win_rate_7d`, `remote_win_rate_7d` (each `None` until the census is read). |

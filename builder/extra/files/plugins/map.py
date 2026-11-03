@@ -484,13 +484,15 @@ class CaptureMap(Plugin):
 
     def _recovered(self, points):
         """The BSSIDs among ``points`` whose passphrase is known, from the core
-        ``recovered`` service. Empty when the service is absent or unreadable,
-        so the map then shows every marker gray."""
+        ``recovered`` service, matched by network rather than address alone.
+        Empty when the service is absent or unreadable, so the map then shows
+        every marker gray."""
         store = self.context.services.get("recovered")
         if store is None:
             return set()
         try:
-            return {bssid for bssid, _loc in points if store.lookup_bssid(bssid)}
+            known = store.recovered_bssids(self.context.capture)
+            return {bssid for bssid, _loc in points if bssid in known}
         except Exception:  # noqa: BLE001 - a potfile problem never breaks the map
             return set()
 

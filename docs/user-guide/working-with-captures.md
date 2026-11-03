@@ -117,6 +117,13 @@ cracks anything itself.
 - A recovered network's row on the **Captured networks** page gets a **recovered**
   badge, and the dashboard card shows a **recovered N of M access points** count.
   Neither is a secret, so both show whenever you can see the page.
+- A passphrase is matched to the network it was recovered for: the access
+  point's address **and** the network name. Some handshakes come from a phone
+  answering the capture tool for a network it remembers, with no access point
+  involved, and one capture run files all of those under one made-up address.
+  Their passphrases are matched by the phone (the client) as well, and shown
+  with it: `My Network · client 00:00:5E:00:53:01`. They don't count toward
+  "recovered N of M access points".
 - With the **web login on**, expand a recovered row to see its passphrase. To keep
   the badge and count but hide the passphrase — handy when screen-sharing — set
   `show_passphrases` to `false` on the **Settings** page (or in `config.toml`'s

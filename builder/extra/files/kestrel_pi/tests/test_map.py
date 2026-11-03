@@ -239,14 +239,16 @@ def test_the_page_leaves_the_links_back_to_the_shell(store, tmp_path):
     assert body.startswith("<h1>Map</h1>") and "&larr; Plugins" not in body
 
 
-def _recover(p, store, *macs):
-    """Give ``p`` the core recovered service over a potfile recovering ``macs``."""
+def _recover(p, store, *macs, essid="My Network", station="00005e0053ff"):
+    """Give ``p`` the core recovered service over a potfile recovering ``macs``
+    under ``essid`` (results match a captured network by name as well)."""
     from kestrel_pi.recovered import RecoveredStore
 
     cracked = store / "cracked"
     cracked.mkdir(exist_ok=True)
     (cracked / "wpa-sec.potfile").write_text("".join(
-        "%s:00005e0053ff:My Network:made-up-pass\n" % m.replace(":", "").lower() for m in macs))
+        "%s:%s:%s:made-up-pass\n" % (m.replace(":", "").lower(), station, essid)
+        for m in macs))
     recovered = RecoveredStore(str(store))
     p.context.services.provide("recovered", lambda: recovered, owner="daemon")
     return p
@@ -276,7 +278,7 @@ def test_a_square_is_green_if_any_network_in_it_is_recovered(store, tmp_path):
     plain = _svg(_page(_plugin(store, tmp_path), bbox=wide).body)
     square = plain.split("<rect", 1)[1].split("</a>", 1)[0]
     assert 'fill="%s"' % MAP.PLAIN_FILL in square and "a2.5 2.5" not in square
-    p = _recover(_plugin(store, tmp_path), store, B)
+    p = _recover(_plugin(store, tmp_path), store, B, essid="<b>Cafe</b>")
     svg = _svg(_page(p, bbox=wide).body)
     square = svg.split("tap to", 1)[0].rsplit("<a ", 1)[1] + svg.split("tap to", 1)[1].split("</a>", 1)[0]
     assert "1 recovered" in square
@@ -292,7 +294,7 @@ def test_the_spot_list_marks_recovered_networks(tmp_path):
     (d / "x.hc22000.gps.json").write_text(json.dumps({
         m.replace(":", "").lower(): {"lat": LAT, "lon": LON, "fix_time": now, "source": "gpsd"}
         for m in macs}))
-    p = _recover(_plugin(d, tmp_path), d, macs[0])
+    p = _recover(_plugin(d, tmp_path), d, macs[0], essid="Library WiFi")
     spot = "%f,%f,%f,%f" % (LAT - 1e-5, LON - 1e-5, LAT + 1e-5, LON + 1e-5)
     body = _page(p, spot=spot).body
     listed = body.split('id="spot"', 1)[1]
@@ -355,3 +357,25 @@ def test_declarations_are_readable_by_root():
     decl = read_declarations(os.path.join(PLUGIN_DIR, "map.py"))["map"]
     caps = decl.get("capabilities") or decl.get("__capabilities__")
     assert set(caps) == {"capture-read", "location", "web"}
+
+
+def test_an_apless_capture_never_turns_its_rogue_address_green(tmp_path):
+    # An AP-less handshake (message-pair bit 0x10) is filed under the capture
+    # tool's rogue address. A result for it is the client's network, not an AP
+    # at that address, so its marker stays gray; a result for a real AP under
+    # a name the rogue address also collected doesn't color it either.
+    d = tmp_path / "capture"
+    d.mkdir()
+    rogue = "00:00:5E:00:53:7E"
+    apless = "*".join(["WPA", "02", "%032x" % 2, rogue.replace(":", "").lower(),
+                       "00005e0053e0", "Cafe Guest".encode().hex(), "aa", "bb", "10"])
+    (d / "x.hc22000").write_text(apless + "\n")
+    (d / "x.hc22000.gps.json").write_text(json.dumps({
+        rogue.replace(":", "").lower(): {
+            "lat": LAT, "lon": LON, "fix_time": _iso(datetime.now(timezone.utc)),
+            "source": "gpsd"}}))
+    p = _recover(_plugin(d, tmp_path), d, rogue, essid="Cafe Guest",
+                 station="00005e0053e0")
+    body = _page(p).body
+    assert 'title="passphrase recovered"' not in body
+    assert "&#128274;" not in _svg(body)
