@@ -21,23 +21,31 @@ the environment you run them in:
 - `flask` and `requests` — the web/daemon tests. Missing `flask` skips the web
   suite (`importorskip`).
 - `numpy` — the agent `spec`/`metrics`/`readout` tests (a hard import for those).
-- The heavy ML stack (`gymnasium`, `stable-baselines3`, `sb3-contrib`, and
-  therefore `torch`) — only the Gymnasium-env, policy and training-shape tests.
-  These `importorskip` the stack, so on a host without it they **skip** rather
-  than fail. A handful of expected skips is normal; it is not a broken run.
+- `pillow` — the e-ink renderer tests; `cryptography` — the dashboard's HTTPS
+  certificate tests.
+- `gymnasium` (light, pure Python; the image's pinned version) — the agent env,
+  policy and training-reward tests (`test_agent_env`, `test_agent_policies`,
+  `test_agent_train_reward`), which `importorskip` it.
+- The heavy ML stack (`stable-baselines3`, `sb3-contrib`, and therefore
+  `torch`) — only the policy tests that build a real model. These
+  `importorskip` it, so on a host without it they **skip** rather than fail.
+  A handful of expected skips is normal; it is not a broken run.
 
 In a cloud Claude Code session, `.claude/hooks/session-start.sh` installs the
-lint tools but not these; `pip install flask requests numpy` (into the same
-interpreter) gets most of the suite running, and installing the ML stack is only
-worth it when you are changing the agent env/policies.
+lint tools but not these; `pip install flask requests numpy pillow cryptography
+"gymnasium==1.4.0"` (into the same interpreter) gets everything but the heavy ML
+stack running, and installing that is only worth it when you are changing the
+agent policies.
 
-## This is not the CI gate
+## What CI runs
 
-The **Lint** workflow (`make lint`) is the only check CI runs on a push/PR, and
-it only **byte-compiles** the package (`py_compile`) — it does not run `pytest`.
-So a green PR means lint passed, *not* that the unit tests ran. Run `make test`
-yourself whenever you change anything under
-`builder/extra/files/kestrel_pi/`.
+The **Test** workflow (`.forgejo/workflows/test.yml`) runs `make test` on every
+push and pull request, with the dependencies above except the heavy ML stack, so
+the tests that need stable-baselines3 skip there. The **Lint** workflow runs
+`make lint`, which only **byte-compiles** the package (`py_compile`). Run
+`make test` yourself as well when you change anything under
+`builder/extra/files/kestrel_pi/`, and the SB3 policy tests too when you change
+the agent policies.
 
 ## Layout and coverage
 
