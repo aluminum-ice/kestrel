@@ -3038,6 +3038,21 @@ def _mac_norm(value):
     return "".join(ch for ch in (value or "").lower() if ch in "0123456789abcdef")
 
 
+def _mac_query(query):
+    """The BSSID fragment a by-AP search is looking for, or ``""`` when the
+    query isn't one. Only a query made of hex digits and MAC separators, with a
+    separator or at least six digits, counts (``AA:BB``, ``aabbcc``): a network
+    name keeps only its letters a-f and digits, and "Home" would otherwise
+    become "e" and match nearly every BSSID."""
+    text = (query or "").strip().lower()
+    digits = _mac_norm(text)
+    if not digits or any(ch not in "0123456789abcdef:-." for ch in text):
+        return ""
+    if len(digits) < 6 and not any(ch in ":-." for ch in text):
+        return ""
+    return digits
+
+
 def _ago(epoch, now=None):
     """A short relative time for an epoch — "just now" / "3m ago" / "2h ago" /
     "5d ago", a plain date past two weeks, and "never" for missing/0. Used for
@@ -3317,7 +3332,7 @@ def _render_networks(rows_in, control=None, query="", page=1,
              if ap_view else len(rows_in))
     needle = (query or "").strip().lower()
     if needle:
-        mac_needle = _mac_norm(query)
+        mac_needle = _mac_query(query)
 
         def _matches(r):
             names = r.get("essids") if ap_view else [r.get("essid") or ""]

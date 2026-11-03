@@ -1782,6 +1782,33 @@ def test_networks_ap_search_matches_bssid(monkeypatch, tmp_path):
     assert "1 of 2 access points match" in body
 
 
+def test_networks_ap_search_by_name_ignores_bssid_hex(monkeypatch, tmp_path):
+    # A name's letters a-f aren't a BSSID: "Home" once matched every BSSID
+    # with an "e" in it, and "Cafe Guest" every one with "cafee".
+    client, _ = _client(
+        monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ap",
+        access_points=_aps(("Home", "00:00:5E:00:53:01"),
+                           ("Library WiFi", "00:00:5E:00:53:EE"),
+                           ("My Network", "00:00:5E:00:53:CA")))
+    body = client.get("/networks?q=Home").get_data(as_text=True)
+    assert "1 of 3 access points match" in body
+    assert "00:00:5E:00:53:EE" not in body and "00:00:5E:00:53:CA" not in body
+    # A pasted fragment, with separators or six digits, still finds the radio.
+    for q in ("53:ee", "00-00-5e-00-53-ee", "5e0053ee"):
+        found = client.get("/networks?q=" + q).get_data(as_text=True)
+        assert "1 of 3 access points match" in found and "00:00:5E:00:53:EE" in found
+
+
+def test_mac_query_only_reads_mac_shaped_searches():
+    assert web._mac_query("Home") == ""
+    assert web._mac_query("Cafe Guest") == ""
+    assert web._mac_query("cafe") == ""            # all hex, but no separator and short
+    assert web._mac_query("aabbcc") == "aabbcc"
+    assert web._mac_query(" AA:BB ") == "aabb"
+    assert web._mac_query("aabb.ccdd.eeff") == "aabbccddeeff"
+    assert web._mac_query(":") == ""
+
+
 def test_networks_non_default_view_is_preserved_in_links(monkeypatch, tmp_path):
     # Mode defaults to by-AP, but the operator is viewing by-network: the search
     # form and toggle must carry view=ssid so a search/page doesn't revert them.
