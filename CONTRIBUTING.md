@@ -120,5 +120,7 @@ You'll get a reply either way.
 patches are committed under the project's identity, because the repository
 never records contributors' personal details; that holds for a GitHub pull
 request too, though GitHub itself keeps showing your pull request under your
-account. If you'd like to be credited, say so and suggest a handle; it will be
-mentioned without your real name.
+account. If you'd like to be credited, say so and suggest a handle: once you've
+confirmed it, the release notes of the release that carries your work thank you
+by that handle, never your real name or email. Before then, and in the code,
+commits and pull requests, the credit reads "a community member".
