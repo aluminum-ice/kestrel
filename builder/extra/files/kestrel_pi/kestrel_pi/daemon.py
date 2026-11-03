@@ -675,11 +675,13 @@ class Daemon:
             aps = self.capture.captured_access_points()
             recovered_aps = len(self.recovered.recovered_bssids(self.capture))
             # Captured APs with a known location (recorded or estimated), the
-            # "located N of M" figure, joined the same cached way. A location is
-            # not a secret, so this is always safe to include.
+            # "located N of M" figure, joined the same cached way (a rogue
+            # address isn't an access point). A location is not a secret, so
+            # this is always safe to include.
             located_aps = sum(
                 1 for ap in aps
-                if ap.get("bssid") and self.geo.lookup_bssid(ap["bssid"]))
+                if ap.get("bssid") and not ap.get("apless")
+                and self.geo.lookup_bssid(ap["bssid"]))
         except Exception:  # noqa: BLE001 - a store read must never break status()
             pass
         return {

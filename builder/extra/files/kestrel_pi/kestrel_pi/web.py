@@ -3159,7 +3159,11 @@ def _location_maps(daemon, view, data):
     By-network view: among a network's captured radios, the representative is the
     location of the **most-recently-captured** radio that has one, and the value
     is ``(Location, extra)`` where ``extra`` is how many *other* of that network's
-    radios are also located (the ``+N`` hint)."""
+    radios are also located (the ``+N`` hint).
+
+    A rogue address that holds only AP-less handshakes (``apless``) is skipped:
+    its location is where the device was, not where any of the networks its
+    clients asked for are."""
     geo = daemon.services.get("geo")
     by_bssid, by_essid = {}, {}
     if geo is None:
@@ -3168,7 +3172,7 @@ def _location_maps(daemon, view, data):
         if view == "ap":
             for row in data:
                 bssid = row.get("bssid")
-                if not bssid:
+                if not bssid or row.get("apless"):
                     continue
                 loc = geo.lookup_bssid(bssid)
                 if loc:
@@ -3178,7 +3182,8 @@ def _location_maps(daemon, view, data):
             located = {}
             for ap in daemon.capture.captured_access_points():
                 bssid = ap.get("bssid")
-                loc = geo.lookup_bssid(bssid) if bssid else None
+                loc = (geo.lookup_bssid(bssid)
+                       if bssid and not ap.get("apless") else None)
                 if not loc:
                     continue
                 for essid in ap.get("essids") or []:
@@ -3305,10 +3310,11 @@ def _render_networks(rows_in, control=None, query="", page=1,
     location_by_essid = location_by_essid or {}
     ap_view = view == "ap"
     # The by-AP list may carry a trailing "(unknown BSSID)" fold row for
-    # handshakes whose BSSID didn't parse; it is shown but is not an access
-    # point, so the headline count excludes it to match the dashboard navcard.
-    total = (sum(1 for r in rows_in if r.get("bssid")) if ap_view
-             else len(rows_in))
+    # handshakes whose BSSID didn't parse, and rows for rogue addresses that
+    # hold only AP-less handshakes; both are shown but are not access points,
+    # so the headline count excludes them to match the dashboard navcard.
+    total = (sum(1 for r in rows_in if r.get("bssid") and not r.get("apless"))
+             if ap_view else len(rows_in))
     needle = (query or "").strip().lower()
     if needle:
         mac_needle = _mac_norm(query)
@@ -3352,6 +3358,10 @@ def _render_networks(rows_in, control=None, query="", page=1,
             bssid = r.get("bssid") or ""
             radio = (_esc(bssid) if bssid
                      else '<span class="smeta">(unknown BSSID)</span>')
+            if r.get("apless"):
+                radio += ('<div class="smeta">Not an access point: phones that '
+                          "answered the capture tool for networks they "
+                          "remember</div>")
             if bssid and bssid in recovered_by_bssid:
                 radio = _recovered_cell(radio, recovered_by_bssid[bssid],
                                       auth_on, show_passphrases)
@@ -3367,7 +3377,9 @@ def _render_networks(rows_in, control=None, query="", page=1,
             else:
                 names = '<span class="smeta">(hidden)</span>'
             rows.append(
-                "<tr><td data-label=\"access point\">" + radio + "</td>"
+                "<tr><td data-label=\"" + ("rogue address" if r.get("apless")
+                                           else "access point") + "\">"
+                + radio + "</td>"
                 "<td data-label=\"network(s)\">" + names + "</td>"
                 "<td data-label=\"handshakes\">" + _esc(r.get("handshakes", 0))
                 + "</td>" + seen_cell + "</tr>"

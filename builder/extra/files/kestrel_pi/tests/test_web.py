@@ -1912,6 +1912,37 @@ def test_networks_ap_view_labels_a_rogue_address_result_with_its_network(
     assert "Passphrase: <code>" not in body
 
 
+def test_networks_ap_view_says_a_rogue_address_is_not_an_access_point(
+        monkeypatch, tmp_path):
+    client, _ = _client(
+        monkeypatch, tmp_path, {"auth": "none"}, output_mode="per-ap",
+        access_points=_aps(("My Network", _CRK_BSSID)) + [
+            {"bssid": _ROGUE, "handshakes": 3, "apless": True,
+             "essids": ["Cafe Guest", "Library WiFi", "My Network"]}])
+    body = client.get("/networks?view=ap").get_data(as_text=True)
+    assert "1 access point(s) captured" in body
+    assert "Not an access point" in body
+    assert 'data-label="rogue address"' in body
+    assert body.count('data-label="access point"') == 1
+
+
+def test_networks_rogue_address_location_is_never_shown(monkeypatch, tmp_path):
+    # Where the device was when phones answered isn't where their networks are.
+    rows = [{"bssid": _ROGUE, "handshakes": 1, "apless": True,
+             "essids": ["Cafe Guest"]}]
+    client, _ = _client(
+        monkeypatch, tmp_path, BASIC, output_mode="per-ssid",
+        networks=_nets("Cafe Guest"), access_points=rows,
+        geo=_geo_one(bssid=_ROGUE))
+    assert _GEO_COORDS not in client.get(
+        "/networks", headers=_basic()).get_data(as_text=True)
+    client, _ = _client(
+        monkeypatch, tmp_path, BASIC, output_mode="per-ap", access_points=rows,
+        geo=_geo_one(bssid=_ROGUE))
+    assert _GEO_COORDS not in client.get(
+        "/networks?view=ap", headers=_basic()).get_data(as_text=True)
+
+
 def test_networks_result_for_another_name_at_a_captured_ap_is_not_shown(
         monkeypatch, tmp_path):
     # The AP was captured as "My Network"; a result for "Office" at the same
