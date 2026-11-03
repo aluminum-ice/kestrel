@@ -284,6 +284,18 @@ PY
     echo "  census pauses, failures and reconnects since the daemon started: $(printf '%s' "$clog" | grep -c . || true)"
     printf '%s\n' "$clog" | grep . | tail -8 | jscrub
   fi
+  # When the tether last came up (NetworkManager's activation line; the time
+  # only) and when the census last reported (its status file, read as the
+  # device user), so a socket from before a reconnect isn't judged as unbound.
+  tether_since=$(journalctl -q --no-pager -o short-unix -u NetworkManager --since "-3 days" 2>/dev/null \
+    | grep -F 'device (bnep0): Activation: successful' | tail -1 | cut -d. -f1)
+  census_wrote=$(as_dev /usr/bin/python3 -I -c 'import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(int(max(float((d.get(k) or {}).get("at") or 0) for k in ("write", "read"))) or "")
+except Exception:
+    pass' "$DEV_HOME/.local/state/kestrel-census/status.json" 2>/dev/null)
+  echo "  tether up since: ${tether_since:-unknown}  census last push or read: ${census_wrote:-unknown} (epoch seconds)"
   if [ "$census_tether" != true ]; then
     check 5.2 SKIP "the census socket is bound to the tether" "tether_only is off"
   elif [ "$tether_up" != up ]; then
@@ -292,6 +304,10 @@ PY
     check 5.2 INFO "the census socket is bound to the tether" "can't read the daemon's sockets: $socks"
   elif [ "${bound:-0}" -ge 1 ]; then
     check 5.2 PASS "the census socket is bound to the tether" "$bound daemon UDP socket(s) on bnep0"
+  elif [ -n "$tether_since" ] && [ -n "$census_wrote" ] && [ "$tether_since" -gt "$census_wrote" ]; then
+    # A socket from before the tether came back: the census sends nothing on
+    # it and opens a fresh one at its next cycle, so judge it then.
+    check 5.2 INFO "the census socket is bound to the tether" "the tether came back $(( $(date +%s) - tether_since ))s ago, after the census's last push or read ($(( $(date +%s) - census_wrote ))s ago); rerun after its next cycle"
   else
     check 5.2 FAIL "the census socket is bound to the tether" "no daemon UDP socket on bnep0 (see the sockets and census lines above)"
   fi
