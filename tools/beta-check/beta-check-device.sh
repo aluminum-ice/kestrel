@@ -287,8 +287,11 @@ PY
   # When the tether last came up (NetworkManager's activation line; the time
   # only) and when the census last reported (its status file, read as the
   # device user), so a socket from before a reconnect isn't judged as unbound.
+  # NetworkManager names a Bluetooth device by its address, not bnep0, so the
+  # line is matched by that shape; only the leading timestamp is kept.
   tether_since=$(journalctl -q --no-pager -o short-unix -u NetworkManager --since "-3 days" 2>/dev/null \
-    | grep -F 'device (bnep0): Activation: successful' | tail -1 | cut -d. -f1)
+    | grep -E 'device \((bnep0|([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})\): Activation: successful' \
+    | tail -1 | cut -d. -f1)
   census_wrote=$(as_dev /usr/bin/python3 -I -c 'import json, sys
 try:
     d = json.load(open(sys.argv[1]))
