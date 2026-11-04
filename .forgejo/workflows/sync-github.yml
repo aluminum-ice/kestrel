@@ -4,8 +4,9 @@ name: Sync Release to GitHub
 # mirror, so the release also appears there. Devices keep updating from the
 # Forgejo releases; the GitHub copy is for people who find the project there.
 #
-# - published: the Release workflow creates the release and then uploads the
-#   image, so this waits until the release's files are all attached.
+# - published: the Release workflow attaches the files to a draft and then
+#   publishes it; this still waits until the files are all there, in case a
+#   release was published by hand before its upload finished.
 # - edited: the notes are often rewritten after publishing; the copy follows.
 # - workflow_dispatch: sync (or re-sync) one release by tag, e.g. an older one.
 #
