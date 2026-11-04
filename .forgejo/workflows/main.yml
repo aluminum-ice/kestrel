@@ -177,10 +177,15 @@ jobs:
           printf '_Built from %s._\n' "$GITHUB_SHA" > release-notes.md
         fi
 
-    # Create the release through the Forgejo API, tagging the commit that was
-    # built (not the default branch head), then attach the artifacts. Needs a
-    # token that can write releases: the RELEASE_TOKEN secret if set, else the
-    # job's own token. Forgejo's attachment size limit must allow the .7z.
+    # Create the release through the Forgejo API as a draft, attach the
+    # artifacts, then publish it, tagging the commit that was built (not the
+    # default branch head). Devices read only published releases, so none ever
+    # sees this one before its update manifest is attached (a release without
+    # one reads as "needs reflash" until the device's next check). If an
+    # upload fails, the draft is deleted: a draft has no tag yet, so a re-run
+    # starts clean. Needs a token that can write releases: the RELEASE_TOKEN
+    # secret if set, else the job's own token. Forgejo's attachment size limit
+    # (and the disk under its attachments) must allow the .7z.
     - name: Publish Forgejo Release
       run: |
         set -eu
@@ -193,17 +198,26 @@ jobs:
             "name": "Release " + os.environ["MY_VERSION"],
             "body": open("release-notes.md").read(),
             "prerelease": os.environ["PRERELEASE"] == "true",
+            "draft": True,
         }))
         PY
         id=$(curl -fsS -X POST -H "Authorization: token $TOKEN" \
           -H "Content-Type: application/json" --data-binary @release.json \
           "$api/releases" | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')
-        echo "created release $id"
+        echo "created draft release $id"
         for f in "kestrel-$MY_VERSION.7z" "kestrel-$MY_VERSION.7z.sha256" update-manifest.json; do
           echo "uploading $f"
-          curl -fsS -X POST -H "Authorization: token $TOKEN" \
-            -F "attachment=@$f" "$api/releases/$id/assets?name=$f" > /dev/null
+          if ! curl -fsS -X POST -H "Authorization: token $TOKEN" \
+              -F "attachment=@$f" "$api/releases/$id/assets?name=$f" > /dev/null; then
+            echo "uploading $f failed; deleting draft release $id" >&2
+            curl -fsS -X DELETE -H "Authorization: token $TOKEN" "$api/releases/$id" || true
+            exit 1
+          fi
         done
+        curl -fsS -X PATCH -H "Authorization: token $TOKEN" \
+          -H "Content-Type: application/json" --data '{"draft": false}' \
+          "$api/releases/$id" > /dev/null
+        echo "published release $id"
       env:
         TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
 

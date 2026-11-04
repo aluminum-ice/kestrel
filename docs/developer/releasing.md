@@ -26,6 +26,13 @@ generates grouped release notes (see below), and publishes a Forgejo release
 through the Forgejo API, tagging the built commit with the `.7z`, its `.sha256`, and
 `update-manifest.json`.
 
+The release is created as a **draft**, the three files are attached, and only
+then is it published (which is when the tag is made). Devices read only
+published releases, so none ever sees the release before its manifest is there:
+a release without one reads as "needs reflash", and a device would keep showing
+that until its next check. If an upload fails, the job deletes its draft and
+fails; with no tag or release left behind, the run can simply be re-run.
+
 ## The build host (`image-builder` runner)
 
 The Release job runs on a self-hosted [Forgejo Runner](https://forgejo.org/docs/latest/admin/actions/runner-installation/)
@@ -49,7 +56,10 @@ deletes the built image and archive at the end, so they don't pile up.
 Release creation uses the `RELEASE_TOKEN` secret if it is set (a Forgejo access
 token with repository write scope), otherwise the job's own token. Forgejo's
 attachment size limit (and any reverse-proxy upload limit) must allow the
-`.7z`.
+`.7z`, and the disk holding Forgejo's attachments needs room for it: each
+release adds its image, so delete superseded betas' `.7z` files now and then
+(keep their `update-manifest.json`, which devices read to check the update
+path).
 
 Lint and Test run on any Docker-capable runner (label `docker`) in stock
 `python:3.12-bookworm` / `python:3.11-bookworm` images. All three workflows
@@ -158,8 +168,9 @@ copy is for people who find the project there.
 
 - **When it runs.**
   - When a release is **published**. It first waits, up to 30 minutes, until the
-    release has its `.7z`, `.sha256` and `update-manifest.json`, because the
-    Release workflow creates the release before it uploads the image.
+    release has its `.7z`, `.sha256` and `update-manifest.json`. The Release
+    workflow attaches them before it publishes, so this matters only for a
+    release published by hand before its files finished uploading.
   - When a release is **edited**, so notes rewritten after publishing reach
     GitHub too.
   - By hand (`workflow_dispatch`, with a `tag`), to sync or re-sync one release,
