@@ -76,11 +76,47 @@ How to use this file:
 ### The learned policy collapses to one action
 
 - **What:** on the test device the learned RecurrentPPO model picks one action
-  (`autohunt / 2 s / passive`) for every observation. Add that fixed posture as
-  a second baseline, and look at exploration (entropy) and the reward weights.
-- **Why deferred:** worth judging once contests are fair and remote models,
-  trained far longer, actually compete.
-- **Pick up when:** a few days of fair contests are logged.
+  (`autohunt / 2 s / passive`) for every observation. Exploration, runs from
+  scratch and cautious scoring of barely-tried actions now give it data on the
+  other actions and a way off one policy (`agent-interface.md`, "Action space"
+  and "Candidates and promotion"). Still open: add that fixed posture as a
+  second baseline, and look at the reward weights.
+- **Why deferred:** exploration has to gather data on the other actions first.
+- **Pick up when:** exploring has run for a few days, so the probe or the
+  diagnostics script shows most allowed actions tried and how runs from scratch
+  fare in contests.
+
+### Runs from scratch on the remote training host
+
+- **What:** the remote host's trainer warm-starts from its previous model, so
+  it can sit on one policy the way on-device runs did. Give `remote-train` the
+  same cadence: every `fresh_every`-th remote run with `--no-warm-start --seed`.
+- **Why deferred:** the on-device runs show first whether runs from scratch
+  win any contests; the remote plugin's launch logic is separate.
+- **Pick up when:** the tally shows on-device runs from scratch winning, or the
+  remote candidates keep tying.
+
+### Weight exploring rows in the reward fit
+
+- **What:** each exploring row records `explore_p`, the probability its action
+  was drawn with. Use it for an off-policy correction (inverse-propensity
+  weights) in `fit_reward_model`, so the policy's own choices don't dominate
+  the fit.
+- **Why deferred:** the per-action ridge fit already treats each action's rows
+  separately; the weighting matters once there is enough exploring data to
+  compare with and without it.
+- **Pick up when:** a few weeks of exploring rows are logged.
+
+### Pause training after a tie
+
+- **What:** after a contest where the candidate made the same choices as the
+  active model on every row, wait for more new data (for example twice
+  `train_min_new_episodes`) before the next fine-tune, to save the CPU a
+  no-change run costs (about 5.5 minutes every 30 on a Pi 5).
+- **Why deferred:** runs from scratch now follow a run of ties, and exploration
+  changes the data; whether ties stay common is worth seeing first.
+- **Pick up when:** the journal still shows most contests at 100% agreement
+  after exploring has run for a while.
 
 ### Pin the training host's ML stack
 

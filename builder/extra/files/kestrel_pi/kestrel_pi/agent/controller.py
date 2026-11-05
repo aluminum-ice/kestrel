@@ -25,6 +25,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -38,6 +39,7 @@ from . import (AGENT_DIR, CANDIDATES_DIR, EPISODES_DIR, EVALUATED_NAME,
                LAST_TRAIN_NAME, MODEL_NAME, PROMOTION_TALLY_NAME,
                REMOTE_STAGING_DIR, STATUS_NAME, TRAIN_REQUEST_NAME,
                model_meta_name_for, model_name_for, model_slug)
+from . import explore as explore_mod
 from . import metrics as metrics_mod
 from . import policies as policies_mod
 from . import spec
@@ -100,8 +102,20 @@ AGENT_DEFAULTS = {
     "promotion_margin": 0.10,            # 10% lift over the active model's
     "promotion_min_z": 1.0,              # paired-difference significance
     "promotion_max_stale_episodes": 900,  # skip a candidate this far behind; 0=off
+    # Exploration and fresh runs (agent-interface.md, "Exploration" and
+    # "Candidates and promotion"); code defaults too. A greedy policy only ever
+    # runs the action it prefers, so a share of its windows try another
+    # allowed action, held for explore_windows windows; and every fresh_every-th
+    # local run (or one after stuck_contests ties in a row) trains from scratch
+    # with fresh_timesteps (0 = 3x train_timesteps) and a new seed.
+    "explore_rate": 0.05,                # share of learned windows; 0 = off
+    "explore_windows": 2,                # windows an exploring action holds
+    "fresh_every": 4,                    # every Nth local run from scratch; 0 = off
+    "stuck_contests": 3,                 # full-agreement contests forcing one; 0 = off
+    "fresh_timesteps": 0,                # steps for a fresh run; 0 = 3x train_timesteps
 }
 ACTION_DEFAULTS = {
+    "postures": list(spec.POSTURES),
     "lock_subset_n": 3,
     "dwell_buckets": list(spec.DWELLS),
     "transmit_modes": list(spec.TRANSMIT),
@@ -124,6 +138,17 @@ def _count(value):
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+# An episode row's action, as json.dumps writes it.
+_ACTION_RE = re.compile(r'"action": (\d+)[,}]')
+
+
+def _int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _round(value, places=5):
@@ -291,8 +316,6 @@ def _monitor_capable(dev):
 def supported_channels(dev):
     """The non-disabled channels the adapter supports across its bands, as a
     sorted int list (mirrors the shell ``capture_auto_channels``)."""
-    import re
-
     phy = _phy_for(dev)
     if not phy:
         return []
@@ -402,6 +425,28 @@ class AgentController:
         # only a changed mtime (a freshly pulled model) triggers a re-score.
         self._staged_mtime = None
         self._dwell_seconds = self.agent_cfg.get("dwell_seconds", 5)
+        # The actions [agent.action] allows: every action the agent runs is
+        # mapped into this set, and exploration draws only from it.
+        baseline_action = policies_mod.BaselinePolicy(
+            dwell_seconds=self._dwell_seconds).predict(None)[0]
+        self._action_set = explore_mod.allowed_actions(
+            self.agent_cfg.get("action"), baseline_action)
+        self._outside_noted = False
+        self._explorer = explore_mod.Explorer(
+            self.agent_cfg.get("explore_rate", 0.05),
+            self.agent_cfg.get("explore_windows", 2),
+            self._action_set, load_counts=self._logged_action_counts)
+        self._explore = None        # (action, probability) of the window running
+        # Fresh runs: every fresh_every-th local run, or one after
+        # stuck_contests local contests in a row ended in full agreement.
+        self._fresh_every = min(50, max(0, _int(self.agent_cfg.get("fresh_every"), 4)))
+        self._stuck_contests = min(20, max(0, _int(
+            self.agent_cfg.get("stuck_contests"), 3)))
+        fresh_steps = _int(self.agent_cfg.get("fresh_timesteps"), 0)
+        self._fresh_timesteps = min(30000, max(
+            100, fresh_steps if fresh_steps > 0 else 3 * self._train_timesteps))
+        self._runs_since_fresh = 0
+        self._stuck_streak = 0
         # GPS observation seam (Phase 4.8): whether to read the fix at all, and
         # how old a fix may be before it reads as "no GPS" (2x a decision window,
         # with a 15 s floor so a short window still tolerates a ~1 Hz receiver).
@@ -484,6 +529,7 @@ class AgentController:
             # that ran before contests existed.
             "promotion_tally": json.loads(json.dumps(self._promotion_tally)),
             "last_decision": self._last_decision,
+            "explore": self._explore_status(),
             "session_yield": self._session_yield(),
             "decisions": len(self._recent),
             "detail": detail or "",
@@ -514,6 +560,41 @@ class AgentController:
             os.replace(tmp, self._status_path)
         except OSError as exc:
             self.log.warning("could not write status: %s", exc)
+
+    def _explore_status(self):
+        """Exploration for the dashboard: the settings, how many of the allowed
+        actions have been tried, how many windows explored in the last hour,
+        and whether this window is exploring."""
+        explorer = self._explorer
+        cutoff = time.time() - 3600
+        last_hour = sum(1 for r in self._recent if r.get("explore")
+                        and float(r.get("ts", 0) or 0) >= cutoff)
+        return {"rate": explorer.rate, "windows": explorer.windows,
+                "allowed": len(explorer.allowed), "tried": explorer.tried(),
+                "last_hour": last_hour, "now": self._explore is not None}
+
+    def _logged_action_counts(self):
+        """How often each action appears in the episode logs (every policy,
+        exploration included): what exploration weighs its choice by."""
+        # A line scan, not a JSON parse: each row carries a 395-wide
+        # observation, and this runs at start-up on every board.
+        counts = {}
+        folder = os.path.join(self.agent_dir, EPISODES_DIR)
+        try:
+            names = sorted(n for n in os.listdir(folder) if n.endswith(".jsonl"))
+        except OSError:
+            return counts
+        for name in names:
+            try:
+                with open(os.path.join(folder, name), "r", encoding="utf-8") as handle:
+                    for line in handle:
+                        match = _ACTION_RE.search(line)
+                        if match:
+                            action = int(match.group(1))
+                            counts[action] = counts.get(action, 0) + 1
+            except OSError:
+                continue
+        return counts
 
     def _session_yield(self):
         return sum(int(r.get("new_hashlines", 0) or 0) for r in self._recent)
@@ -563,6 +644,9 @@ class AgentController:
             if isinstance(value, dict):
                 for key in ("won", "lost"):
                     tally[source][key] = _count(value.get(key))
+                for key in ("fresh_won", "fresh_lost"):
+                    if key in value:
+                        tally[source][key] = _count(value.get(key))
             elif value is not None:
                 old[source] = _count(value)
         before = data.get("before_fair_promotion")
@@ -573,12 +657,18 @@ class AgentController:
                 "local": old.get("local", 0), "remote": old.get("remote", 0)}
         self._promotion_tally = tally
 
-    def _bump_promotion_tally(self, source, won):
+    def _bump_promotion_tally(self, source, won, fresh=False):
         """Record one contest result for a ``source`` ("local" or "remote")
-        candidate and persist the tally. Best-effort - a write failure logs."""
+        candidate and persist the tally; a model trained from scratch is also
+        counted under ``fresh_won``/``fresh_lost``. Best-effort - a write
+        failure logs."""
         if source not in ("local", "remote"):
             return
-        self._promotion_tally[source]["won" if won else "lost"] += 1
+        side = self._promotion_tally[source]
+        side["won" if won else "lost"] += 1
+        if fresh:
+            key = "fresh_won" if won else "fresh_lost"
+            side[key] = side.get(key, 0) + 1
         tmp = self._tally_path + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as handle:
@@ -608,6 +698,14 @@ class AgentController:
 
     def _log_episode(self, record):
         record = dict(record, ts=time.time(), policy=self._current_policy)
+        if self._explore is not None:
+            # The window ran an exploring action, not the policy's: training
+            # uses it like any other, the live metrics keep it apart, and the
+            # probability it was drawn with is kept for an off-policy weighting.
+            record["explore"] = True
+            record["explore_p"] = self._explore[1]
+        if "action" in record:
+            self._explorer.note(record["action"])
         self._recent.append(record)
         self._episodes_since_train += 1
         self._episodes_since_contest += 1
@@ -920,12 +1018,25 @@ class AgentController:
                 min_z=self._promotion_min_z, has_incumbent=incumbent is not None,
                 new_since=new_since, max_stale_episodes=self._promotion_max_stale)
             mean_diff = (sum(diffs) / len(diffs)) if diffs else None
+            agreement = (metrics_mod.agreement(
+                (res.get("actions") or {}).get(source),
+                (res.get("actions") or {}).get("incumbent"))
+                if incumbent is not None else None)
+            fresh = bool(cand["meta"].get("fresh"))
             results.append({"cand": cand, "promote": promote, "reason": reason,
-                            "lift": lift, "mean_diff": mean_diff})
-            self.log.info("contest (%s): %s candidate vs active (%s): %s - %s; "
-                          "%d held-out rows, %s reward model", trigger, source,
-                          inc_source, "promote" if promote else "keep", reason,
-                          res["rows"], res["reward_model"])
+                            "lift": lift, "mean_diff": mean_diff,
+                            "agreement": agreement, "fresh": fresh})
+            self.log.info("contest (%s): %s%s candidate vs active (%s): %s - %s; "
+                          "%d held-out rows, %s reward model%s", trigger, source,
+                          " (from scratch)" if fresh else "", inc_source,
+                          "promote" if promote else "keep", reason,
+                          res["rows"], res["reward_model"],
+                          "; same choice as the active model on %.0f%% of rows"
+                          % (agreement * 100) if agreement is not None else "")
+            if source == "local" and agreement is not None:
+                # A local run that changed no choice at all: count it towards
+                # the next fresh run.
+                self._stuck_streak = self._stuck_streak + 1 if agreement >= 1.0 else 0
         winners = [r for r in results if r["promote"]]
         best = max(winners, key=lambda r: (r["mean_diff"] if r["mean_diff"] is not None
                                            else r["lift"])) if winners else None
@@ -948,7 +1059,8 @@ class AgentController:
                 winner = None
         for cand in cands:
             won = winner is not None and cand is winner
-            self._bump_promotion_tally(cand["source"], won=won)
+            self._bump_promotion_tally(cand["source"], won=won,
+                                       fresh=bool(cand["meta"].get("fresh")))
             if not won:
                 self._discard_candidate(cand)
         if winner is not None:
@@ -968,7 +1080,9 @@ class AgentController:
                  "reason": (by_source.get(c["source"]) or {}).get("reason")
                  or (reason if c is winner else None),
                  "lift": _round((by_source.get(c["source"]) or {}).get("lift")),
-                 "mean_diff": _round((by_source.get(c["source"]) or {}).get("mean_diff"))}
+                 "mean_diff": _round((by_source.get(c["source"]) or {}).get("mean_diff")),
+                 "agreement": _round((by_source.get(c["source"]) or {}).get("agreement"), 3),
+                 "fresh": bool(c["meta"].get("fresh"))}
                 for c in cands],
         }
         return "promoted" if winner is not None else "kept"
@@ -1038,6 +1152,7 @@ class AgentController:
                 self.log.info("[capture] back on; the agent is resuming")
                 obs, _info = env.reset()
                 driver.reset()
+                self._explorer.reset()
                 self._write_status(True, self._current_policy, detail)
                 continue
 
@@ -1070,12 +1185,14 @@ class AgentController:
                     self.log.info("policy reloaded: %s", detail or learned_name)
                     if not interleave or self._current_policy != "baseline":
                         driver, self._current_policy = learned, learned_name
+                    self._explorer.reset()
             if interleave and time.monotonic() - block_started >= block_seconds:
                 if self._current_policy == "baseline":
                     driver, self._current_policy = learned, learned_name
                 else:
                     driver, self._current_policy = baseline, "baseline"
                 driver.reset()
+                self._explorer.reset()
                 block_started = time.monotonic()
                 self.log.info("interleave: now driving with %s", self._current_policy)
 
@@ -1084,12 +1201,43 @@ class AgentController:
             except Exception:  # noqa: BLE001 - a predict failure falls back a step
                 self.log.exception("policy predict failed; using baseline action")
                 action, _state = baseline.predict(obs)
+            action = self._choose_action(action)
             obs, reward, _term, _trunc, info = env.step(action)
-            self._write_status(True, self._current_policy, detail, info, reward)
+            note = detail
+            if self._explore is not None:
+                note = "trying %s / %ss / %s" % spec.decode(action)
+            self._write_status(True, self._current_policy, note, info, reward)
 
         self.log.info("agent stopping")
         self._write_status(False, self._current_policy, "stopped")
         return 0
+
+    def _choose_action(self, action):
+        """The action this window runs: the policy's ``action`` mapped into the
+        allowed set, or - in a share of the learned policy's windows - an
+        exploring one (:class:`explore.Explorer`). Sets ``self._explore`` for
+        the episode log. Never explores under the baseline (the reference every
+        model is scored against), so the baseline's windows stay the sweep."""
+        wanted = int(action)
+        action = explore_mod.nearest_allowed(wanted, self._action_set)
+        if action != wanted and not self._outside_noted:
+            self._outside_noted = True
+            self.log.info("the policy asked for %s / %ss / %s, which "
+                          "[agent.action] does not allow; running the nearest "
+                          "allowed action instead", *spec.decode(wanted))
+        self._explore = None
+        if self._current_policy != "learned":
+            self._explorer.reset()
+            return action
+        picked = self._explorer.choose(action)
+        if picked is None:
+            return action
+        self._explore = picked
+        posture, dwell, transmit = spec.decode(picked[0])
+        self.log.info("explore: trying %s / %ss / %s (tried %d time(s) before)",
+                      posture, dwell, transmit,
+                      self._explorer.counts().get(picked[0], 0))
+        return picked[0]
 
     # -- on-device training ---------------------------------------------
     TRAIN_POLL_SECONDS = 15        # how often the loop checks for work
@@ -1106,8 +1254,9 @@ class AgentController:
         loop only orchestrates it; the board gate blocks training outright on a
         board too small for it."""
         while not self._stop.wait(self.TRAIN_POLL_SECONDS):
-            if self._consume_train_request():
-                self._run_training("manual", force=True)
+            request = self._consume_train_request()
+            if request:
+                self._run_training("manual", force=True, fresh=request == "fresh")
                 continue
             if self._should_auto_train():
                 self._run_training("auto")
@@ -1138,21 +1287,27 @@ class AgentController:
         except (OSError, AttributeError):  # not Linux / unsupported
             pass
 
-    def _training_command(self):
+    def _training_command(self, fresh=False):
         """The argv for one fine-tune. Runs this interpreter's
         ``-m kestrel_pi.agent.train`` entry point (the same trainer remote-train
-        uses), so it needs nothing on PATH and shares the venv's torch/SB3."""
+        uses), so it needs nothing on PATH and shares the venv's torch/SB3. A
+        ``fresh`` run trains from scratch, for ``fresh_timesteps``, with a new
+        seed."""
         cmd = [sys.executable, "-m", "kestrel_pi.agent.train",
                "--agent-dir", self.agent_dir,
                "--out-dir", self._local_candidate_dir,
-               "--timesteps", str(self._train_timesteps),
+               "--timesteps", str(self._fresh_timesteps if fresh
+                                  else self._train_timesteps),
                "--config", self.config_path]
+        if fresh:
+            cmd += ["--no-warm-start",
+                    "--seed", str(int.from_bytes(os.urandom(4), "big") >> 1)]
         algorithm = self.agent_cfg.get("algorithm")
         if algorithm:
             cmd += ["--algorithm", algorithm]
         return cmd
 
-    def _spawn_training(self):
+    def _spawn_training(self, fresh=False):
         """Run one fine-tune as a short-lived, niced child process and wait for
         it, returning its exit code (0 = a model was written). Isolating the
         run in its own process is what keeps a torch OOM or crash from taking
@@ -1160,7 +1315,7 @@ class AgentController:
         on. The child's torch thread pool is capped via the environment so it
         can't spread across every core. stop() terminates it through
         ``self._train_proc``."""
-        cmd = self._training_command()
+        cmd = self._training_command(fresh=fresh)
         env = dict(os.environ)
         from .train import _training_thread_cap
         cap = str(_training_thread_cap())
@@ -1204,7 +1359,7 @@ class AgentController:
         total = _mem_total_bytes()
         return total is None or total >= TRAIN_AUTO_MIN_BYTES
 
-    def _run_training(self, reason, force=False):
+    def _run_training(self, reason, force=False, fresh=None):
         """Run one short fine-tune from the logged episodes in a child process,
         surfacing it on the dashboard (the ``training`` flag and the last-trained
         record). A manual run (``force``) bypasses the new-episode and idle gates
@@ -1212,7 +1367,11 @@ class AgentController:
         reporting why. The heavy ML work runs in a separate, niced
         kestrel-agent-train process (see _spawn_training), so a torch OOM or
         crash there can't take down this agent's inference loop; a non-zero exit
-        just leaves the model as it was."""
+        just leaves the model as it was.
+
+        ``fresh`` trains from scratch instead of warm-starting; None (an
+        automatic run) decides with :meth:`_fresh_due`, and a manual run is
+        warm unless asked."""
         if not self._board_can_train():
             if force:
                 self._write_status(
@@ -1225,14 +1384,22 @@ class AgentController:
                     True, self._current_policy,
                     "training not started: low memory or the CPU is too hot")
             return
+        why_fresh = None
+        if fresh is None:
+            why_fresh = None if force else self._fresh_due()
+            fresh = why_fresh is not None
         started = time.time()
         self._training = True
         self._episodes_since_train = 0   # reset the new-episode trigger
         # Surface "training" at once rather than waiting for the next decision
         # tick, so the dashboard shows it promptly.
-        self._write_status(True, self._current_policy, "training (%s)" % reason)
+        self._write_status(True, self._current_policy, "training (%s%s)" % (
+            reason, ", from scratch" if fresh else ""))
+        if fresh:
+            self.log.info("%s training from scratch (%s, %d steps)", reason,
+                          why_fresh or "asked for", self._fresh_timesteps)
         try:
-            code = self._spawn_training()
+            code = self._spawn_training(fresh=fresh)
             if code == 0:
                 self._record_trained(time.time(), time.time() - started)
                 self.log.info("%s training finished (%.0fs)",
@@ -1240,6 +1407,11 @@ class AgentController:
                 # The run wrote a candidate, not the active model: it is adopted
                 # only if it wins the contest every candidate faces.
                 self._run_contest("local")
+                if fresh:
+                    self._runs_since_fresh = 0
+                    self._stuck_streak = 0
+                else:
+                    self._runs_since_fresh += 1
             else:
                 # The child reports the reason (e.g. no episode logs) on its own
                 # log; a non-zero exit means no new model was written.
@@ -1252,13 +1424,28 @@ class AgentController:
             self._write_status(True, self._current_policy, "")
 
     def _consume_train_request(self):
-        """True if a manual "train now" request file was present (removing it so
-        the run happens once). A missing file just returns False."""
-        try:
-            os.remove(self._train_request_path)
-            return True
-        except OSError:
-            return False
+        """``"fresh"`` or ``"warm"`` if a manual "train now" request file was
+        present (``train-request-fresh`` asks for a run from scratch), removing
+        it so the run happens once; None when there is none."""
+        for path, kind in ((self._train_request_path + "-fresh", "fresh"),
+                           (self._train_request_path, "warm")):
+            try:
+                os.remove(path)
+                return kind
+            except OSError:
+                continue
+        return None
+
+    def _fresh_due(self):
+        """Why the next automatic run should train from scratch, or None: the
+        last ``stuck_contests`` local contests all ended with the candidate
+        choosing exactly what the active model chose, or it is the
+        ``fresh_every``-th run since the last fresh one."""
+        if self._stuck_contests and self._stuck_streak >= self._stuck_contests:
+            return "%d contests in a row changed no choice" % self._stuck_streak
+        if self._fresh_every and self._runs_since_fresh >= self._fresh_every - 1:
+            return "every %d runs" % self._fresh_every
+        return None
 
     def _has_training_data(self):
         """Whether there is any logged episode data to train from - this

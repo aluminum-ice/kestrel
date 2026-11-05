@@ -100,6 +100,11 @@ shows "unknown", never a misleading zero.
 | `promotion_margin` | number ≥ 0 | `0.10` | How much better (as lift over the scripted baseline) a new model, trained on the device or on a remote host, must score on held-out rows before it replaces the active model. `0.10` = 10%. |
 | `promotion_min_z` | number 0–5 | `1.0` | How significant that improvement must be: the mean per-row difference divided by its standard error. Not on the Advanced page; edit `config.toml`. |
 | `promotion_max_stale_episodes` | whole number ≥ 0 | `900` | Don't adopt a new model trained on data this many episodes behind what the device has since logged, even if it scores well. `0` disables the guard. |
+| `explore_rate` | number 0–0.25 | `0.05` | Share of the learned policy's decision windows that try a different allowed scan instead, so the agent keeps learning about scans it doesn't currently pick. `0` turns exploring off. Never applies to the baseline sweep. Not on the Advanced page; edit `config.toml`. |
+| `explore_windows` | whole number 1–4 | `2` | How many windows in a row an exploring scan runs. A scan change restarts the scan part-way into a window, so two give a cleaner reading. |
+| `fresh_every` | whole number 0–50 | `4` | Every Nth on-device training run starts from scratch (a new seed) instead of fine-tuning the active model, so training can leave a policy that has stopped improving. `0` = only when stuck (below). |
+| `stuck_contests` | whole number 0–20 | `3` | After this many contests in a row in which the new model chose exactly what the active model chose, the next run starts from scratch. `0` turns this off. |
+| `fresh_timesteps` | whole number 0–30000 | `0` | Training steps for a run from scratch. `0` = 3 × `train_timesteps`. |
 | `interleave_compare` | `true` / `false` | `false` | Benchmark mode: alternate the sweep and the agent for a fair comparison. |
 | `compare_block_minutes` | whole number ≥ 1 | `10` | Length of each comparison block. |
 | `metrics_window_minutes` | whole number ≥ 1 | `60` | Rolling window for the live agent-vs-sweep numbers. |
@@ -112,6 +117,11 @@ These define the agent's action vocabulary (`postures`, `lock_subset_n`,
 `time_penalty`, `idle_penalty`). They are exposed for tuning and documented in
 [The learning capture agent](agent-setup.md); the defaults suit most use and you
 can leave them alone.
+
+`postures`, `dwell_buckets` and `transmit_modes` also limit every scan the agent
+runs (the learned policy's, the baseline sweep's and the exploring ones): for
+example `transmit_modes = ["passive"]` keeps every agent window passive. A model
+that asks for a scan outside the lists runs the nearest allowed one instead.
 
 ## `[daemon]` — the plugin host
 

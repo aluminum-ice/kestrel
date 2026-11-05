@@ -42,6 +42,15 @@ path = "/agent"
 alt = "The Kestrel learning-agent page"
 
 [[figure]]
+key = "phone-agent-exploring"
+after = "exploring-and-training-from-scratch"
+since = "1.0.14"
+path = "/agent"
+focus = "Exploring"
+alt = "The learning-agent page's Exploring and Model contests rows"
+caption = "Exploring: the share of windows that try another scan, how many of the allowed scans have been tried, and how runs from scratch have done in contests."
+
+[[figure]]
 key = "phone-settings"
 after = "advanced-settings"
 path = "/settings"

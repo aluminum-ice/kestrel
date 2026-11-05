@@ -132,8 +132,8 @@ See [Remote backup](backup-setup.md).
 | `sudo kestrel agent algorithm A` | Set the RL algorithm (`RecurrentPPO`, `PPO`, `DQN` or `QR-DQN`). Switching to one with no model yet starts a background training run to build it. |
 | `sudo kestrel agent policy P` | Set what drives capture: `baseline` (the scripted sweep) or `learned` (the trained model). |
 | `sudo kestrel agent import FILE --algorithm A` | Install a trained model (kept per-algorithm) and switch to it. |
-| `kestrel agent train [--algorithm A] [--timesteps N]` | Train a model from the logged episodes now. `--timesteps` sets the run length. |
-| `kestrel agent train-now` | Ask the running agent to train now, in the background (non-blocking). |
+| `kestrel agent train [--algorithm A] [--timesteps N] [--fresh]` | Train a model from the logged episodes now. `--timesteps` sets the run length; `--fresh` starts from scratch instead of from the existing model. |
+| `kestrel agent train-now [--fresh]` | Ask the running agent to train now, in the background (non-blocking). `--fresh` asks for a run from scratch. |
 
 See [The learning capture agent](agent-setup.md).
 

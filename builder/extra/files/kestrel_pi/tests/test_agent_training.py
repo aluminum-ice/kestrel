@@ -88,11 +88,15 @@ def test_episodes_context_tag_is_written_and_pii_free(tmp_path):
 
 def test_consume_train_request_is_one_shot(tmp_path):
     c, agent_dir = _make(tmp_path)
-    assert c._consume_train_request() is False          # no request
+    assert c._consume_train_request() is None           # no request
     (agent_dir / TRAIN_REQUEST_NAME).write_text("")
-    assert c._consume_train_request() is True            # present -> consumed
+    assert c._consume_train_request() == "warm"          # present -> consumed
     assert not (agent_dir / TRAIN_REQUEST_NAME).exists() # and removed
-    assert c._consume_train_request() is False           # only once
+    assert c._consume_train_request() is None            # only once
+    # A fresh request (kestrel agent train-now --fresh) is its own file.
+    (agent_dir / (TRAIN_REQUEST_NAME + "-fresh")).write_text("")
+    assert c._consume_train_request() == "fresh"
+    assert c._consume_train_request() is None
 
 
 def test_has_training_data(tmp_path):
@@ -131,14 +135,16 @@ def test_run_training_manual_records_and_surfaces(tmp_path, monkeypatch):
 
     seen = {}
 
-    def fake_spawn():
+    def fake_spawn(fresh=False):
         seen["training_during"] = c._training      # flag set while running
+        seen["fresh"] = fresh
         return 0                                   # a model was written
 
     monkeypatch.setattr(c, "_spawn_training", fake_spawn)
     c._run_training("manual", force=True)
 
     assert seen["training_during"] is True
+    assert seen["fresh"] is False                  # a manual run stays warm
     assert c._training is False                    # cleared after
     assert c._last_trained is not None             # recorded on a clean exit
     status = json.load(open(agent_dir / STATUS_NAME))
@@ -749,3 +755,201 @@ def test_logging_an_episode_counts_toward_the_contest_retry(tmp_path):
     before = c._episodes_since_contest
     c._log_episode({"action": 0, "reward": 0.0})
     assert c._episodes_since_contest == before + 1
+
+
+# -- fresh runs and agreement -------------------------------------------
+
+def _actions_stubs(monkeypatch, means, actions):
+    """Like _contest_stubs, with each policy's chosen actions as well."""
+    _contest_stubs(monkeypatch, means)
+    stubbed = train_mod.evaluate
+
+    def with_actions(rows, pols, **kwargs):
+        res = stubbed(rows, pols, **kwargs)
+        if res is not None:
+            res["actions"] = {n: list(actions[n]) for n in pols}
+        return res
+
+    monkeypatch.setattr(train_mod, "evaluate", with_actions)
+
+
+def test_a_contest_records_agreement_and_counts_a_tie_toward_a_fresh_run(tmp_path, monkeypatch):
+    c, agent_dir = _make(tmp_path)
+    _active(agent_dir)
+    _local(agent_dir)
+    same = [3] * 80
+    _actions_stubs(monkeypatch, {"baseline": 0.0, "incumbent": 0.5, "local": 0.5},
+                   {"baseline": [2] * 80, "incumbent": same, "local": same})
+    assert c._run_contest("local") == "kept"
+    assert c._last_decision["candidates"][0]["agreement"] == 1.0
+    assert c._last_decision["candidates"][0]["fresh"] is False
+    assert c._stuck_streak == 1
+    # A candidate that changes some choices resets the streak.
+    _local(agent_dir)
+    _actions_stubs(monkeypatch, {"baseline": 0.0, "incumbent": 0.5, "local": 0.4},
+                   {"baseline": [2] * 80, "incumbent": same, "local": [3] * 60 + [7] * 20})
+    c._run_contest("local")
+    assert c._last_decision["candidates"][0]["agreement"] == 0.75
+    assert c._stuck_streak == 0
+
+
+def test_a_fresh_candidate_is_tallied_as_fresh(tmp_path, monkeypatch):
+    c, agent_dir = _make(tmp_path)
+    _active(agent_dir)
+    _local(agent_dir, fresh=True, seed=11)
+    _contest_stubs(monkeypatch, {"baseline": 0.0, "incumbent": 0.5, "local": 0.2})
+    c._run_contest("local")
+    assert c._promotion_tally["local"] == {"won": 0, "lost": 1, "fresh_lost": 1}
+    assert c._last_decision["candidates"][0]["fresh"] is True
+    # The fresh counts survive a restart.
+    c2 = ctrl_mod.AgentController(
+        config_path=str(tmp_path / "config.toml"),
+        agent_dir=str(agent_dir), capture_store=str(tmp_path / "cap"))
+    assert c2._promotion_tally["local"]["fresh_lost"] == 1
+
+
+def _training_runs(c, monkeypatch, runs, agreement=0.5):
+    """Run ``runs`` automatic trainings with the spawn and the contest stubbed;
+    returns which were fresh."""
+    monkeypatch.setattr(c, "_resources_ok", lambda: True)
+    monkeypatch.setattr(c, "_board_can_train", lambda: True)
+    kinds = []
+
+    def spawn(fresh=False):
+        kinds.append(fresh)
+        return 0
+
+    def contest(_trigger):
+        c._stuck_streak = c._stuck_streak + 1 if agreement >= 1.0 else 0
+
+    monkeypatch.setattr(c, "_spawn_training", spawn)
+    monkeypatch.setattr(c, "_run_contest", contest)
+    for _ in range(runs):
+        c._run_training("auto")
+    return kinds
+
+
+def test_every_fourth_run_is_fresh(tmp_path, monkeypatch):
+    c, _agent_dir = _make(tmp_path)
+    assert _training_runs(c, monkeypatch, 8) == [False, False, False, True] * 2
+
+
+def test_three_ties_in_a_row_force_a_fresh_run(tmp_path, monkeypatch):
+    c, _agent_dir = _make(tmp_path)
+    c._fresh_every = 0
+    # Every run ties: the 4th is fresh, which resets the streak.
+    assert _training_runs(c, monkeypatch, 8, agreement=1.0) == [
+        False, False, False, True, False, False, False, True]
+
+
+def test_fresh_runs_can_be_turned_off(tmp_path, monkeypatch):
+    c, _agent_dir = _make(tmp_path)
+    c._fresh_every = 0
+    c._stuck_contests = 0
+    assert _training_runs(c, monkeypatch, 6, agreement=1.0) == [False] * 6
+
+
+def test_a_fresh_command_trains_from_scratch_with_a_seed(tmp_path):
+    c, _agent_dir = _make(tmp_path)
+    warm = c._training_command()
+    assert "--no-warm-start" not in warm
+    assert warm[warm.index("--timesteps") + 1] == "3000"
+    fresh = c._training_command(fresh=True)
+    assert "--no-warm-start" in fresh
+    assert fresh[fresh.index("--timesteps") + 1] == "9000"     # 3x by default
+    seed = int(fresh[fresh.index("--seed") + 1])
+    assert 0 <= seed < 2 ** 31
+
+
+def test_fresh_timesteps_and_cadence_come_from_config(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[agent]\nenabled = true\nalgorithm = "DQN"\ntrain = "off"\n'
+                   'fresh_every = 0\nstuck_contests = 99\nfresh_timesteps = 99999\n'
+                   '[capture]\nenabled = true\n')
+    (tmp_path / "agent" / EPISODES_DIR).mkdir(parents=True)
+    c = ctrl_mod.AgentController(config_path=str(cfg), agent_dir=str(tmp_path / "agent"),
+                                 capture_store=str(tmp_path))
+    assert c._fresh_every == 0 and c._stuck_contests == 20
+    assert c._fresh_timesteps == 30000
+
+
+def test_train_from_logs_marks_a_fresh_run_and_its_seed(tmp_path, monkeypatch):
+    from kestrel_pi.agent import policies
+    agent_dir = tmp_path / "agent"
+    (agent_dir / EPISODES_DIR).mkdir(parents=True)
+    (agent_dir / EPISODES_DIR / "e.jsonl").write_text(
+        json.dumps({"action": 0, "reward": 1.0}) + "\n")
+    made = {}
+
+    class _Model:
+        def learn(self, **_kw):
+            pass
+
+        def save(self, path):
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("stub")
+
+    def make(algorithm, env, **kwargs):
+        made.update(kwargs)
+        return _Model()
+
+    def env(rows, **kwargs):
+        made["env_seed"] = kwargs.get("seed")
+        return object()
+
+    monkeypatch.setattr(train_mod, "build_replay_env", env)
+    monkeypatch.setattr(train_mod.policies_mod, "make_algorithm", make)
+    train_mod.train_from_logs(str(agent_dir), "DQN", timesteps=1,
+                              warm_start=False, seed=1234)
+    meta = policies.read_meta(str(agent_dir), "DQN")
+    assert meta["fresh"] is True and meta["seed"] == 1234
+    assert made["seed"] == 1234 and made["env_seed"] == 1234
+    train_mod.train_from_logs(str(agent_dir), "DQN", timesteps=1)
+    meta = policies.read_meta(str(agent_dir), "DQN")
+    assert meta["fresh"] is False and meta["seed"] is None
+
+
+# -- cautious scoring for barely-tried actions --------------------------
+
+def test_a_barely_tried_action_scores_at_the_lowest_supported_mean():
+    rows = ([{"action": 0, "reward": 0.25}] * 10 + [{"action": 1, "reward": 0.5}] * 10
+            + [{"action": 2, "reward": 5.0}] * 2)
+    per_action, global_mean = train_mod._mean_model(rows)
+    fn = train_mod._mean_fn(per_action, global_mean, min_support=8)
+    assert fn(None, 0) == 0.25 and fn(None, 1) == 0.5
+    assert fn(None, 2) == 0.25           # two lucky windows aren't evidence
+    assert fn(None, 9) == 0.25           # never tried: not the global mean
+    # Without min_support (or while no action has enough data) nothing changes.
+    plain = train_mod._mean_fn(per_action, global_mean)
+    assert plain(None, 2) == 5.0 and plain(None, 9) == global_mean
+    thin = train_mod._mean_model(rows[-4:])
+    assert train_mod._mean_fn(*thin, min_support=8)(None, 2) == 5.0
+    from kestrel_pi.agent import spec
+    assert train_mod.unsupported_actions(per_action, 8) == spec.ACTION_N - 2
+
+
+def test_the_state_conditioned_model_is_cautious_too():
+    import random as _random
+    from kestrel_pi.agent import spec
+    rng = _random.Random(0)
+    rows = []
+    for i in range(40):
+        obs = [rng.random() for _ in range(spec.OBS_SIZE)]
+        rows.append({"action": i % 2, "reward": 0.1 + 0.4 * (i % 2), "obs": obs})
+    fn = train_mod.fit_reward_model(rows, min_samples=8)
+    obs = rows[0]["obs"]
+    floor = min(fn(obs, 0), fn(obs, 1))
+    assert abs(fn(obs, 17) - 0.1) < 1e-9 and fn(obs, 17) <= floor + 0.05
+
+
+def test_evaluate_reports_each_policys_actions(monkeypatch):
+    from kestrel_pi.agent import metrics, spec
+    rows = []
+    for i in range(400):
+        rows.append({"ts": 3600.0 * (i // 4), "action": i % 2,
+                     "reward": 0.1, "obs": [0.0] * spec.OBS_SIZE})
+    res = train_mod.evaluate(rows, {"a": _FixedPolicy(1), "b": _FixedPolicy(3)},
+                             min_rows=1)
+    assert res is not None
+    assert set(res["actions"]["a"]) == {1} and set(res["actions"]["b"]) == {3}
+    assert metrics.agreement(res["actions"]["a"], res["actions"]["b"]) == 0.0

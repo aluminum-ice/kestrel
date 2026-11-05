@@ -119,11 +119,40 @@ def _mean_model(rows):
     return model, global_mean
 
 
-def _mean_fn(per_action_mean, global_mean):
+def _cautious_floor(per_action_mean, min_support):
+    """The reward an action with too little data (fewer than ``min_support``
+    logged windows) is scored at: the lowest mean among the actions that do
+    have enough. ``None`` when no action has enough yet, so a thin log keeps
+    each action's own mean (and the global mean for an unseen one).
+
+    Scoring a barely-tried action at the global mean let a policy look best by
+    choosing actions nobody had tried; at the floor, the data has to show an
+    action is good before a model is rewarded for it. Exploration is what
+    gives such actions their data."""
+    if not min_support:
+        return None
+    supported = [m for c, m in per_action_mean.values() if c >= min_support]
+    return min(supported) if supported else None
+
+
+def unsupported_actions(per_action_mean, min_support):
+    """How many of the ``ACTION_N`` actions have fewer than ``min_support``
+    logged windows (scored at the cautious floor rather than from data)."""
+    return sum(1 for a in range(spec.ACTION_N)
+               if per_action_mean.get(a, (0, 0.0))[0] < min_support)
+
+
+def _mean_fn(per_action_mean, global_mean, min_support=None):
     """A reward callable ``r̂(obs, action)`` that ignores ``obs`` and returns the
-    action's logged mean - the Phase 4 state-independent reward model."""
+    action's logged mean - the Phase 4 state-independent reward model. With
+    ``min_support``, an action logged fewer times than that is scored at
+    :func:`_cautious_floor` instead."""
+    floor = _cautious_floor(per_action_mean, min_support)
+
     def predict(_obs, action):
         hit = per_action_mean.get(int(action))
+        if floor is not None and (not hit or hit[0] < min_support):
+            return floor
         return hit[1] if hit else global_mean
     return predict
 
@@ -157,14 +186,16 @@ def fit_reward_model(rows, l2=1.0, min_samples=8):
     observation, fit a ridge (L2-regularized) linear regression
     ``reward ~ w_a . obs + b_a`` in closed form (numpy only, no torch/SB3); the
     intercept is not regularized. An action with too few observation-carrying
-    rows falls back to that action's logged mean, and an action never seen to the
-    global mean - i.e. the model degrades to the Phase 4 state-independent model
-    on thin data. Predictions are clipped to the logged reward range so the
+    rows falls back to the cautious floor (:func:`_cautious_floor`: the lowest
+    mean among actions with enough rows), or, while no action has enough, to its
+    logged mean and an action never seen to the global mean - i.e. the model
+    degrades to the Phase 4 state-independent model on thin data. Predictions are clipped to the logged reward range so the
     policy is never rewarded for extrapolating outside what the logs support.
     Returns a callable ``r̂(obs, action)``."""
     import numpy as np
 
     per_action_mean, global_mean = _mean_model(rows)
+    floor = _cautious_floor(per_action_mean, min_samples)
     triples = _rows_with_obs(rows)
     rewards = [r for _o, _a, r in triples]
     lo, hi = (float(min(rewards)), float(max(rewards))) if rewards else (0.0, 0.0)
@@ -200,6 +231,8 @@ def fit_reward_model(rows, l2=1.0, min_samples=8):
                 value = float(vec @ wb[0] + wb[1])
                 return min(hi, max(lo, value)) if hi > lo else value
         hit = per_action_mean.get(action)
+        if floor is not None and (not hit or hit[0] < min_samples):
+            return floor
         return hit[1] if hit else global_mean
 
     return predict
@@ -238,8 +271,10 @@ def select_reward_model(rows, holdout=0.2, seed=0, min_rows=32, l2=1.0,
 
     n = len(rows)
     per_action_mean, global_mean = _mean_model(rows)
-    reward_fn = _mean_fn(per_action_mean, global_mean)
-    provenance = {"reward_model": "state-independent", "windows": n}
+    reward_fn = _mean_fn(per_action_mean, global_mean, min_support=min_samples)
+    provenance = {"reward_model": "state-independent", "windows": n,
+                  "unsupported_actions": unsupported_actions(per_action_mean,
+                                                             min_samples)}
 
     all_triples = _rows_with_obs(rows)
     if len(all_triples) < min_rows:
@@ -258,7 +293,7 @@ def select_reward_model(rows, holdout=0.2, seed=0, min_rows=32, l2=1.0,
 
     candidate = fit_reward_model(train_rows, l2=l2, min_samples=min_samples)
     train_mean, train_global = _mean_model(train_rows)
-    baseline = _mean_fn(train_mean, train_global)
+    baseline = _mean_fn(train_mean, train_global, min_support=min_samples)
     mse_conditioned = _mse(candidate, val_triples)
     mse_mean = _mse(baseline, val_triples)
     provenance.update({
@@ -289,7 +324,7 @@ def _scoring_reward_fn(train_rows, val_triples, l2=1.0, min_samples=8):
     windows the policies are scored on stay out of sample for r̂ - the fair
     yardstick. Returns a callable ``r̂(obs, action)`` (numpy only)."""
     per_action_mean, global_mean = _mean_model(train_rows)
-    mean_fn = _mean_fn(per_action_mean, global_mean)
+    mean_fn = _mean_fn(per_action_mean, global_mean, min_support=min_samples)
     if not _rows_with_obs(train_rows) or not val_triples:
         return mean_fn, "mean"
     candidate = fit_reward_model(train_rows, l2=l2, min_samples=min_samples)
@@ -333,8 +368,9 @@ def evaluate(rows, policies, cap=2000, min_rows=64, min_ts=None):
     every hour-block boundary, so an LSTM sees real sequences. r̂ is fit on the
     non-held-out rows.
 
-    Returns ``{"rows", "per_row": {name: [reward...]}, "mean": {name: m},
-    "reward_model", "oldest_ts", "newest_ts"}``, or ``None`` when there are
+    Returns ``{"rows", "per_row": {name: [reward...]}, "actions": {name:
+    [action...]}, "mean": {name: m}, "reward_model", "oldest_ts",
+    "newest_ts"}``, or ``None`` when there are
     fewer than ``min_rows`` evaluation rows (too thin to decide on)."""
     import numpy as np
 
@@ -356,17 +392,21 @@ def evaluate(rows, policies, cap=2000, min_rows=64, min_ts=None):
     reward_fn, kind = _scoring_reward_fn(train_rows, triples)
     blocks = [metrics_mod.holdout_block(ts) for ts, _t in picked]
     per_row = {}
+    actions = {}
     for name, policy in policies.items():
         values = []
+        chosen = []
         previous = None
         for block, (obs, _action, _reward) in zip(blocks, triples):
             if block != previous:
                 policy.reset()
                 previous = block
             action, _state = policy.predict(np.asarray(obs, dtype=np.float32))
+            chosen.append(int(action))
             values.append(float(reward_fn(obs, int(action))))
         per_row[name] = values
-    return {"rows": len(triples), "per_row": per_row,
+        actions[name] = chosen
+    return {"rows": len(triples), "per_row": per_row, "actions": actions,
             "mean": {n: (sum(v) / len(v)) for n, v in per_row.items()},
             "reward_model": kind, "oldest_ts": picked[0][0],
             "newest_ts": picked[-1][0]}
@@ -463,7 +503,7 @@ def _warm_start(model, agent_dir, algorithm, logger):
 
 def train_from_logs(agent_dir=AGENT_DIR, algorithm=None, timesteps=20000,
                     episode_length=64, logger=None, out_dir=None,
-                    warm_start=True):
+                    warm_start=True, seed=None):
     """Train ``algorithm`` on the logged episodes and write its per-algorithm
     model (``model-<slug>.zip``) + the sidecar into ``out_dir`` (default
     ``agent_dir``), so each algorithm keeps its own saved model. Returns a short
@@ -477,7 +517,10 @@ def train_from_logs(agent_dir=AGENT_DIR, algorithm=None, timesteps=20000,
     model; on a remote host, its previous model) instead of from scratch. The
     device writes into a candidate folder (``out_dir``) and promotes only after
     a contest; a remote host writes into its own agent dir for the device to
-    pull."""
+    pull. Without ``warm_start`` the run is *fresh*: it starts from scratch, so
+    it can settle on a different policy than the active model's (the sidecar
+    records ``fresh`` and the ``seed``, which seeds the model and the replay
+    sampler)."""
     logger = logger or log
     if not policies_mod.valid_algorithm(algorithm):
         raise ValueError("unknown algorithm: %r (one of %s)"
@@ -498,15 +541,17 @@ def train_from_logs(agent_dir=AGENT_DIR, algorithm=None, timesteps=20000,
     # responsive while it runs (see limit_training_threads).
     limit_training_threads(logger)
     env = build_replay_env(train_rows, episode_length=episode_length,
-                           reward_fn=reward_fn)
-    model = policies_mod.make_algorithm(algorithm, env, verbose=0)
+                           reward_fn=reward_fn,
+                           seed=int(seed) if seed is not None else 0)
+    kwargs = {"seed": int(seed)} if seed is not None else {}
+    model = policies_mod.make_algorithm(algorithm, env, verbose=0, **kwargs)
     started_from = _warm_start(model, agent_dir, algorithm, logger) if warm_start else None
     logger.info("training %s on %d logged window(s) for %d timestep(s) "
                 "(%s reward model; %d held-out row(s) kept out; %s)",
                 algorithm, len(train_rows), timesteps,
                 provenance.get("reward_model"), len(held),
                 "warm start from the active %s model" % started_from
-                if started_from else "fresh")
+                if started_from else "from scratch")
     start = time.monotonic()
     model.learn(total_timesteps=int(timesteps))
     train_seconds = round(time.monotonic() - start, 1)
@@ -530,12 +575,14 @@ def train_from_logs(agent_dir=AGENT_DIR, algorithm=None, timesteps=20000,
                             source="local",
                             extra={"holdout": metrics_mod.HOLDOUT_SCHEME,
                                    "warm_start": started_from,
+                                   "fresh": not warm_start,
+                                   "seed": int(seed) if seed is not None else None,
                                    "timesteps": int(timesteps),
                                    "train_rows": len(train_rows),
                                    "held_out_rows": len(held)})
     return "wrote %s (%s, %d windows, %s reward model, %s)" % (
         model_path, algorithm, len(train_rows), provenance.get("reward_model"),
-        "warm start" if started_from else "fresh")
+        "warm start" if started_from else "from scratch")
 
 
 def main(argv=None):
@@ -558,6 +605,9 @@ def main(argv=None):
                         "device writes a candidate for promotion to judge)")
     parser.add_argument("--no-warm-start", action="store_true",
                         help="train from scratch instead of from the existing model")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="seed the model and the replay sampler (a fresh run "
+                        "uses a new one so it can settle somewhere different)")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
 
@@ -571,7 +621,8 @@ def main(argv=None):
     try:
         summary = train_from_logs(args.agent_dir, algorithm, args.timesteps,
                                   args.episode_length, out_dir=args.out_dir,
-                                  warm_start=not args.no_warm_start)
+                                  warm_start=not args.no_warm_start,
+                                  seed=args.seed)
     except (ValueError, ImportError) as exc:
         log.error("%s", exc)
         return 1

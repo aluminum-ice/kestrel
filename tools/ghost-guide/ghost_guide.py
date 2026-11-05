@@ -52,6 +52,16 @@ def load_config():
     return cfg
 
 
+def for_release(cfg, tag):
+    """``cfg`` with only the figures that apply to release ``tag``: a figure
+    with ``since = "X.Y.Z"`` shows a feature that first ships in that release,
+    so an older release's page (whose guide has no heading for it) leaves it
+    out instead of failing the build."""
+    figures = [fig for fig in cfg["figure"]
+               if not fig.get("since") or _version_key(tag) >= _version_key(fig["since"])]
+    return dict(cfg, figure=figures)
+
+
 # -- releases -------------------------------------------------------------------
 
 def repo_root():
@@ -110,6 +120,7 @@ class Build:
     """A rendered page for one release, with its screenshots (if taken)."""
 
     def __init__(self, cfg, tag, shots, browser):
+        cfg = for_release(cfg, tag)
         self.cfg = cfg
         self.tag = tag
         tags = stable_tags(fetch=False)
@@ -282,7 +293,7 @@ def cmd_push(args, cfg):
             candidates.append(render.image_sources(preview_page["html"]))
         srcs = {}
         with tempfile.TemporaryDirectory() as tmp:
-            for fig in cfg["figure"]:
+            for fig in build.cfg["figure"]:
                 local, _w, _h = build.shots[fig["key"]]
                 for found in candidates:
                     current = found.get(fig["key"])

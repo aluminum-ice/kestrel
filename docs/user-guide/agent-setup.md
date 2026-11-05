@@ -187,9 +187,9 @@ for the Gate 4 record.
 ## Training (on-device and off)
 
 The agent learns from **episode logs** — one JSONL row per decision window,
-written under the agent directory. Training replays those logs; it is a short
-fine-tune, not a from-scratch run, and the trained `model.zip` is only picked up
-if `policy = learned`.
+written under the agent directory. Training replays those logs; it is usually a
+short fine-tune of the active model (now and then a run from scratch, below), and
+the trained `model.zip` is only picked up if `policy = learned`.
 
 **What the trainer learns.** Training fits a model of how much reward each scan
 posture earns *given what the RF environment looks like* — a state-conditioned
@@ -202,6 +202,38 @@ beat the scripted sweep on measured handshakes-per-hour is never adopted. The
 on-device fine-tune and the desktop / `remote-train` runs use the exact same
 trainer, so both produce the same kind of model; the model's sidecar records
 which reward model trained it, for later comparison.
+
+### Exploring, and runs from scratch
+
+A learned policy picks the scan it rates best every window, so on its own the
+logs would only ever show how that one scan does, and no amount of training
+could find a better one. Two mechanisms keep it learning:
+
+- **Exploring.** While the learned policy drives capture, a share of windows
+  (`explore_rate`, default `0.05`: about 1 in 20) runs a different allowed scan,
+  held for `explore_windows` windows (default 2, because a scan change starts
+  part-way into a window). It favours the scans tried least. Those windows are
+  marked in the episode log, train the reward model like any other, and are
+  counted on their own `exploring` line in `kestrel agent metrics` and on the
+  card, so the learned policy's figures stay its own. The baseline sweep never
+  explores. The card's **Exploring** row shows the rate, how many of the allowed
+  scans have been tried, and the windows explored in the last hour.
+- **Runs from scratch.** Every `fresh_every`-th on-device run (default 4), and
+  any run after `stuck_contests` contests in a row (default 3) where the new model
+  chose exactly what the active model chose, trains from scratch with a new
+  random seed and `fresh_timesteps` steps (default 3 × `train_timesteps`). A
+  fine-tune that starts from the active model rarely moves far from it; a run
+  from scratch can settle somewhere else. It faces the same contest. Ask for one
+  with `kestrel agent train-now --fresh`.
+
+Until a scan has at least 8 logged windows, training and the contest score it at
+the lowest average of the well-tried scans, so a model can't win by betting on a
+scan nobody has tried; exploring is how such scans get their data.
+
+**The allowed scans.** `[agent.action]` `postures`, `dwell_buckets` and
+`transmit_modes` limit every scan the agent runs (the learned policy's, the
+sweep's and the exploring ones); a model that asks for one outside them runs the
+nearest allowed scan.
 
 ### When training runs, and why the defaults are what they are
 
@@ -297,7 +329,8 @@ device and won't interrupt capture; the card shows **Training… in progress**
 while it runs. The same thing from the terminal:
 
 ```bash
-kestrel agent train-now   # non-blocking: asks the running agent to train
+kestrel agent train-now           # non-blocking: asks the running agent to train
+kestrel agent train-now --fresh   # the same, from scratch (a new seed, fresh_timesteps)
 ```
 
 You can also train by hand, synchronously, on the device or any machine with the
@@ -460,13 +493,20 @@ over hand-editing; unknown keys are warned about and ignored.
 | `train_timesteps` | `3000` | Gradient steps per fine-tune (floored at 100). |
 | `train_max_temp_c` | `75` | Skip training at/above this CPU temp (hard-capped at 85). |
 | `train_min_free_mb` | `512` | Skip training below this free RAM (hard floor 256 MB). |
+| `explore_rate` | `0.05` | Share of learned windows that try another allowed scan (0–0.25); `0` = off. |
+| `explore_windows` | `2` | Windows an exploring scan runs (1–4). |
+| `fresh_every` | `4` | Every Nth on-device run trains from scratch (0–50); `0` = only when stuck. |
+| `stuck_contests` | `3` | Contests in a row with no changed choice that force a run from scratch (0–20); `0` = off. |
+| `fresh_timesteps` | `0` | Steps for a run from scratch (up to 30000); `0` = 3 × `train_timesteps`. |
 | `log_episodes` | `true` | Append per-window JSONL for training/metrics. |
 | `interleave_compare` | `false` | Alternate baseline/learned for a fair A/B. |
 | `compare_block_minutes` | `10` | Block length when interleaving. |
 | `metrics_window_minutes` | `60` | Rolling window for the live metrics. |
 | `log_max_mb` | `64` | Cap on episode logs (oldest rotate out). |
 | `[agent.action] lock_subset_n` | `3` | Top-N channels for lock-subset. |
+| `[agent.action] postures` | all four | Scan postures the agent may run. |
 | `[agent.action] dwell_buckets` | `[2, 5, 10, 20]` | Dwell seconds the agent may choose. |
+| `[agent.action] transmit_modes` | `["active", "passive"]` | Transmit modes the agent may run; `["passive"]` keeps every agent window passive. |
 | `[agent.reward] per_handshake` | `1.0` | Reward per new unique handshake. |
 | `[agent.reward] time_penalty` | `0.01` | Small per-window cost. |
 | `[agent.reward] idle_penalty` | `0.05` | Extra cost for a window with no discoverable AP. |
@@ -482,8 +522,8 @@ over hand-editing; unknown keys are warned about and ignored.
 | `sudo kestrel agent algorithm A` | Shorthand for `set --algorithm A`. |
 | `sudo kestrel agent policy P` | Shorthand for `set --policy P`. |
 | `sudo kestrel agent import FILE --algorithm A` | Install a trained model (kept per-algorithm) and switch to it. |
-| `kestrel agent train [--algorithm A] [--timesteps N]` | Train synchronously from the logged episodes. |
-| `kestrel agent train-now` | Ask the running agent to fine-tune in the background (non-blocking). |
+| `kestrel agent train [--algorithm A] [--timesteps N] [--fresh]` | Train synchronously from the logged episodes (`--fresh`: from scratch). |
+| `kestrel agent train-now [--fresh]` | Ask the running agent to fine-tune in the background (non-blocking); `--fresh` trains from scratch. |
 | `kestrel agent metrics` | Show the agent-vs-sweep comparison. |
 
 See the full [command reference](cli-reference.md).
