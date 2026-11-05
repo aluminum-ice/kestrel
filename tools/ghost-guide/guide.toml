@@ -47,6 +47,7 @@ after = "exploring-and-training-from-scratch"
 since = "1.0.14"
 path = "/agent"
 focus = "Exploring"
+lift = 80
 alt = "The learning-agent page's Exploring and Model contests rows"
 caption = "Exploring: the share of windows that try another scan, how many of the allowed scans have been tried, and how runs from scratch have done in contests."
 
