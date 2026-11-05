@@ -93,7 +93,7 @@ When the plugin has a fix, each **new** handshake writes a location sidecar next
 to its hashline file in the capture store (`<capture>.hc22000.gps.json`). The
 sidecar is a map keyed by the access point's **BSSID**, so one sidecar can hold
 fixes for several APs (e.g. in `per-ssid` layout, where one file can hold
-several APs) and each AP's location stays attached to its own BSSID. Two points
+several APs) and each AP's location stays attached to its own BSSID. Three points
 are worth knowing:
 
 - **Tagging is opportunistic — a later capture can geocode an AP an earlier one
@@ -108,6 +108,11 @@ are worth knowing:
   stationary, but for a fixed AP re-captured elsewhere (wardriving), it tags the
   spot of the capture. Each new fix for a BSSID **overwrites** the previous one,
   so the sidecar holds the most recent capture location for that AP.
+- **Only a current fix tags a capture.** The plugin shares its position only
+  while the receiver reports a fix. Once the fix is lost, or the receiver has
+  sent nothing for about half a minute (unplugged, powered off, a stalled USB
+  link), handshakes aren't tagged until a fix returns, so a capture is never
+  tagged with where the device used to be.
 
 Tagging rides on a genuinely **new, de-duplicated** handshake (the same signal
 the capture store and the networks page's "last seen" use). An AP merely re-seen

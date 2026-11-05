@@ -58,6 +58,13 @@ GOOD_CN0 = 35.0         # a healthy open-sky signal; a lock should follow
 # serial reader's 20 s read timeout so a healthy receiver never trips it.
 SIGNAL_STALE_S = 30.0
 
+# How long a position stays usable after the receiver last reported it. A
+# receiver with a fix reports one about once a second, so a fix this old means
+# the fix was lost or the receiver went quiet; the position service then
+# answers None, so a later handshake is never tagged (or sent to WiGLE) with
+# where the device used to be. The same span as the card's "no signal".
+FIX_MAX_AGE_S = SIGNAL_STALE_S
+
 
 class GPS(Plugin):
     __author__ = "kestrel"
@@ -79,6 +86,7 @@ class GPS(Plugin):
     def on_loaded(self):
         self.log = self.context.logger
         self._fix = None
+        self._fix_at = None     # monotonic time the current fix was taken
         self._mode = 0          # 0/1 no fix, 2 = 2D, 3 = 3D (gpsd TPV modes)
         self._sats = None       # satellites in use, when the source reports it
         self._hdop = None       # horizontal dilution of precision (GGA / gpsd)
@@ -169,13 +177,21 @@ class GPS(Plugin):
     def provide_position(self):
         """The current fix dict, or None when there is no fix.
 
+        "No fix" includes a fix that has been lost (the receiver reports no fix
+        now) and one older than :data:`FIX_MAX_AGE_S` (the receiver went
+        quiet), so consumers never get the last position as if it were current.
+
         Carries the live signal readout alongside the position (``fix`` mode,
         ``sats`` count, ``cn0`` strongest-satellite C/N0 in dB-Hz, and ``strong``
         the count of fix-usable satellites) so a consumer such as the e-ink face
         can show GPS status and signal without owning a reader. Additive: the
         base keys (lat/lon/alt/fix_time/source) are unchanged."""
         with self._fix_lock:
-            if not self._fix:
+            if not self._fix or self._mode < 2:
+                return None
+            # getattr-guarded: tests build partial state by hand.
+            taken = getattr(self, "_fix_at", None)
+            if taken is not None and time.monotonic() - taken > FIX_MAX_AGE_S:
                 return None
             fix = dict(self._fix)
             fix["fix"] = self._mode
@@ -186,6 +202,7 @@ class GPS(Plugin):
 
     def _set_fix(self, lat, lon, alt=None):
         with self._fix_lock:
+            self._fix_at = time.monotonic()
             self._fix = {
                 "lat": lat, "lon": lon, "alt": alt,
                 "fix_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
