@@ -122,3 +122,38 @@ def test_ago_and_dur_formatting():
     assert readout._ago(now - 3 * 86400, now) == "3d ago"
     assert readout._dur(34) == "34s"
     assert readout._dur(125) == "2m 05s"
+
+
+def test_exploring_shows_for_the_learned_policy_only():
+    explore = {"rate": 0.05, "windows": 2, "allowed": 32, "tried": 12,
+               "last_hour": 6, "now": False}
+    learned = _labels(readout.widget_elements({
+        "running": True, "policy": "learned", "algorithm": "RecurrentPPO",
+        "explore": explore}))
+    assert learned["Exploring"] == "5% of windows · 12 of 32 actions tried · 6 in the last hour"
+    off = _labels(readout.widget_elements({
+        "running": True, "policy": "learned", "algorithm": "RecurrentPPO",
+        "explore": dict(explore, rate=0.0)}))
+    assert off["Exploring"] == "off"
+    baseline = _labels(readout.widget_elements({
+        "running": True, "policy": "baseline", "algorithm": "RecurrentPPO",
+        "explore": explore}))
+    assert "Exploring" not in baseline
+
+
+def test_fresh_runs_and_agreement_reach_the_card():
+    import time as _time
+    els = _labels(readout.widget_elements({
+        "running": True, "policy": "learned", "algorithm": "RecurrentPPO",
+        "promotion_tally": {"local": {"won": 1, "lost": 8, "fresh_won": 1,
+                                      "fresh_lost": 1},
+                            "remote": {"won": 0, "lost": 0}},
+        "last_decision": {"at": _time.time() - 60, "result": "kept",
+                          "candidates": [{"source": "local", "won": False,
+                                          "reason": "not better than the active "
+                                          "model (mean diff +0.0000)",
+                                          "agreement": 1.0}]},
+        "metrics": {"exploring": {"yield_per_hour": 2.0, "hit_rate": 0.1}}}))
+    assert els["Model contests"].endswith("· from scratch 1 of 2 won")
+    assert "(same choice as the active model on 100% of rows)" in els["Last contest"]
+    assert els["exploring h/hr"] == "2"

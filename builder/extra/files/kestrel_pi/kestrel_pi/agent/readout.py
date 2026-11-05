@@ -84,9 +84,13 @@ def _contest_elements(status):
         (lw, lt), (rw, rt) = counts(local), counts(remote)
         before = tally.get("before_fair_promotion") or {}
         if lt or rt:
+            value = "on-device %d of %d won · remote %d of %d won" % (lw, lt, rw, rt)
+            if isinstance(local, dict) and ("fresh_won" in local or "fresh_lost" in local):
+                fw = int(_num(local.get("fresh_won")) or 0)
+                value += " · from scratch %d of %d won" % (
+                    fw, fw + int(_num(local.get("fresh_lost")) or 0))
             elements.append({"name": "promotion_tally", "label": "Model contests",
-                             "value": "on-device %d of %d won · remote %d of %d won"
-                             % (lw, lt, rw, rt), "kind": "text"})
+                             "value": value, "kind": "text"})
         elif isinstance(before, dict) and (_num(before.get("local")) or
                                             _num(before.get("remote"))):
             elements.append({"name": "promotion_tally", "label": "Earlier adoptions",
@@ -116,8 +120,13 @@ def _contest_elements(status):
         else:
             reason = next((c.get("reason") for c in cands if c.get("reason")), "")
             value = "%s candidate kept out%s" % (who, ": %s" % reason if reason else "")
+            agreement = next((_num(c.get("agreement")) for c in cands
+                              if _num(c.get("agreement")) is not None), None)
+            if agreement is not None:
+                value += " (same choice as the active model on %.0f%% of rows)" % (
+                    agreement * 100.0)
         elements.append({"name": "last_contest", "label": "Last contest",
-                         "value": "%s · %s" % (value[:120], _ago(at)), "kind": "text"})
+                         "value": "%s · %s" % (value[:180], _ago(at)), "kind": "text"})
     return elements
 
 
@@ -142,6 +151,19 @@ def widget_elements(status):
         label = {"local": "On-device", "remote": "Remote host"}.get(source, source)
         elements.append({"name": "model_source", "label": "Model source",
                          "value": label, "kind": "text"})
+    explore = status.get("explore")
+    if status.get("policy") == "learned" and isinstance(explore, dict):
+        rate = _num(explore.get("rate")) or 0.0
+        if rate > 0:
+            value = "%g%% of windows" % round(rate * 100.0, 1)
+            allowed, tried = _num(explore.get("allowed")), _num(explore.get("tried"))
+            if allowed:
+                value += " · %d of %d actions tried" % (int(tried or 0), int(allowed))
+            value += " · %d in the last hour" % int(_num(explore.get("last_hour")) or 0)
+        else:
+            value = "off"
+        elements.append({"name": "explore", "label": "Exploring",
+                         "value": value, "kind": "text"})
     elements += _contest_elements(status)
     # On-device idle training: show it live while a run is in flight, otherwise
     # when it last ran and how long that run took (both persist across restarts).
@@ -185,7 +207,7 @@ def widget_elements(status):
     # of decision windows that produced a handshake) is a natural percent, so it
     # draws a core bar. Only policies with recorded windows appear.
     metrics = status.get("metrics") or {}
-    for policy in ("baseline", "learned"):
+    for policy in ("baseline", "learned", "exploring"):
         block = metrics.get(policy) or {}
         rate = _num(block.get("yield_per_hour"))
         if rate is None:

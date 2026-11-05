@@ -573,6 +573,19 @@ The agent learns from episode logs (one JSONL row per decision window under `/va
 
 A synchronous training run and installing a trained model are terminal-only (the web has no form for either). To train synchronously, or to move a trained model onto a device: `sudo kestrel agent train [--algorithm A] [--timesteps N]`, and `sudo kestrel agent import ./model.zip --algorithm RecurrentPPO` — or drop `kestrel-model.zip` (plus its `.meta.json` sidecar) on the boot partition, or let the backup plugin carry it. A model is portable across boards; one trained under a mismatched spec version is ignored in favour of the sweep rather than loaded wrong.
 
+### Exploring and training from scratch
+
+A learned policy picks its best-known scan every time, so on its own it would never find out whether another scan works better here. Two things keep it learning:
+
+- **Exploring.** While the learned policy drives capture, about 1 window in 20 (`explore_rate`, default `0.05`) runs a different scan instead, held for 2 windows (`explore_windows`) so it gets a fair reading. It favours the scans it has tried least. The AI Agent page shows an **Exploring** row (the share of windows, how many of the allowed scans have been tried, and how many windows explored in the last hour), and the note reads "trying …" during one. Those windows are counted on their own line (`exploring`), so the learned policy's figures stay its own. The baseline sweep never explores. Set `explore_rate = 0` to turn it off.
+- **Training from scratch.** Most training runs fine-tune the active model. Every 4th on-device run (`fresh_every`), and any run after 3 contests in a row where the new model chose exactly what the active one chose (`stuck_contests`), starts from scratch instead, with a new random seed and 3 times the steps (`fresh_timesteps`, `0` = 3 × `train_timesteps`). It faces the same contest as any new model. To ask for one now: `kestrel agent train-now --fresh`. The Model contests row shows how runs from scratch have done, and Last contest shows how often the new model chose the same scan as the active one.
+
+Until a scan has been tried in at least 8 windows, training and the contest assume it does no better than the weakest well-tried scan, so a model can't win by betting on scans nobody has tried.
+
+**Which scans the agent may run.** `[agent.action]` `postures`, `dwell_buckets` and `transmit_modes` limit every scan the agent runs: the learned policy's, the baseline sweep's and the exploring ones. For example, `transmit_modes = ["passive"]` keeps every agent window passive. A model that asks for a scan outside the lists runs the nearest allowed one instead.
+
+These settings live in the `[agent]` table of `config.toml` (not on the Advanced page); they take effect the next time the agent starts (for example `sudo systemctl restart kestrel-agent`).
+
 ### remote-train (offload training to a desktop)
 
 The `remote-train` plugin automates the whole desktop-training loop: it pushes the episode logs to a desktop Linux host, runs the same trainer there in an isolated venv it owns, and pulls the finished model back; the agent adopts it only if it wins the same fair contest as a model trained on the device. It ships disabled and, as a network plugin, takes the authorized-use acknowledgment. The training host is independent of the backup host.

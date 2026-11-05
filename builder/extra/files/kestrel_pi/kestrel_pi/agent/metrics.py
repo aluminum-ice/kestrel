@@ -202,6 +202,17 @@ def contest_decision(diffs, challenger_lift, incumbent_lift, margin=0.10,
                   % (mean, z, challenger_lift, incumbent_lift))
 
 
+def agreement(actions, other):
+    """The share of rows (0..1) on which two policies chose the same action,
+    or None with nothing to compare. A candidate at 1.0 behaves exactly like
+    the active model on the held-out rows, so any contest between them is a
+    tie, however much training changed its weights."""
+    pairs = list(zip(actions or (), other or ()))
+    if not pairs:
+        return None
+    return sum(1 for a, b in pairs if int(a) == int(b)) / len(pairs)
+
+
 def _policy_summary(rows):
     windows = len(rows)
     if not windows:
@@ -229,8 +240,11 @@ def _policy_summary(rows):
 def summarize(rows, window_minutes=None, now=None):
     """Per-policy metrics over the rolling ``window_minutes`` (None = all rows).
 
-    Returns ``{"window_minutes": N, "baseline": {...}, "learned": {...}}`` with
-    only the policies that have windows in range."""
+    Returns ``{"window_minutes": N, "baseline": {...}, "learned": {...},
+    "exploring": {...}}`` with only the blocks that have windows in range. A
+    window the learned policy spent exploring (``explore: true``) counts under
+    ``exploring``, not ``learned``, so trying other actions neither flatters nor
+    hurts the policy's own figures."""
     if window_minutes:
         if now is None:
             import time
@@ -238,10 +252,17 @@ def summarize(rows, window_minutes=None, now=None):
         cutoff = now - window_minutes * 60
         rows = [r for r in rows if float(r.get("ts", 0) or 0) >= cutoff]
     out = {"window_minutes": window_minutes}
-    for policy in ("baseline", "learned"):
-        block = _policy_summary([r for r in rows if r.get("policy") == policy])
+    groups = {
+        "baseline": [r for r in rows if r.get("policy") == "baseline"
+                     and not r.get("explore")],
+        "learned": [r for r in rows if r.get("policy") == "learned"
+                    and not r.get("explore")],
+        "exploring": [r for r in rows if r.get("explore")],
+    }
+    for name, group in groups.items():
+        block = _policy_summary(group)
         if block is not None:
-            out[policy] = block
+            out[name] = block
     return out
 
 
@@ -255,7 +276,7 @@ def format_table(summary):
         ("hit_rate", "window hit rate", "%.0f%%"),
         ("opportunity_yield", "handshakes / AP-window", "%.3f"),
     ]
-    policies = [p for p in ("baseline", "learned") if p in summary]
+    policies = [p for p in ("baseline", "learned", "exploring") if p in summary]
     lines = []
     window = summary.get("window_minutes")
     lines.append("agent vs sweep%s:" %

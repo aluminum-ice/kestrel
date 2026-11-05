@@ -101,8 +101,11 @@ def agent_status(now):
     return {
         "running": True, "policy": "learned", "algorithm": "RecurrentPPO",
         "model_source": "remote",
-        "promotion_tally": {"local": {"won": 3, "lost": 7},
+        "promotion_tally": {"local": {"won": 3, "lost": 7, "fresh_won": 1,
+                                      "fresh_lost": 2},
                             "remote": {"won": 2, "lost": 1}},
+        "explore": {"rate": 0.05, "windows": 2, "allowed": 32, "tried": 21,
+                    "last_hour": 6, "now": False},
         "last_decision": {"at": now - 2 * 3600, "result": "promoted",
                           "winner": "remote", "trigger": "remote",
                           "candidates": [{"source": "remote", "won": True}]},
@@ -111,7 +114,8 @@ def agent_status(now):
         "transmit": "active", "last_reward": 0.42,
         "session_yield": SESSION_HANDSHAKES, "decisions": 134,
         "metrics": {"baseline": {"yield_per_hour": 3.1, "hit_rate": 0.21},
-                    "learned": {"yield_per_hour": 4.4, "hit_rate": 0.29}},
+                    "learned": {"yield_per_hour": 4.4, "hit_rate": 0.29},
+                    "exploring": {"yield_per_hour": 2.6, "hit_rate": 0.17}},
     }
 
 

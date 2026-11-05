@@ -87,7 +87,10 @@ text first, leaving it `lift` pt below the top (24 by default; more shows the
 card heading above a row); `scenario = "update-available"` shows the dashboard
 with an in-place upgrade on offer. Figures after the same heading appear in
 `guide.toml` order. A figure whose heading disappears from a later release fails
-the build, so move or drop it then. Demo data lives at the top of
+the build, so move or drop it then. A figure for a feature that hasn't shipped in
+a stable release yet carries `since = "X.Y.Z"` (the release it first ships in):
+building an older release leaves it out, so the current page can still be
+republished before then. Demo data lives at the top of
 `fixture.py`; keep it fictional (no real SSIDs, MACs, places or names), and
 keep anything that prints a clock time or date on a fixed clock, so an
 unchanged figure is reused on Ghost rather than uploaded again.

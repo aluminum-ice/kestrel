@@ -51,6 +51,29 @@ the contract.
   - `autohunt` → `{"kind": "autohunt"}` (`--autohunt`)
   A posture with no channels to pin/lock (empty ranking) degrades to a band
   sweep, so a decision window is never a no-op.
+- **The allowed set** (`explore.allowed_actions`). `[agent.action]`
+  `postures`, `dwell_buckets` and `transmit_modes` (defaults: the whole
+  vocabulary) define the actions the agent may run: every combination of listed
+  parts; unknown values are dropped, and a set left empty is the baseline's
+  action alone. The controller maps every action it runs (the learned
+  policy's, the baseline's) into it with `explore.nearest_allowed` (same
+  posture and transmit mode where possible, then the nearest dwell), logging
+  once per run when a model asked for one outside it, and exploration draws
+  only from it. Models and contests keep the full `Discrete(32)`, so a model
+  moves between devices with different sets and `SPEC_VERSION` is unaffected.
+- **Exploration** (`explore.Explorer`). The learned policy acts greedily, so
+  on its own it only ever runs its preferred action and the logs never learn
+  about the others. While the **learned** policy drives (never under the
+  baseline, an interleave baseline block or a fallback to the baseline), a
+  window starts an exploration with probability `[agent] explore_rate`
+  (default `0.05`, clamped 0-0.25, `0` = off): it runs another allowed action,
+  picked with weight `1 / sqrt(1 + n_a)` (`n_a` = how often the action is
+  logged, counted once from the episode files with a line scan and kept
+  current), and holds it for `explore_windows` windows (default 2, clamped 1-4;
+  the first window after a relaunch starts part-way). The row is marked
+  `explore` (below); the status carries an `explore` block and the note
+  `trying <posture> / <dwell>s / <transmit>`; the journal gets one line per
+  exploring window.
 
 ## Observation space
 
@@ -217,11 +240,12 @@ importer and the backup plugin reference these names.
   | `algorithm` | string | the algorithm this model is for (decides the file it lands in) |
   | `spec_version` | int | the `SPEC_VERSION` it was trained under |
   | `data_watermark` | `{latest_ts, episodes}` | newest episode data it learned from (optional) |
-  | `provenance` | object | which reward model trained it + held-out scores (optional) |
+  | `provenance` | object | which reward model trained it, held-out scores, and `unsupported_actions` (actions with too few rows, scored at the cautious floor) (optional) |
   | `train_seconds` | number | how long the training run took (optional) |
   | `source` | `"local"` \| `"remote"` | trained on this device, or pulled from the remote host (optional) |
   | `holdout` | string | the held-out scheme it was trained under (`"block-hash-v1"`); absent on a model from before held-out rows (optional) |
-  | `warm_start` | string \| null | the `source` of the model it was fine-tuned from, or null when trained fresh (optional) |
+  | `warm_start` | string \| null | the `source` of the model it was fine-tuned from, or null when trained from scratch (optional) |
+  | `fresh`, `seed` | bool, int \| null | trained from scratch on purpose (a fresh run), and the seed of the model and the replay sampler, null when unseeded (optional) |
   | `timesteps`, `train_rows`, `held_out_rows` | int | training steps, and the rows it trained on and kept out (optional) |
   | `promoted_at`, `contest` | number, object | when it won its contest and how (rows, lifts, mean difference, reason) (optional) |
 
@@ -256,11 +280,30 @@ against it. One code path, one rule, no source advantage.
 - **Where candidates wait.** An on-device run writes
   `AGENT_DIR/.candidates/local/<slug>/model-<slug>.{zip,meta.json}` (never the
   active slot), warm-started from the active model's weights (weights only, as
-  every load is). The `remote-train` plugin (daemon, **torch-free**) stages a
+  every load is), or, for a **fresh run**, from scratch (below). The
+  `remote-train` plugin (daemon, **torch-free**) stages a
   pulled model in `AGENT_DIR/.remote-staging/<slug>/` when its spec matches and
   the agent hasn't judged it before. It records the host's latest model per
   algorithm in `.remote-staging/host-models.json` (its launch trigger counts
   rows since that model's watermark).
+- **Fresh runs.** A fine-tune from the active model rarely moves its greedy
+  choices, so a device can sit on one policy with every contest a tie. An
+  automatic local run is therefore **fresh** (`train --no-warm-start --seed
+  <random>`, `[agent] fresh_timesteps` steps, default `0` = 3 ×
+  `train_timesteps`, clamped 100-30000) when it is the `fresh_every`-th run
+  since the last fresh one (default 4, `0` = off) or the last `stuck_contests`
+  local contests (default 3, `0` = off) all ended with the candidate choosing
+  what the active model chose on every row. A manual run is warm unless asked
+  (`train-request-fresh`, from `kestrel agent train-now --fresh`). Fresh
+  candidates face the same contest. The counters live in memory, so a restart
+  starts the cadence over. Remote runs still warm-start (see `deferred.md`).
+- **Cautious scoring.** The reward models (`train._mean_fn` with
+  `min_support`, `train.fit_reward_model`) score an action with fewer than 8
+  logged rows at the lowest mean among the actions that have 8 or more
+  (`train._cautious_floor`), not at the global mean, so a model (a fresh one
+  especially) can't win by choosing actions nobody has tried. While no action
+  has 8 rows, each keeps its own mean. Training (`select_reward_model`) and the
+  contest (`_scoring_reward_fn`) use the same rule.
 - **When a contest runs.** After a local run finishes, and when the staged
   remote model's mtime changes (the decide loop watches it), never while a
   training child is writing. One contest at a time.
@@ -268,7 +311,10 @@ against it. One code path, one rule, no source advantage.
   the active model and the scripted baseline, and `train.evaluate` scores them
   on the newest 2,000 held-out rows that carry an observation, in time order,
   resetting a policy's recurrent state at each hour-block boundary, under one
-  reward model fitted on the non-held-out rows. A model trained before rows were
+  reward model fitted on the non-held-out rows. It also returns each policy's
+  chosen actions, and the contest records each candidate's **agreement**
+  (`metrics.agreement`: the share of rows where it chose the active model's
+  action). A model trained before rows were
   held out (no `holdout` in its sidecar) saw them all, so the contest then uses
   only held-out rows newer than its data watermark.
 - **The rule** (`metrics.contest_decision`, the same for both sources). From the
@@ -293,14 +339,18 @@ against it. One code path, one rule, no source advantage.
   `promoted_at` and `contest`. Every other candidate is deleted; a remote one's
   fingerprint (`metrics.model_fingerprint`: algorithm, watermark, train time)
   goes into `.remote-staging/evaluated.json` so the plugin doesn't stage it
-  again. Each decision is logged (`contest (<trigger>): <source> candidate vs
-  active (<source>): promote|keep - <reason>; N held-out rows`).
+  again. Each decision is logged (`contest (<trigger>): <source>[ (from
+  scratch)] candidate vs active (<source>): promote|keep - <reason>; N held-out
+  rows, <kind> reward model; same choice as the active model on P% of rows`),
+  and `last_decision.candidates[]` carries `agreement` and `fresh`.
 - **The tally.** `promotion-tally.json` counts contests by source:
-  `{"local": {"won", "lost"}, "remote": {"won", "lost"}}`. A device's adoption
+  `{"local": {"won", "lost"}, "remote": {"won", "lost"}}`, plus `fresh_won` /
+  `fresh_lost` once a fresh candidate has been judged. A device's adoption
   counts from before contests are kept under `before_fair_promotion`. The agent
   publishes it in `status.json` (`promotion_tally`, with `last_decision`), and
   the daemon renders **Model contests** (`on-device 3 of 9 won · remote 2 of 2
-  won`) and **Last contest** on the `/agent` card.
+  won · from scratch 1 of 2 won`) and **Last contest** (with the agreement) on
+  the `/agent` card.
 - **Validating it in the field.** `builder/extra/files/scripts/pull-agent-diagnostics.sh`
   (shipped under `/usr/local/share/kestrel/scripts/`, run from your workstation)
   reports the sidecars, the contests and their reasons from the journal, each
@@ -321,6 +371,8 @@ Row schema:
 | --- | --- | --- |
 | `ts` | float | epoch seconds |
 | `policy` | `"baseline"` \| `"learned"` | which policy drove this window |
+| `explore` | bool | the window ran an exploring action instead of the policy's (absent = false); the metrics count it under `exploring`, not `learned` |
+| `explore_p` | float | the probability that action was drawn with (rate × its share of the weight), for a later off-policy weighting; only on `explore` rows |
 | `step` | int | step index within the run |
 | `action` | int | the `Discrete(32)` index |
 | `posture` | string | decoded posture |
@@ -350,12 +402,16 @@ Always present: `running` (bool), `policy`, `algorithm`, `model` (the basename
 of the per-algorithm model file), `train` (`off` | `idle`), `training` (bool),
 `can_train` (bool) and `train_blocked` (reason when it is not),
 `last_trained` / `last_train_secs`, `session_yield`, `decisions`, `detail`,
-`updated`, and `metrics`. Present when applicable: `model_source` (`local` |
+`updated`, `metrics`, `promotion_tally`, `last_decision`, and `explore`
+(`{"rate", "windows", "allowed", "tried", "last_hour", "now"}`: the settings,
+how many allowed actions have been logged at least once, exploring windows in
+the last hour, and whether this window is exploring). Present when applicable: `model_source` (`local` |
 `remote`, learned only), and the last window's `posture` / `dwell` / `transmit`
 / `last_reward`.
 
-`metrics` is `{"window_minutes", "baseline": {...}, "learned": {...}}` with only
-the policies that have windows in range; each per-policy block carries
+`metrics` is `{"window_minutes", "baseline": {...}, "learned": {...},
+"exploring": {...}}` with only the blocks that have windows in range (an
+`explore` row counts under `exploring`, never `learned`); each per-policy block carries
 `windows`, `handshakes`, `networks`, `hit_rate`, `yield_per_hour`,
 `coverage_per_hour` and `opportunity_yield` (handshakes per discoverable
 AP-window). `kestrel agent metrics` prints the same figures as a table,

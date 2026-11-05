@@ -98,8 +98,8 @@ Usage: $PROG <command>
   agent algorithm A  Set the RL algorithm (RecurrentPPO|PPO|DQN|QR-DQN)
   agent policy P     Set what drives capture (baseline|learned)
   agent import FILE --algorithm A   Install a trained model and use it
-  agent train [--algorithm A] [--timesteps N]   Train from the logged episodes
-  agent train-now    Ask the running agent to train now (non-blocking)
+  agent train [--algorithm A] [--timesteps N] [--fresh]   Train from the logged episodes
+  agent train-now [--fresh]   Ask the running agent to train now (non-blocking)
   agent metrics      Show the agent-vs-sweep comparison
   remote-train       Remote-training menu (train the agent on a desktop host)
   remote-train status   Show the training host, SSH state and host job state
@@ -1565,8 +1565,10 @@ pi_dir() {
 # in the background. Shared by 'agent train-now' and the auto-train-on-switch
 # path; the agent is the final gate (board size, memory, temperature).
 agent_request_train() {
+    local name=train-request
+    [ "${1:-}" = fresh ] && name=train-request-fresh
     pi_dir "$PWN_AGENT_DIR"
-    pi_touch "$PWN_AGENT_DIR/train-request" \
+    pi_touch "$PWN_AGENT_DIR/$name" \
         || die "could not drop the train request in $PWN_AGENT_DIR"
 }
 
@@ -1706,6 +1708,7 @@ cmd_agent_train() {
         case "$1" in
             --algorithm) args+=(--algorithm "$2"); shift 2 ;;
             --timesteps) args+=(--timesteps "$2"); shift 2 ;;
+            --fresh) args+=(--no-warm-start); shift ;;
             *) die "unknown option for 'agent train': $1" ;;
         esac
     done
@@ -1720,10 +1723,22 @@ cmd_agent_train() {
 # the background, so it shows on the dashboard like idle training. Unlike
 # 'agent train' (which trains synchronously in the foreground), this returns at
 # once; it needs the agent to be running (enabled) for anything to pick it up.
+# --fresh asks for a run from scratch (a new seed, fresh_timesteps) instead of
+# a fine-tune of the active model; it faces the same contest.
 cmd_agent_train_now() {
+    local kind=""
+    case "${1:-}" in
+        "") ;;
+        --fresh) kind=fresh ;;
+        *) die "unknown option for 'agent train-now': $1" ;;
+    esac
     backup_require_pi_or_root
-    agent_request_train
-    log "requested an on-device training run; the agent starts it within ~15s if resources allow"
+    agent_request_train "$kind"
+    if [ "$kind" = fresh ]; then
+        log "requested an on-device training run from scratch; the agent starts it within ~15s if resources allow"
+    else
+        log "requested an on-device training run; the agent starts it within ~15s if resources allow"
+    fi
 }
 
 cmd_agent_metrics() {
@@ -1806,7 +1821,7 @@ cmd_agent() {
         policy) [ $# -ge 1 ] || die "usage: $PROG agent policy <$AGENT_POLICIES>"; cmd_agent_set --policy "$1" ;;
         import) cmd_agent_import "$@" ;;
         train) cmd_agent_train "$@" ;;
-        train-now) cmd_agent_train_now ;;
+        train-now) cmd_agent_train_now "$@" ;;
         metrics) cmd_agent_metrics ;;
         *) die "unknown 'agent' subcommand: $sub" ;;
     esac

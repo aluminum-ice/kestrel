@@ -291,9 +291,12 @@ same **contest** (the full rules are in
   With no active model at all, a candidate that beats the baseline is adopted:
   that's how a board that can't train (a Zero 2 W) gets its first model.
 - **On-device runs are candidates too.** They warm-start from the active model
-  (a fine-tune, not a fresh model) and write to `.candidates/local/<slug>/`;
+  (a fine-tune), except every `fresh_every`-th run or one after
+  `stuck_contests` tied contests, which trains from scratch with a new seed
+  (`agent-interface.md`, "Fresh runs"), and write to `.candidates/local/<slug>/`;
   they replace the active model only by winning. A remote model is no longer
-  overwritten half an hour later by a fresh local run that never had to compete.
+  overwritten half an hour later by a local run that never had to compete.
+  Remote runs still warm-start from the host's previous model.
 
 The plugin daemon stays torch-free throughout: it only pulls and stages. The
 dashboard's agent card shows **Model contests** (how many on-device and remote
