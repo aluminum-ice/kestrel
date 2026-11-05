@@ -383,11 +383,17 @@ def test_main_ignores_sighup(tmp_path, monkeypatch):
     cfg.write_text("[web]\nenabled = false\n")
     # Don't actually run the loop; we only care that the handlers are installed.
     monkeypatch.setattr(daemon_mod.Daemon, "run_forever", lambda self: None)
+    # main() ends with logging.shutdown() and os._exit(0); left real, they
+    # would end the whole pytest run here, silently and with status 0.
+    exits = []
+    monkeypatch.setattr(daemon_mod.os, "_exit", exits.append)
+    monkeypatch.setattr(daemon_mod.logging, "shutdown", lambda: None)
     prev = signal.getsignal(signal.SIGHUP)
     try:
         rc = daemon_mod.main(["--config", str(cfg),
                               "--capture-store", str(tmp_path)])
         assert rc in (None, 0)
+        assert exits == [0]
         assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
     finally:
         signal.signal(signal.SIGHUP, prev)

@@ -989,37 +989,26 @@ def test_gps_serial_reader_recovers_from_a_stalled_link(monkeypatch):
     NOFIX = b"$GPGGA,,,,,0,00,,,,,,,,*00\r\n"
     FIX = (b"$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,"
            b"545.4,M,46.9,M,,*47\r\n")
-    # Two opens, keyed by the dummy fd each returns. The first streams a no-fix
-    # line then stalls (select reports nothing ready); the second (the re-open)
-    # delivers the fix then EOF.
-    steps = {1: [("data", NOFIX), ("stall", b"")],
-             2: [("data", FIX), ("eof", b"")]}
-    cursor = {1: 0, 2: 0}
+    # Two opens, keyed by the dummy fd each returns (well clear of real fds).
+    # The first streams a no-fix line then stalls (select reports nothing
+    # ready); the second (the re-open) delivers the fix then EOF.
+    steps = {1001: [("data", NOFIX), ("stall", b"")],
+             1002: [("data", FIX), ("eof", b"")]}
+    cursor = {1001: 0, 1002: 0}
     opens = []
+    _real_open, _real_close = os.open, os.close
 
-    class _FakePort:
-        def __init__(self, fd):
-            self._fd = fd
-
-        def fileno(self):
-            return self._fd
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_a):
-            return False
-
-    import builtins
-    _real_open = builtins.open
-
-    def fake_open(device, *_a, **_k):
+    def fake_open(device, *a, **k):
         # Only the serial node is faked; other opens (e.g. the latest-fix seam
         # the GGA fix now publishes) fall through to the real open.
         if device != "/dev/ttyACM0":
-            return _real_open(device, *_a, **_k)
+            return _real_open(device, *a, **k)
         opens.append(device)
-        return _FakePort(len(opens))        # fd 1 on the first open, 2 on the next
+        return 1000 + len(opens)            # fd 1001 on the first open, 1002 next
+
+    def fake_close(fd):
+        if fd not in steps:
+            _real_close(fd)
 
     def fake_select(rlist, _w, _x, _timeout):
         fd = rlist[0]
@@ -1031,7 +1020,8 @@ def test_gps_serial_reader_recovers_from_a_stalled_link(monkeypatch):
         cursor[fd] += 1
         return data                         # b"" signals EOF
 
-    monkeypatch.setattr(mod, "open", fake_open, raising=False)
+    monkeypatch.setattr(mod.os, "open", fake_open)
+    monkeypatch.setattr(mod.os, "close", fake_close)
     monkeypatch.setattr(mod.select, "select", fake_select)
     monkeypatch.setattr(mod.os, "read", fake_read)
 
@@ -2828,3 +2818,43 @@ def test_no_shipped_plugin_builds_its_own_links_back():
     offenders = [name for name in sorted(os.listdir(plugins)) if name.endswith(".py")
                  and "&larr; Plugins" in open(os.path.join(plugins, name), encoding="utf-8").read()]
     assert offenders == []
+
+
+def test_gps_position_drops_a_lost_fix(tmp_path):
+    # A receiver that still streams but has lost its fix (GGA quality 0) must
+    # not keep sharing the last position: a handshake captured now would be
+    # tagged with where the device used to be.
+    mod = _load_module("gps.py", "gps_lost_under_test")
+    plugin = _bare_gps(mod)
+    plugin._handle_nmea(
+        "$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47")
+    assert plugin.provide_position() is not None
+    plugin._handle_nmea("$GPGGA,123520,4807.038,N,01131.000,E,0,00,,,M,,M,,*47")
+    assert plugin.provide_position() is None
+
+
+def test_gps_position_ages_out_when_the_receiver_goes_quiet(tmp_path):
+    # An unplugged or stalled receiver sends nothing more, so the mode never
+    # changes; the fix's age is what retires it.
+    mod = _load_module("gps.py", "gps_aged_under_test")
+    plugin = _bare_gps(mod)
+    plugin._set_mode(3)
+    plugin._set_fix(40.0, -73.0, 12.3)
+    assert plugin.provide_position()["lat"] == 40.0
+    plugin._fix_at = time.monotonic() - (mod.FIX_MAX_AGE_S + 1)
+    assert plugin.provide_position() is None
+    plugin._set_fix(40.1, -73.1, 12.3)          # the receiver is back
+    assert plugin.provide_position()["lat"] == 40.1
+
+
+def test_gps_handshake_with_a_stale_fix_writes_no_sidecar(tmp_path):
+    mod = _load_module("gps.py", "gps_stale_tag_under_test")
+    plugin = _bare_gps(mod)
+    plugin._set_mode(3)
+    plugin._set_fix(40.0, -73.0, 12.3)
+    plugin._fix_at = time.monotonic() - (mod.FIX_MAX_AGE_S + 1)
+    capture = tmp_path / "cap.hc22000"
+    capture.write_text("")
+    event = type("E", (), {"path": str(capture), "bssid": "00:00:5E:00:53:01"})()
+    plugin.on_handshake(event)
+    assert not os.path.exists(str(capture) + ".gps.json")
