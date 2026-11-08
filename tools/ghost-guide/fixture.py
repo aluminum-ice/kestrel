@@ -21,6 +21,7 @@ import random
 import sys
 import threading
 import time
+from collections import Counter
 
 # Fictional networks: (essid, [(bssid suffix, handshakes, minutes since last)]).
 NETWORKS = [
@@ -86,6 +87,10 @@ CENSUS_TODAY = [
 ]
 CENSUS_HISTORY = [(13, 4), (15, 5), (17, 6), (18, 7), (21, 8), (22, 9), (24, 10),
                   (27, 11), (29, 11), (31, 12), (33, 13)]
+# From 1.0.14 a census token carries the board family: the share of each
+# (Pi 5, Pi 4, Zero 2 W, Pi 3 family codes) among the invented devices, drawn
+# from their own generator so the shots of earlier releases don't change.
+CENSUS_BOARDS = [(4, 5), (3, 4), (1, 3), (2, 1)]
 
 ESTIMATED_FIXES = [(0x61, 38.71180, -9.13790), (0x21, 38.71840, -9.13520),
                    (0x71, 38.71520, -9.14620), (0x72, 38.71560, -9.14580)]
@@ -404,6 +409,15 @@ class Demo:
         census._now = lambda: now
         today, hour, _minute = utc(now)
         rng = random.Random(1012)
+        boards = random.Random(1014) if hasattr(proto, "make_token") else None
+        pick = [code for code, weight in CENSUS_BOARDS for _ in range(weight)]
+
+        def token(board=None):
+            value = rng.getrandbits(64)
+            if boards is None:
+                return "%016x" % value
+            board = boards.choice(pick) if board is None else board
+            return proto.make_token(board, value.to_bytes(8, "big")[3:]).hex()
         entries, online = {}, 0
         for (release, state, algorithm, remote), count in CENSUS_TODAY:
             for _ in range(count):
@@ -413,13 +427,18 @@ class Demo:
                 remote_counts = [rng.randint(0, 1) if remote == 4 else 0,
                                  rng.randint(0, 1) if remote in (3, 4) else 0]
                 agent = proto.encode_agent(state, proto.ALGORITHMS.get(algorithm, 0), remote)
-                entries["%016x" % rng.getrandbits(64)] = (
+                entries[token()] = (
                     [last, proto.encode_version(release), agent] + local + remote_counts)
         census._seen = {today: {"entries": entries, "read_at": now - 23 * 60,
                                 "online": online, "rejected": 0}}
         tally = proto.Tally(entries.values())
         census._history = {today: {"active": tally.active, "online": online, "capped": 0,
                                    "contests": tally.contests, "working": tally.working}}
+        if boards is not None:
+            tally = proto.Tally(entries)
+            census._history[today]["boards"] = {
+                str(code): [count] + tally.board_contests.get(code, [0, 0])
+                for code, count in tally.boards.items()}
         for back, (active, most) in enumerate(reversed(CENSUS_HISTORY), start=1):
             local_won, local_lost = rng.randint(4, 9), rng.randint(14, 30)
             remote_won, remote_lost = rng.randint(1, 4), rng.randint(0, 3)
@@ -428,10 +447,20 @@ class Demo:
                 "contests": [local_won, local_lost, remote_won, remote_lost],
                 "working": [rng.randint(0, local_won), rng.randint(2, local_lost),
                             remote_won, remote_lost]}
+            if boards is not None:
+                # Spread the day's devices and on-device contests over the boards.
+                judged = Counter(boards.choice(pick) for _ in range(local_won + local_lost))
+                rows, won_left = {}, local_won
+                for code, weight in CENSUS_BOARDS:
+                    won = min(won_left, round(judged[code] * local_won / (local_won + local_lost)))
+                    won_left -= won
+                    rows[str(code)] = [round(active * weight / len(pick)), won,
+                                       judged[code] - won]
+                census._history[utc(now - back * 86400)[0]]["boards"] = rows
         # This device's day: reported this hour and checked, remote training
         # working at the day's first write, and the contest baseline taken at
         # UTC midnight (so "today" is the agent's tally minus it).
-        census._day = {"day": today, "token": "%016x" % rng.getrandbits(64), "slot": 17,
+        census._day = {"day": today, "token": token(board=4), "slot": 17,
                        "alt": 0, "nonce": None, "remote": proto.REMOTE_WORKING,
                        "baseline": [1, 5, 1, 1], "cache": {},
                        "bytes": int(2.6 * 1024 * 1024), "wrote": hour}

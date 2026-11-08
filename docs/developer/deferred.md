@@ -304,6 +304,20 @@ How to use this file:
   it in `plugin-libraries.md`, and load it from both plugins and the report.
 - **Pick up when:** a second plugin needs the DHT.
 
+### Send a RAM size with the census board
+
+- **What:** the token's board byte has three `ram` bits, sent as 0. A size
+  bucket (1, 2, 4, 8, 16 GB, from `/proc/meminfo`) would say directly which
+  devices could train on the device (about 4 GB and up), which the board
+  family only approximates.
+- **Why deferred:** each extra detail makes one device's daily report easier
+  to tell apart while the census is small; the family is enough to start.
+- **What to do:** fill `ram` in `make_token`, decode it in `token_board`'s
+  callers, and add a RAM line to the Boards card and the desktop report.
+  Older readers ignore it, so it keeps `kestrel-census/1`.
+- **Pick up when:** the census has enough devices that a size bucket doesn't
+  single one out, or on-device training needs the figure.
+
 ### Show the census on the e-ink face
 
 - **What:** the `census` service (online, active today, win rates) could give

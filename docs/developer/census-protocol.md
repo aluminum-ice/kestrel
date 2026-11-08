@@ -7,8 +7,10 @@ where, and how a reader counts it, so the plugin, the desktop report
 helper files, `builder/extra/files/plugins/_census_dht.py` (the DHT client) and
 `_census_proto.py` (this format).
 
-A change to anything here is a new protocol name (`kestrel-census/2`), with new
-slot keys, so old and new devices never mix entries in one slot.
+A change that older readers would parse differently is a new protocol name
+(`kestrel-census/2`), with new slot keys, so old and new devices never mix
+entries in one slot. A change they read unchanged keeps the name and is listed
+under [History](#history).
 
 ## Slots
 
@@ -42,12 +44,40 @@ token(8) | hour(1) | version(2) | agent(1) | contests(4) | pow_nonce(4)
 
 | Field | Meaning |
 | --- | --- |
-| `token` | 8 random bytes, made at the device's first write of a UTC day and kept all day (across reboots). A new day gets a new token, so days aren't linked. |
+| `token` | 8 bytes, made at the device's first write of a UTC day and kept all day (across reboots). A new day gets a new token, so days aren't linked. It carries the board family; see below. |
 | `hour` | The UTC hour of the device's last write, 0-23. |
 | `version` | The release, 16 bits: `major(3) \| minor(4) \| patch(6) \| beta(3)`. `beta` is 0 for a stable release, 1-6 for `-beta.1` to `-beta.6`, 7 for `-beta.7` or later. All zeros is "unknown": a development build, an unreadable version file, or a part out of range (major > 7, minor > 15, patch > 63). |
 | `agent` | 8 bits: `state(2) \| algorithm(3) \| remote(3)`, below. |
 | `contests` | 4 bytes: on-device won, on-device lost, remote won, remote lost, since UTC midnight, each saturating at 255. |
 | `pow_nonce` | 4 bytes, below. |
+
+**`token`:** `marker(2) | board(1) | random(5)`.
+
+- `marker`: the two bytes `6b 62` (ASCII `kb`): the token carries a board.
+- `board`: `family(4) | ram(3) | spare(1)`. `ram` is 0 (not sent) and `spare`
+  is 0.
+- `random`: 5 random bytes, new every UTC day.
+
+A token without the marker, or with the spare bit set, carries no board: a
+release before 1.0.14 makes all 8 bytes random, and about 1 in 65,536 of those
+starts with the marker by chance. Readers count either as "not reported" (an
+unknown family). Nothing else reads the token's bits: it identifies the
+device's entry for the day, orders a slot's value and goes into the
+proof-of-work, as before.
+
+`family` comes from the board's name in `/proc/device-tree/model`:
+
+| Code | Family | The name starts with |
+| --- | --- | --- |
+| 0 | unknown | (no name: the file is missing, empty or unreadable) |
+| 1 | Zero 2 W | `Raspberry Pi Zero 2` |
+| 2 | Pi 3 family | `Raspberry Pi 3`, `Raspberry Pi Compute Module 3` |
+| 3 | Pi 4 family | `Raspberry Pi 4` (and so `400`), `Raspberry Pi Compute Module 4` |
+| 4 | Pi 5 family | `Raspberry Pi 5` (and so `500`), `Raspberry Pi Compute Module 5` |
+| 5 | another board | any other name |
+| 6-15 | reserved | read as "another board" |
+
+Only the code leaves the device, never the name.
 
 **`agent` byte:**
 
@@ -129,6 +159,9 @@ page then says the census is full).
 - **Contests:** sums over entries. An entry claiming more than 100 on-device
   or 50 remote contests in a day has its contests left out: the agent runs at
   most one on-device contest every half hour or so, and one per remote model.
+- **Boards:** today's entries by the family their token carries, and on-device
+  contests won and lost by family (entries whose contests are left out above
+  are left out here too).
 - Tokens are new every day, so days can't be added up into a device count.
 
 The numbers are approximate and unverified, and count only devices that run
@@ -145,3 +178,10 @@ the census.
   the bootstrap routers only when that list has gone stale, and is limited to
   10 queries a second and 8 in flight.
 - IPv4 only.
+
+## History
+
+Changes that keep the name, because older readers parse them unchanged:
+
+- **1.0.14:** the token carries the board family (`marker | board | random`).
+  Readers on 1.0.13 and earlier treat it as the random token it was.

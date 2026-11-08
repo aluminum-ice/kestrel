@@ -2,7 +2,7 @@
 
 A desktop script that reads the Kestrel census from the public BitTorrent DHT
 and prints it as plain tables: how many Kestrels reported on a UTC day, which
-releases they run, how their learning agents are set up, whether remote
+releases and boards they run, how their learning agents are set up, whether remote
 training works for them, and how their training contests went. It's for seeing
 which releases are in the field without a device.
 

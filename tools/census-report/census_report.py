@@ -5,8 +5,8 @@ The ``census`` plugin's devices each write a small, anonymous report to the
 BitTorrent DHT every hour (the ``kestrel-census/1`` format, in
 docs/developer/census-protocol.md). This script reads the same public slots a
 device reads, from a computer with a checkout of this repository, and prints
-how many Kestrels reported, which releases they run, how their learning agents
-are set up, and how their training contests went. Nothing reports to it, and
+how many Kestrels reported, which releases and boards they run, how their
+learning agents are set up, and how their training contests went. Nothing reports to it, and
 it writes nothing to the DHT.
 
 It loads the plugin's own helper files (``_census_dht.py`` and
@@ -124,7 +124,9 @@ def collect(dht, proto, make_client, pool, day, slots, bits, parallel=1):
 
 
 def rows_of(entries):
-    return [[e.hour, e.version, e.agent] + list(e.contests) for e in entries.values()]
+    """``{token: row}`` for ``proto.Tally``, which reads the board from the token."""
+    return {token: [e.hour, e.version, e.agent] + list(e.contests)
+            for token, e in entries.items()}
 
 
 def _won(won, lost):
@@ -152,6 +154,8 @@ def sections(proto, tally):
     return [
         ("Release", ["Release", "Devices", "Share"],
          [[name, n, share(n)] for name, n in tally.version_rows()]),
+        ("Board", ["Board", "Devices", "Share"],
+         [[name, n, share(n)] for name, n in tally.board_rows()]),
         ("Agent", ["Agent", "Devices", "Share"],
          [[proto.AGENT_STATES[code], tally.states[code], share(tally.states[code])]
           for code in sorted(tally.states, reverse=True)]),
@@ -164,6 +168,9 @@ def sections(proto, tally):
         ("Training contests", ["Training contests today", "On-device won", "Remote won"],
          [["all devices", _won(*tally.contests[:2]), _won(*tally.contests[2:])],
           ["remote training working", _won(*tally.working[:2]), _won(*tally.working[2:])]]),
+        ("On-device contests by board", ["On-device contests today", "Won"],
+         [[proto.board_name(code), _won(*tally.board_contests[code])]
+          for code in sorted(tally.board_contests)]),
     ]
 
 

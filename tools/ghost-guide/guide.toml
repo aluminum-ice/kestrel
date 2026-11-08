@@ -111,6 +111,16 @@ alt = "The Census page: its status, today's totals and the releases in use"
 caption = "The Census page: its status, today's totals and the releases in use. Sample data."
 
 [[figure]]
+key = "phone-census-boards"
+after = "census-an-anonymous-count-of-kestrels"
+path = "/plugins/census/index"
+focus = "Boards"
+lift = 72
+since = "1.0.14"
+alt = "The Census page's Boards card: the share of Kestrels on each Raspberry Pi family, and how on-device training did on each this week"
+caption = "Which Raspberry Pi boards the counted Kestrels run, and how on-device training did on each this week. Sample data."
+
+[[figure]]
 key = "phone-census-report"
 after = "census-an-anonymous-count-of-kestrels"
 path = "/plugins/census/index"
