@@ -155,3 +155,25 @@ def test_report_reads_slots_in_parallel_with_the_same_result(tmp_path):
         assert before <= set(pool.nodes) and len(pool.nodes) <= pool.capacity
     tokens = {bytes.fromhex(w._day["token"]) for w in writers}
     assert found[1] == found[6] == tokens
+
+
+def test_report_tables_boards_from_the_tokens():
+    report = _script()
+    _dht, proto = report.load_helpers()
+    entries = {}
+    for n, (board, contests) in enumerate(((proto.BOARD_PI5, (2, 1, 0, 0)),
+                                           (proto.BOARD_PI5, (0, 1, 0, 0)),
+                                           (proto.BOARD_ZERO2, (0, 0, 0, 0)))):
+        token = proto.make_token(board, bytes([n]) * 5)
+        entries[token] = proto.Entry(token, 8, proto.encode_version("1.0.14"), 0xC8,
+                                     contests, b"\0" * 4)
+    old = bytes(range(8))
+    entries[old] = proto.Entry(old, 8, proto.encode_version("1.0.13"), 0xC8,
+                               (0, 0, 0, 0), b"\0" * 4)
+    tally = proto.Tally(report.rows_of(entries), hour=8)
+    lines = report.render(proto, "2027-01-15", tally, tc.NOW, True).splitlines()
+    start = lines.index(next(l for l in lines if l.startswith("Board ")))
+    assert [l.split("  ")[0].strip() for l in lines[start + 1:start + 4]] == [
+        "Zero 2 W", "Pi 5 family", "not reported"]
+    assert lines[start + 2].split()[-2:] == ["2", "50%"]
+    assert any(l.startswith("Pi 5 family") and l.endswith("2 of 4") for l in lines)

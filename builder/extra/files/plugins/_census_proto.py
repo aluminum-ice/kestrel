@@ -7,6 +7,10 @@ entries, one per device that wrote in the last two hours:
 
     token(8) | hour(1) | version(2) | agent(1) | contests(4) | pow_nonce(4)
 
+The token is new every UTC day. From 1.0.14 it carries the board family:
+``marker(2) | board(1) | random(5)``; a reader takes any other token as
+carrying none, so older devices read these entries unchanged.
+
 A writer reads the slot, keeps the entries from this hour and the last, puts
 its own in, and writes the union back. A slot that is full, or that can't be
 written, sends the writer to the slot's next alternate (three per slot).
@@ -57,6 +61,25 @@ REMOTE_STATES = {REMOTE_OFF: "not enabled",
 # runs at most one on-device contest every ~30 minutes, and one per remote model.
 CAP_LOCAL = 100
 CAP_REMOTE = 50
+
+# The token: marker(2) | board(1) | random(5). The board byte is
+# family(4) | ram(3) | spare(1); ram is 0 (not sent) and the spare bit 0. A
+# token without the marker, or with the spare bit set, carries no board: a
+# release before 1.0.14 makes all eight bytes random.
+TOKEN_MARKER = b"kb"
+BOARD_UNKNOWN, BOARD_ZERO2, BOARD_PI3, BOARD_PI4, BOARD_PI5, BOARD_OTHER = range(6)
+BOARD_FAMILIES = {BOARD_UNKNOWN: "not reported", BOARD_ZERO2: "Zero 2 W",
+                  BOARD_PI3: "Pi 3 family", BOARD_PI4: "Pi 4 family",
+                  BOARD_PI5: "Pi 5 family", BOARD_OTHER: "another board"}
+# /proc/device-tree/model prefixes. The 400/500 and Compute Modules share
+# their family's prefix or are listed; a revision never leaves the device.
+_BOARD_PREFIXES = (("Raspberry Pi Zero 2", BOARD_ZERO2),
+                   ("Raspberry Pi Compute Module 3", BOARD_PI3),
+                   ("Raspberry Pi Compute Module 4", BOARD_PI4),
+                   ("Raspberry Pi Compute Module 5", BOARD_PI5),
+                   ("Raspberry Pi 3", BOARD_PI3),
+                   ("Raspberry Pi 4", BOARD_PI4),
+                   ("Raspberry Pi 5", BOARD_PI5))
 
 
 # -- slots ---------------------------------------------------------------------------
@@ -115,6 +138,48 @@ def encode_agent(state, algorithm, remote):
 def decode_agent(byte):
     """``(state, algorithm, remote)``."""
     return byte >> 6, (byte >> 3) & 7, byte & 7
+
+
+# -- the board, in the token ------------------------------------------------------------
+
+def board_family(model):
+    """The family code for a ``/proc/device-tree/model`` value (bytes or text):
+    unknown for an empty or missing one, "another board" for a name not in
+    the table."""
+    if isinstance(model, bytes):
+        model = model.decode("ascii", "replace")
+    model = (model or "").split("\0", 1)[0].strip()
+    if not model:
+        return BOARD_UNKNOWN
+    for prefix, code in _BOARD_PREFIXES:
+        if model.startswith(prefix):
+            return code
+    return BOARD_OTHER
+
+
+def board_name(code):
+    return BOARD_FAMILIES.get(code, BOARD_FAMILIES[BOARD_OTHER])
+
+
+def make_token(board, random5):
+    """A day's token carrying ``board`` (a family code) and five random bytes."""
+    if len(random5) != 5:
+        raise ValueError("a token needs 5 random bytes")
+    return TOKEN_MARKER + bytes([(int(board) & 15) << 4]) + bytes(random5)
+
+
+def token_board(token):
+    """The family code a token carries (bytes or hex text), or None for a
+    token that carries no board."""
+    if isinstance(token, str):
+        try:
+            token = bytes.fromhex(token)
+        except ValueError:
+            return None
+    if (not isinstance(token, bytes) or len(token) != 8
+            or token[:2] != TOKEN_MARKER or token[2] & 1):
+        return None
+    return token[2] >> 4
 
 
 # -- entries --------------------------------------------------------------------------
@@ -337,17 +402,22 @@ class Tally:
     """Counts over a day's entries, each a row ``(hour, version, agent, local
     won, local lost, remote won, remote lost)``: devices active, and online
     (wrote in ``hour`` or the hour before) when ``hour`` is given; devices by
-    version, agent state, algorithm (learned policies only) and remote-training
-    state; and contest totals, for all devices and for those whose remote
-    training works. An entry with more contests than a day can hold has its
-    contests left out, and counted in ``capped``."""
+    version, agent state, algorithm (learned policies only), remote-training
+    state and board family; and contest totals, for all devices, for those
+    whose remote training works, and on-device ``[won, lost]`` by board
+    family. ``rows`` is a ``{token: row}`` map (the board comes from the
+    token) or a plain list of rows (every board unknown). An entry with more
+    contests than a day can hold has its contests left out, and counted in
+    ``capped``."""
 
     def __init__(self, rows, hour=None):
         self.active = self.online = self.capped = 0
         self.versions, self.states = Counter(), Counter()
-        self.algorithms, self.remotes = Counter(), Counter()
+        self.algorithms, self.remotes, self.boards = Counter(), Counter(), Counter()
         self.contests, self.working = [0, 0, 0, 0], [0, 0, 0, 0]
-        for row in rows:
+        self.board_contests = {}
+        items = rows.items() if hasattr(rows, "items") else ((None, row) for row in rows)
+        for token, row in items:
             entry_hour, version, agent = row[0], row[1], row[2]
             counts = list(row[3:7])
             self.active += 1
@@ -357,6 +427,9 @@ class Tally:
             self.versions[version] += 1
             self.states[state] += 1
             self.remotes[remote] += 1
+            board = token_board(token)
+            board = BOARD_UNKNOWN if board is None else board
+            self.boards[board] += 1
             if state == AGENT_LEARNED:
                 self.algorithms[algorithm] += 1
             if counts[0] + counts[1] > CAP_LOCAL or counts[2] + counts[3] > CAP_REMOTE:
@@ -365,6 +438,15 @@ class Tally:
             self.contests = [a + b for a, b in zip(self.contests, counts)]
             if remote == REMOTE_WORKING:
                 self.working = [a + b for a, b in zip(self.working, counts)]
+            if counts[0] + counts[1]:
+                held = self.board_contests.setdefault(board, [0, 0])
+                held[0] += counts[0]
+                held[1] += counts[1]
+
+    def board_rows(self):
+        """``[(family name, devices)]`` in family order, "not reported" last."""
+        return [(board_name(code), self.boards[code])
+                for code in sorted(self.boards, key=lambda c: (c == BOARD_UNKNOWN, c))]
 
     def version_rows(self):
         """``[(version text, devices)]``, newest release first, unknown last."""

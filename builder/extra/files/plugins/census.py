@@ -68,6 +68,8 @@ _REMOTE_MODEL_SECONDS = 7 * _DAY
 
 _TETHER = "bnep0"
 _CLOCK_SYNCED = "/run/systemd/timesync/synchronized"
+# The board's name (world-readable); only its family code leaves the device.
+_MODEL_PATH = "/proc/device-tree/model"
 _PAUSE_SECONDS = 60.0         # how often the gates are checked while paused
 _MAX_SLEEP = 300.0
 _JOIN_RETRY = 600.0           # after a failed join
@@ -242,6 +244,18 @@ def _valid_counts(value):
     return isinstance(value, list) and len(value) == 4 and all(_int_in(v, 0, 1 << 31) for v in value)
 
 
+def _valid_boards(value):
+    """``{family code text: [devices, on-device won, on-device lost]}``, keeping
+    well-formed entries (a day recorded before 1.0.14 has none)."""
+    out = {}
+    for code, counts in (value.items() if isinstance(value, dict) else ()):
+        if (isinstance(code, str) and code.isdigit() and int(code) < 16
+                and isinstance(counts, list) and len(counts) == 3
+                and all(_int_in(v, 0, 1 << 31) for v in counts)):
+            out[code] = list(counts)
+    return out
+
+
 def _valid_history(data):
     """``{day: row}`` from history.json, keeping only well-formed rows."""
     days = data.get("days") if isinstance(data, dict) else None
@@ -251,7 +265,29 @@ def _valid_history(data):
                 and all(_int_in(row.get(k), 0, 1 << 20) for k in ("active", "online", "capped"))
                 and _valid_counts(row.get("contests")) and _valid_counts(row.get("working"))):
             out[day] = {k: row[k] for k in ("active", "online", "capped", "contests", "working")}
+            out[day]["boards"] = _valid_boards(row.get("boards"))
     return out
+
+
+def _board_contests(rows):
+    """``{family code: [on-device won, lost]}`` summed over history rows."""
+    out = {}
+    for row in rows:
+        for code, counts in row.get("boards", {}).items():
+            held = out.setdefault(int(code), [0, 0])
+            held[0] += counts[1]
+            held[1] += counts[2]
+    return out
+
+
+def device_board(path=_MODEL_PATH):
+    """This board's family code, from its device-tree name; unknown when the
+    file can't be read."""
+    try:
+        with open(path, "rb") as handle:
+            return proto.board_family(handle.read(256))
+    except OSError:
+        return proto.BOARD_UNKNOWN
 
 
 def _sum_counts(rows, key):
@@ -377,10 +413,10 @@ def contests_today(counts, baseline):
 
 class Census(Plugin):
     __author__ = "kestrel"
-    __version__ = "0.1.0"
+    __version__ = "0.2.0"
     __license__ = "GPL3"
     __description__ = ("Anonymous, serverless count of active Kestrels: "
-                       "releases, learning setups and model contests.")
+                       "releases, boards, learning setups and model contests.")
 
     __target_api__ = 2
     __capabilities__ = ("network", "ui", "web")
@@ -461,6 +497,8 @@ class Census(Plugin):
         self._backoff = dht.BOOTSTRAP_BACKOFF
         self._client_opts = {}
         self._clock_synced = _clock_synced
+        self._model_path = _MODEL_PATH
+        self._board = None                    # the family code, read once
         # The link: the socket, the KRPC client and the node pool.
         self._client = None
         self._pool = None
@@ -902,7 +940,8 @@ class Census(Plugin):
                 self._summarize(now)
             return
         carried = self._day is not None and self._day["day"] == _utc(now - _DAY)[0]
-        self._day = {"day": today, "token": os.urandom(8).hex(),
+        self._day = {"day": today,
+                     "token": proto.make_token(self._board_code(), os.urandom(5)).hex(),
                      "slot": self._rng.randrange(proto.SLOTS), "alt": 0, "nonce": None,
                      "remote": None,
                      "baseline": list(self._last_counts) if carried and self._last_counts else None,
@@ -922,12 +961,14 @@ class Census(Plugin):
         seen = self._seen.get(day)
         if not seen or seen.get("read_at") is None:
             return
-        tally = proto.Tally(seen["entries"].values())
+        tally = proto.Tally(seen["entries"])
         old = self._history.get(day) or {}
         self._history[day] = {"active": tally.active,
                               "online": max(old.get("online", 0), seen["online"]),
                               "capped": tally.capped, "contests": tally.contests,
-                              "working": tally.working}
+                              "working": tally.working,
+                              "boards": {str(code): [count] + tally.board_contests.get(code, [0, 0])
+                                         for code, count in tally.boards.items()}}
         for stale in sorted(self._history)[:-_HISTORY_DAYS]:
             del self._history[stale]
         self._save_json("history.json", {"days": self._history})
@@ -943,12 +984,13 @@ class Census(Plugin):
         summary = {
             "day": today, "read_at": seen["read_at"], "online": seen["online"],
             "over": seen.get("over", 0),
-            "tally": proto.Tally(seen["entries"].values()),
+            "tally": proto.Tally(seen["entries"]),
             "active_avg": round(sum(r["active"] for r in week) / len(week), 1) if week else None,
             "active_peak": max(r["active"] for r in week) if week else None,
             "week": _sum_counts(week, "contests"), "week_working": _sum_counts(week, "working"),
             "month": _sum_counts(month, "contests"),
             "month_working": _sum_counts(month, "working"),
+            "week_boards": _board_contests(week),
             "history": sorted(self._history.items(), reverse=True),
         }
         with self._lock:
@@ -1144,6 +1186,12 @@ class Census(Plugin):
         if not active:
             return html
         html += _card("Releases", _shares(tally.version_rows(), active), esc)
+        lines = _shares(tally.board_rows(), active)
+        week_boards = summary.get("week_boards") or {}
+        for code in sorted(c for c in week_boards if sum(week_boards[c])):
+            lines.append("On-device training on the %s won %s this week" % (
+                proto.board_name(code), _won(*week_boards[code])))
+        html += _card("Boards", lines, esc)
         lines = _shares([(proto.AGENT_STATES[code], tally.states[code])
                          for code in sorted(tally.states, reverse=True)], active)
         if tally.algorithms:
@@ -1188,16 +1236,27 @@ class Census(Plugin):
         setup = proto.AGENT_STATES[state]
         if algorithm:
             setup += " (%s)" % proto.ALGORITHM_NAMES[algorithm]
+        if day.get("token"):
+            board = proto.token_board(day["token"])
+        else:
+            board = self._board_code()        # no token yet: what the first will carry
+        if board is None:
+            board_line = "not sent today (from the next UTC day)"
+        elif board == proto.BOARD_UNKNOWN:
+            board_line = "unknown (this board's name can't be read)"
+        else:
+            board_line = proto.board_name(board)
         lines = ["Release: " + proto.decode_version(version),
+                 "Board: " + board_line,
                  "Learning agent: " + setup,
                  "Remote training: " + proto.REMOTE_STATES[remote],
                  "Contests today: on-device won %d, lost %d; remote won %d, lost %d"
                  % tuple(contests),
                  "Sent over: " + ("the phone's Bluetooth tether only" if self._tether_only()
                                   else "any connection"),
-                 "Also sent: a random number that changes every UTC day, the hour of the "
-                 "report, and a proof-of-work. Nothing from your captures, no network "
-                 "names, no location."]
+                 "Also sent: a number that changes every UTC day (random, apart from "
+                 "the board above), the hour of the report, and a proof-of-work. Nothing "
+                 "from your captures, no network names, no location."]
         html = _card("What this device reports today", lines, esc)
         if not self.options.get("report", True):
             html += "<p>Reporting is off, so none of this is sent.</p>"
@@ -1216,6 +1275,11 @@ class Census(Plugin):
             return max(0, int(self.options.get("daily_mb", 5))) * 1024 * 1024
         except (TypeError, ValueError):
             return 5 * 1024 * 1024
+
+    def _board_code(self):
+        if self._board is None:
+            self._board = device_board(self._model_path)
+        return self._board
 
     def _tether_only(self):
         return bool(self.options.get("tether_only", True))

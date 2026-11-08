@@ -5,7 +5,7 @@ the plugin on adds a small, anonymous report to the public BitTorrent DHT once
 an hour and reads everyone's reports back, so every device can show:
 
 - how many Kestrels are online now and how many were active today;
-- which releases they run;
+- which releases they run, and on which Raspberry Pi boards;
 - how their learning agents are set up (off, scripted sweep or learned, and
   which algorithm);
 - whether remote training is set up and working for them;
@@ -37,7 +37,8 @@ Once an hour, one 20-byte report:
 
 | Field | What it is |
 | --- | --- |
-| Token | A random number, new every UTC day, so a device counts once a day and one day can't be linked to the next. |
+| Token | A number, new every UTC day, so a device counts once a day and one day can't be linked to the next. It is random apart from the board family (below). |
+| Board | The Raspberry Pi family, from the board's name in `/proc/device-tree/model`: Zero 2 W, Pi 3 family, Pi 4 family (4, 400, CM4), Pi 5 family (5, 500, CM5), another board, or unknown. Never the exact model, its revision or its serial number. It rides in the token, so devices on 1.0.13 and earlier read these reports unchanged; their own reports show as "not reported". A device updated during a UTC day keeps that day's token and starts sending its board at the next UTC midnight. |
 | Hour | The UTC hour of the report. |
 | Release | The device's release version, such as `1.0.12`. A development build reports "unknown". |
 | Learning agent | Off, scripted sweep or learned, and the configured algorithm. |
@@ -80,8 +81,9 @@ Press **View** on the plugin's row on the Plugins page:
   restart too.
 - **Today (UTC):** Kestrels online now and active today, the 7-day average,
   and the contest line.
-- **Releases, Learning agent, Remote training:** counts and shares of today's
-  devices.
+- **Releases, Boards, Learning agent, Remote training:** counts and shares of
+  today's devices. Boards also says how often on-device training won this
+  week on each board family (only families with contests).
 - **Training contests:** how often on-device and remote candidates won, today
   and over 7 and 30 days, for all devices and for devices whose remote
   training works.

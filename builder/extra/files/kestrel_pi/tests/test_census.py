@@ -8,6 +8,7 @@ import importlib.util
 import json
 import logging
 import os
+import time
 import types
 
 from kestrel_pi import declarations, load_helper
@@ -31,8 +32,9 @@ def _load(path, modname):
     return mod
 
 
-def _plugin(tmp_path, online=False, **opts):
-    """A Census instance with its context, without its worker running."""
+def _plugin(tmp_path, online=False, model=b"Raspberry Pi 5 Model B Rev 1.0\0", **opts):
+    """A Census instance with its context, without its worker running. Its
+    board's device-tree name is ``model`` (None: no such file)."""
     mod = _load(CENSUS, "census_under_test")
     options = {"report": True, "read": True, "poll_minutes": 90,
                "tether_only": True, "daily_mb": 5,
@@ -48,6 +50,10 @@ def _plugin(tmp_path, online=False, **opts):
         services=ServiceRegistry(),
         capabilities=("network", "ui", "web"))
     plugin.on_loaded()
+    model_path = tmp_path / ("device-tree-model" if model is not None else "no-such-model")
+    if model is not None:
+        model_path.write_bytes(model)
+    plugin._model_path = str(model_path)
     return plugin, mod
 
 
@@ -1889,3 +1895,134 @@ def test_a_state_file_cant_bring_in_more_than_a_full_census(tmp_path, monkeypatc
     kept = out["2027-01-15"]["entries"]
     assert sorted(r[0] for r in kept.values()) == [3, 4]  # the latest hours
     assert out["2027-01-15"]["over"] == 3
+
+
+# -- the board, carried in the token ---------------------------------------------
+
+def test_board_family_from_the_device_tree_name():
+    cases = {
+        b"Raspberry Pi Zero 2 W Rev 1.0\0": proto.BOARD_ZERO2,
+        "Raspberry Pi 3 Model B Plus Rev 1.3": proto.BOARD_PI3,
+        "Raspberry Pi 3 Model A Plus Rev 1.0": proto.BOARD_PI3,
+        "Raspberry Pi Compute Module 3 Plus Rev 1.0": proto.BOARD_PI3,
+        "Raspberry Pi 4 Model B Rev 1.4": proto.BOARD_PI4,
+        "Raspberry Pi 400 Rev 1.0": proto.BOARD_PI4,
+        "Raspberry Pi Compute Module 4 Rev 1.1": proto.BOARD_PI4,
+        b"Raspberry Pi 5 Model B Rev 1.0\0junk": proto.BOARD_PI5,
+        "Raspberry Pi 500 Rev 1.0": proto.BOARD_PI5,
+        "Raspberry Pi Compute Module 5 Rev 1.0": proto.BOARD_PI5,
+        "Example Board v2": proto.BOARD_OTHER,
+        "": proto.BOARD_UNKNOWN, b"\0": proto.BOARD_UNKNOWN, None: proto.BOARD_UNKNOWN,
+    }
+    for model, code in cases.items():
+        assert proto.board_family(model) == code, model
+    assert proto.board_name(proto.BOARD_PI4) == "Pi 4 family"
+    assert proto.board_name(12) == "another board"          # reserved codes
+
+
+def test_device_board_reads_the_name_once(tmp_path):
+    plugin, mod = _plugin(tmp_path, model=b"Raspberry Pi 4 Model B Rev 1.5\0")
+    assert plugin._board_code() == proto.BOARD_PI4
+    (tmp_path / "device-tree-model").write_bytes(b"Raspberry Pi 5 Model B\0")
+    assert plugin._board_code() == proto.BOARD_PI4          # read once
+    assert mod.device_board(str(tmp_path / "missing")) == proto.BOARD_UNKNOWN
+
+
+def test_a_token_carries_the_board_and_stays_a_token():
+    token = proto.make_token(proto.BOARD_PI5, b"\x01\x02\x03\x04\x05")
+    assert len(token) == 8 and token[:2] == proto.TOKEN_MARKER
+    assert proto.token_board(token) == proto.BOARD_PI5
+    assert proto.token_board(token.hex()) == proto.BOARD_PI5
+    # A token from an earlier release is all random: no board.
+    assert proto.token_board(bytes(range(8))) is None
+    assert proto.token_board(token[:2] + bytes([token[2] | 1]) + token[3:]) is None
+    assert proto.token_board("not hex") is None and proto.token_board(b"kb") is None
+    # The entry's format is unchanged: a token with a board parses, proves and
+    # merges like any other.
+    nonce = proto.find_pow(DAY, token, __import__("random").Random(3), bits=8)
+    entry = proto.Entry(token, 8, proto.encode_version("1.0.14"), 0, (1, 0, 0, 0), nonce)
+    assert len(entry.encode()) == proto.ENTRY_SIZE
+    found, rejected = proto.parse_value(entry.encode(), DAY, bits=8)
+    assert rejected == 0 and found[token] == entry
+
+
+def test_tally_counts_boards_and_their_on_device_contests():
+    pi5 = proto.make_token(proto.BOARD_PI5, b"\x00" * 5).hex()
+    pi5b = proto.make_token(proto.BOARD_PI5, b"\x01" * 5).hex()
+    zero = proto.make_token(proto.BOARD_ZERO2, b"\x02" * 5).hex()
+    old = "%016x" % 7
+    rows = {pi5: _row(contests=(2, 1, 0, 0)), pi5b: _row(contests=(1, 1, 1, 0)),
+            zero: _row(), old: _row(contests=(0, 3, 0, 0)),
+            proto.make_token(proto.BOARD_PI4, b"\x03" * 5).hex(): _row(contests=(200, 0, 0, 0))}
+    tally = proto.Tally(rows)
+    assert tally.boards == {proto.BOARD_PI5: 2, proto.BOARD_ZERO2: 1,
+                            proto.BOARD_UNKNOWN: 1, proto.BOARD_PI4: 1}
+    assert tally.board_rows() == [("Zero 2 W", 1), ("Pi 4 family", 1), ("Pi 5 family", 2),
+                                  ("not reported", 1)]
+    # Capped entries stay out, as in the other contest totals.
+    assert tally.board_contests == {proto.BOARD_PI5: [3, 2], proto.BOARD_UNKNOWN: [0, 3]}
+    # A plain list of rows has no tokens: every board unknown.
+    assert proto.Tally(list(rows.values())).boards == {proto.BOARD_UNKNOWN: 5}
+
+
+def test_a_new_day_token_carries_this_board(tmp_path):
+    plugin, _mod, _net, _clock = _worker(tmp_path)
+    plugin._roll_day(NOW)
+    assert proto.token_board(plugin._day["token"]) == proto.BOARD_PI5
+    # Unreadable name: the token still has the marker, with the board unknown.
+    other, _m, _n, _c = _worker(tmp_path, name="other", model=None)
+    other._roll_day(NOW)
+    assert proto.token_board(other._day["token"]) == proto.BOARD_UNKNOWN
+
+
+def test_a_day_started_before_the_update_keeps_its_token(tmp_path):
+    plugin, mod, _net, _clock = _worker(tmp_path, name="kept")
+    token = "%016x" % 12345
+    plugin._save_json("day.json", {"day": mod._utc(NOW)[0], "token": token, "slot": 3,
+                                   "alt": 0, "nonce": None, "remote": None,
+                                   "baseline": None, "cache": {}, "bytes": 0, "wrote": None})
+    plugin._roll_day(NOW)
+    assert plugin._day["token"] == token
+    body = html.unescape(_page(plugin))
+    assert "Board: not sent today (from the next UTC day)" in body
+
+
+def test_the_page_shows_boards_and_what_this_device_sends(tmp_path):
+    reader, _mod = _read_census(tmp_path)
+    body = html.unescape(_page(reader))
+    assert "<h2>Boards</h2><p>Pi 5 family: 2 (100%)</p>" in body
+    assert "On-device training on the Pi 5 family won 4 of 6 (67%) this week" in body
+    assert "Board: Pi 5 family" in body
+    assert "random, apart from the board above" in body
+    row = reader._history[mod_day(reader)]
+    assert row["boards"] == {str(proto.BOARD_PI5): [2, 4, 2]}
+    # history.json keeps it across a restart.
+    again = reader._load_json("history.json")["days"][mod_day(reader)]
+    assert again["boards"] == {str(proto.BOARD_PI5): [2, 4, 2]}
+
+
+def mod_day(plugin):
+    return time.strftime("%Y-%m-%d", time.gmtime(plugin._now()))
+
+
+def test_the_page_says_when_the_board_cant_be_read(tmp_path):
+    plugin, _mod = _plugin(tmp_path, model=None)
+    assert "Board: unknown (this board's name can't be read)" in html.unescape(_page(plugin))
+    (tmp_path / "pi3").mkdir()
+    plugin, _mod = _plugin(tmp_path / "pi3", model=b"Raspberry Pi 3 Model B Rev 1.2\0")
+    assert "Board: Pi 3 family" in html.unescape(_page(plugin))
+
+
+def test_history_from_before_boards_still_loads(tmp_path):
+    _plugin(tmp_path)
+    mod = _load(CENSUS, "census_history_boards")
+    days = {"2027-01-14": {"active": 3, "online": 1, "capped": 0, "contests": [1, 2, 0, 0],
+                           "working": [0, 0, 0, 0]},
+            "2027-01-13": {"active": 2, "online": 1, "capped": 0, "contests": [0, 0, 0, 0],
+                           "working": [0, 0, 0, 0],
+                           "boards": {"4": [2, 1, 1], "x": [1, 1, 1], "3": [1, -1, 0],
+                                      "99": [1, 0, 0]}}}
+    history = mod._valid_history({"days": days})
+    assert history["2027-01-14"]["boards"] == {}
+    assert history["2027-01-13"]["boards"] == {"4": [2, 1, 1]}
+    assert mod._board_contests(history.values()) == {4: [1, 1]}
