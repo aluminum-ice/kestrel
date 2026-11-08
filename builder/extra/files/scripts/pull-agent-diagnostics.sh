@@ -307,7 +307,7 @@ sec("timeline from the journal (all retained boots)")
 PATTERNS = [
     ("start", re.compile(r"agent starting: algorithm=(\S+) policy=(\S+) train=(\S+)")),
     ("train_rows", re.compile(r"train: training (\S+) on (\d+) logged window\(s\) for (\d+) timestep\(s\) \((\S+) reward model(?:; (\d+) held-out row\(s\) kept out; ([^)]*))?\)")),
-    ("contest", re.compile(r"contest \((\S+)\): (\S+) candidate vs active \((\S+)\): (promote|keep) - (.*?); (\d+) held-out rows")),
+    ("contest", re.compile(r"contest \((\S+)\): (\S+)( \(from scratch\))? candidate vs active \((\S+)\): (promote|keep) - (.*?); (\d+) held-out rows")),
     ("contest_promoted", re.compile(r"contest \((\S+)\): promoted the (\S+) candidate")),
     ("deferred", re.compile(r"contest \((\S+)\) deferred")),
     ("launched", re.compile(r"remote-train: launched (\S+) on the host \((.*)\)")),
@@ -360,7 +360,9 @@ for ts, kind, g in events:
 contests = collections.Counter()
 for ts, kind, g in events:
     if kind == "contest":
-        contests[(g[1], g[3], re.sub(r"[-+]?\d+\.\d+", "#", g[4]))] += 1
+        # A from-scratch candidate's contest is counted on its own line.
+        src = g[1] + (" (from scratch)" if g[2] else "")
+        contests[(src, g[4], re.sub(r"[-+]?\d+\.\d+", "#", g[5]))] += 1
 if contests:
     print("contest results (source, decision, reason):")
     for (src, dec, why), n in contests.most_common():
@@ -396,7 +398,8 @@ if train_runs:
              dict(collections.Counter(g[3] for g in train_runs))))
 print("last 30 events:")
 for ts, kind, g in events[-30:]:
-    print("  %s  %-13s %s" % (iso(ts), kind, " ".join(str(x) for x in g)[:200]))
+    print("  %s  %-13s %s" % (iso(ts), kind,
+                              " ".join(str(x).strip() for x in g if x is not None)[:200]))
 
 # ------------------------------------------------------------ yield per model
 sec("real-world yield of each model while it was active")

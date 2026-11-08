@@ -170,14 +170,25 @@ pkg_note=""; [ -n "$pkg_dir" ] || pkg_note=" (package not found)"
 since=""
 [ -f "$upd" ] && since="@$(stat -c %Y "$upd")"
 since_ts=${since#@}
+# The agent's first journal line since the update: the journal may not reach
+# back to the update, so 2.4 compares only the span it still holds.
+if [ -n "$since" ]; then
+  jfrom=$(journalctl -q --no-pager -u kestrel-agent -o short-unix --since "$since" 2>/dev/null | head -1 | cut -d' ' -f1)
+else
+  jfrom=$(journalctl -q --no-pager -b -u kestrel-agent -o short-unix 2>/dev/null | head -1 | cut -d' ' -f1)
+fi
 # One pass as the device user over the installed agent code, config.toml (read,
 # never written: the listen-only case is an in-memory copy), the agent's status,
 # its model records and the episode rows logged since the update. Only counts,
 # codes and settings come out: no observation, reward or capture detail.
 cfg_sum=$(sha256sum "$CONFIG" 2>/dev/null | cut -d' ' -f1)
-facts=$(as_dev "$VENV_PY" -I - "${since_ts:-0}" "$AGENT_DIR" <<'PY' 2>&1
+facts=$(as_dev "$VENV_PY" -I - "${since_ts:-0}" "$AGENT_DIR" "${jfrom:-}" <<'PY' 2>&1
 import copy, glob, json, os, re, sys, tomllib
 since, agent_dir = float(sys.argv[1] or 0), sys.argv[2]
+try:
+    jfrom = float(sys.argv[3])
+except (IndexError, ValueError):
+    jfrom = None            # no agent line in the journal since the update
 def put(key, value):
     print("%s=%s" % (key, value))
 try:
@@ -233,7 +244,7 @@ def main():
     ACT = re.compile(r'"action": (\d+)[,}]')
     TS = re.compile(r'"ts": ([0-9.]+)')
     POL = re.compile(r'"policy": "([a-z]+)"')
-    rows = learned = baseline = explored = no_p = off_policy = outside = 0
+    rows = learned = baseline = explored = explored_j = no_p = off_policy = outside = 0
     runs, cur = [], None
     files = sorted(f for f in glob.glob(os.path.join(agent_dir, "episodes", "*.jsonl"))
                    if os.path.getmtime(f) >= since)
@@ -254,6 +265,7 @@ def main():
                     outside += 1
                 if '"explore": true' in line:
                     explored += 1
+                    explored_j += jfrom is not None and float(ts.group(1)) >= jfrom
                     off_policy += policy != "learned"
                     no_p += '"explore_p": ' not in line
                     if cur is not None and cur[0] == action:
@@ -266,8 +278,9 @@ def main():
                     runs.append(cur[1])
                     cur = None
     last = cur[1] if cur is not None else 0
-    put("episodes", "rows=%d learned=%d baseline=%d explored=%d no_p=%d off_policy=%d outside=%d"
-        % (rows, learned, baseline, explored, no_p, off_policy, outside))
+    put("episodes", "rows=%d learned=%d baseline=%d explored=%d explored_j=%d no_p=%d "
+        "off_policy=%d outside=%d"
+        % (rows, learned, baseline, explored, explored_j, no_p, off_policy, outside))
     put("runs", "n=%d ones=%d twos=%d longer=%d open=%d" % (
         len(runs) + (cur is not None), runs.count(1), runs.count(2),
         sum(1 for r in runs + [last] if r > 2), last))
@@ -287,7 +300,7 @@ apol=$(printf '%s' "$ast" | sed -n 's/.*policy=\([a-z]*\).*/\1/p')
 echo "agent policy (status): ${apol:-?}; configured: $(cfg agent.policy baseline)"
 ep=$(fact episodes); rn=$(fact runs)
 ep_rows=$(num "$ep" rows); ep_learned=$(num "$ep" learned); ep_base=$(num "$ep" baseline)
-ep_exp=$(num "$ep" explored); ep_nop=$(num "$ep" no_p); ep_off=$(num "$ep" off_policy)
+ep_exp=$(num "$ep" explored); ep_expj=$(num "$ep" explored_j); ep_nop=$(num "$ep" no_p); ep_off=$(num "$ep" off_policy)
 ep_out=$(num "$ep" outside)
 rn_n=$(num "$rn" n); rn_ones=$(num "$rn" ones); rn_twos=$(num "$rn" twos)
 rn_long=$(num "$rn" longer)
@@ -333,15 +346,27 @@ if [ -n "$since" ]; then
 else
   journalctl -q --no-pager -b -u kestrel-agent >"$alog" 2>/dev/null
 fi
+# The agent logs a line for every exploring window (both of a run of two), so
+# the lines are compared with the exploring windows logged since the journal's
+# first agent line. The window in progress has its line but no row yet.
 trying=$(grep -c 'explore: trying ' "$alog" || true)
-echo "  journal since the update: $trying 'explore: trying' line(s)"
+jspan="since the update"
+[ -n "$jfrom" ] && [ "${jfrom%.*}" -gt "${since_ts:-0}" ] \
+  && jspan="since $(date -u -d "@${jfrom%.*}" +%FT%TZ)"
+echo "  journal $jspan: $trying 'explore: trying' line(s), ${ep_expj:-0} exploring window(s) logged"
 grep 'explore: trying ' "$alog" | tail -3 | jscrub
-if [ "${rn_n:-0}" -eq 0 ] && [ "${trying:-0}" -eq 0 ]; then
-  check 2.4 SKIP "the journal has one 'explore: trying' line per exploring run" "no exploring run since the update"
-elif [ $(( ${trying:-0} - ${rn_n:-0} )) -le 1 ] && [ $(( ${rn_n:-0} - ${trying:-0} )) -le 1 ]; then
-  check 2.4 PASS "the journal has one 'explore: trying' line per exploring run" "$trying line(s), $rn_n run(s)"
+gap=$(( ${trying:-0} - ${ep_expj:-0} )); [ "$gap" -lt 0 ] && gap=$(( -gap ))
+slack=$(( ${ep_expj:-0} / 20 )); [ "$slack" -lt 2 ] && slack=2
+if [ "${ep_expj:-0}" -eq 0 ] && [ "${trying:-0}" -eq 0 ]; then
+  check 2.4 SKIP "the journal has one 'explore: trying' line per exploring window" "no exploring window $jspan"
+elif [ "${trying:-0}" -eq 0 ]; then
+  check 2.4 FAIL "the journal has one 'explore: trying' line per exploring window" "${ep_expj} exploring window(s) $jspan, no line"
+elif [ "$gap" -le "$slack" ]; then
+  check 2.4 PASS "the journal has one 'explore: trying' line per exploring window" "$trying line(s), ${ep_expj:-0} window(s) $jspan"
+elif [ "${trying:-0}" -gt "${ep_expj:-0}" ]; then
+  check 2.4 INFO "the journal has one 'explore: trying' line per exploring window" "$trying line(s), ${ep_expj:-0} window(s) $jspan (a capture stop mid-window logs a line without a row)"
 else
-  check 2.4 INFO "the journal has one 'explore: trying' line per exploring run" "$trying line(s), $rn_n run(s) (a rotated journal loses lines)"
+  check 2.4 INFO "the journal has one 'explore: trying' line per exploring window" "$trying line(s), ${ep_expj:-0} window(s) $jspan (fewer lines than windows: journald may have dropped some)"
 fi
 # 2.5 comes from the dashboard section below.
 check 2.6 MANUAL "see the checklist" "by hand (the Exploring row on the phone over a day or two)"
