@@ -9,6 +9,25 @@
   <a href="https://git.3ntropy.io/aluminum-ice/kestrel/actions?workflow=lint.yml"><img src="https://git.3ntropy.io/aluminum-ice/kestrel/badges/workflows/lint.yml/badge.svg" alt="Lint status"></a>
 </p>
 
+### Inspired by pwnagotchi
+
+Kestrel exists because of [pwnagotchi](https://github.com/evilsocket/pwnagotchi): the little Raspberry Pi with a face that listens to the Wi-Fi around it and learns as it goes. Its idea, its faces and its plugin model are where Kestrel started, and years of work by the pwnagotchi community are what it learned from. Thank you to everyone who built it.
+
+Kestrel is the next generation of pwnagotchi. It keeps the spirit and the faces, and rebuilds the foundations with a better architecture that corrects many of the original's problems:
+
+- Capture runs on a USB adapter with Linux's standard drivers, not on patched firmware that can stop seeing networks.
+- The core is small. Everything else is a plugin, the screen included, and a watchdog benches a plugin that gets stuck.
+- Capture, the dashboard and the learning agent run as separate processes, so one failing doesn't take down the others.
+- Nothing captures or leaves the device until you switch it on.
+- Updates apply in place and roll themselves back if they fail.
+- A learning agent has to beat the current model before it takes over.
+- The dashboard is built for a phone.
+- It's built on a current 64-bit Raspberry Pi OS.
+
+Kestrel comes from the maintainer of [aluminum-ice/pwnagotchi](https://github.com/aluminum-ice/pwnagotchi), a popular pwnagotchi fork with over 900 stars on GitHub. For the full comparison, including where pwnagotchi still wins, see [What Kestrel does that pwnagotchi doesn't](https://www.3ntropy.io/kestrel-vs-pwnagotchi/).
+
+### What Kestrel is
+
 A clean, secrets-free 64-bit Raspberry Pi OS image, built with [Packer](https://www.packer.io/) and [Ansible](https://www.ansible.com/), that turns a Raspberry Pi into a handheld Wi-Fi capture-and-learning device.
 
 Kestrel is a small, battery-powered companion that sits nearby, listens to the Wi-Fi around it, collects WPA/WPA2 handshakes for offline analysis, and runs a reinforcement-learning agent that learns to choose where and how to listen: an autonomous, always-learning capture device built on a modern, maintainable foundation.

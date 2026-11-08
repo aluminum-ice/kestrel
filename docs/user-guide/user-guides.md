@@ -3,6 +3,28 @@
 Step-by-step guides for setting up and running a kestrel device, written
 for the person using the device.
 
+## Inspired by pwnagotchi
+
+Kestrel exists because of [pwnagotchi](https://github.com/evilsocket/pwnagotchi),
+the little Raspberry Pi with a face that listens to the Wi-Fi around it and
+learns as it goes. Its idea, its faces and its plugin model are where Kestrel
+started, and years of work by the pwnagotchi community are what it learned from.
+
+Kestrel is the next generation of pwnagotchi. It keeps the spirit and the faces,
+and rebuilds the foundations with a better architecture that corrects many of
+the original's problems:
+
+- Capture runs on a USB adapter with standard drivers, not on patched firmware.
+- The core is small, and everything else is a plugin.
+- The parts run separately, so one failing doesn't take down the others.
+- Nothing runs until you switch it on.
+- Updates roll themselves back if they fail.
+
+It comes from the maintainer of
+[aluminum-ice/pwnagotchi](https://github.com/aluminum-ice/pwnagotchi), a popular
+pwnagotchi fork with over 900 stars on GitHub. For the full comparison, see
+[What Kestrel does that pwnagotchi doesn't](https://www.3ntropy.io/kestrel-vs-pwnagotchi/).
+
 ## About
 
 - [Philosophy and the reason why](philosophy.md) — what kestrel is for and
