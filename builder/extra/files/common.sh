@@ -264,10 +264,22 @@ cfg() { "$PWN_CONFIG_GET" "$1" "${2:-}"; }
 
 # True if the interface supports monitor mode (asks its wiphy via iw).
 iface_monitor_capable() {
-    local dev=$1 phy
+    local dev=$1 phy info
     phy=$(cat "/sys/class/net/$dev/phy80211/name" 2>/dev/null || true)
     [ -n "$phy" ] || return 1
-    iw phy "$phy" info 2>/dev/null | grep -qF '* monitor'
+    # Capture into a variable rather than piping straight into `grep -qF`:
+    # under `set -o pipefail` (active in the caller), `grep -q` exiting the
+    # moment it finds a match sends SIGPIPE back to `iw`, and pipefail then
+    # reports that SIGPIPE (exit 141) as the pipeline's status instead of
+    # grep's successful match - a real monitor-capable adapter reads as
+    # "not capable" for no reason connected to the hardware. With `iw`
+    # already finished and captured before the match is checked, there is no
+    # live pipe left for it to be killed on.
+    info=$(iw phy "$phy" info 2>/dev/null) || true
+    case "$info" in
+        *'* monitor'*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # Echo the capture interface: an explicit config value, or the first
