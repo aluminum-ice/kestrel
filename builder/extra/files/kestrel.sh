@@ -630,7 +630,9 @@ plugins_ctl() {
 }
 
 plugin_has_network_cap() {
-    plugins_ctl caps "$1" 2>/dev/null | grep -qx network
+    local caps
+    caps=$(plugins_ctl caps "$1" 2>/dev/null || true)
+    grep -qx network <<<"$caps"
 }
 
 # Satisfy the device-leaving acknowledgment, reusing the capture ack state.
@@ -2197,9 +2199,10 @@ cmd_update_apply() {
         # Soft single-link guardrail: a BT PAN link that fails to re-establish
         # after the update can leave the device unreachable, so warn when only one
         # management link is up and always point at the boot-folder Wi-Fi recovery.
-        local up_count=0 only_ifc=""
+        local up_count=0 only_ifc="" addrs
         for ifc in bnep0 wlan0; do
-            if ip -4 -o addr show dev "$ifc" 2>/dev/null | grep -q 'inet '; then
+            addrs=$(ip -4 -o addr show dev "$ifc" 2>/dev/null || true)
+            if [[ $addrs == *'inet '* ]]; then
                 up_count=$((up_count + 1)); only_ifc=$ifc
             fi
         done
