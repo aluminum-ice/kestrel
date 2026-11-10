@@ -264,17 +264,20 @@ cfg() { "$PWN_CONFIG_GET" "$1" "${2:-}"; }
 
 # True if the interface supports monitor mode (asks its wiphy via iw).
 iface_monitor_capable() {
-    local dev=$1 phy
+    local dev=$1 phy info
     phy=$(cat "/sys/class/net/$dev/phy80211/name" 2>/dev/null || true)
     [ -n "$phy" ] || return 1
-    iw phy "$phy" info 2>/dev/null | grep -qF '* monitor'
+    # Captured first (see the note above the Bluetooth helpers): a tri-band
+    # adapter's long `iw` output outlives an early `grep -q` and fails on SIGPIPE.
+    info=$(iw phy "$phy" info 2>/dev/null || true)
+    [[ $info == *'* monitor'* ]]
 }
 
 # Echo the capture interface: an explicit config value, or the first
 # monitor-capable wlan whose driver is not the built-in chip (brcmfmac).
 # Returns non-zero (and echoes nothing) when none is found.
 capture_resolve_iface() {
-    local want=${1:-auto} path dev drv
+    local want=${1:-auto} path dev drv info
     if [ -n "$want" ] && [ "$want" != auto ]; then
         echo "$want"
         return 0
@@ -282,7 +285,8 @@ capture_resolve_iface() {
     for path in /sys/class/net/wlan*; do
         [ -e "$path" ] || continue
         dev=$(basename "$path")
-        drv=$(ethtool -i "$dev" 2>/dev/null | awk -F': ' '/^driver:/{print $2; exit}')
+        info=$(ethtool -i "$dev" 2>/dev/null || true)
+        drv=$(awk -F': ' '/^driver:/{print $2; exit}' <<<"$info")
         [ "$drv" = "$PWN_WIFI_DRIVER" ] && continue   # built-in chip, never capture
         if iface_monitor_capable "$dev"; then
             echo "$dev"
