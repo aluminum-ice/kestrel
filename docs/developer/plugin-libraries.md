@@ -561,9 +561,9 @@ because each board's shunt and range differ.
 - **Calibrations**, named after the functions in Waveshare's `INA219.py` demos:
   `CAL_16V_5A` (cal 26868, 0.1524 mA and 3.048 mW per bit, 16 V range, 80 mV
   shunt range; the (C) and (D) demos) and `CAL_32V_2A` (cal 4096, 0.1 mA and
-  2 mW, 32 V, 320 mV; the UPS HAT and (B) demos). A board with another shunt
-  passes its own `Calibration(name, cal_value, current_lsb_ma, power_lsb_w,
-  config)`.
+  2 mW, 32 V, 320 mV; the UPS HAT and (B) demos, and what `ups-ws` programs). A
+  board with another shunt passes its own `Calibration(name, cal_value,
+  current_lsb_ma, power_lsb_w, config)`.
 
 It only talks to the chip; what the readings mean for a battery is the `ups`
 library's job.

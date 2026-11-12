@@ -80,13 +80,13 @@ def _card(monitor, name="test-ups"):
 
 # -- ina219 ---------------------------------------------------------------------
 
-def test_the_16v_5a_calibration_is_what_ups_ws_programs():
+def test_the_16v_5a_calibration_matches_waveshares_c_and_d_demos():
     cal = INA.CAL_16V_5A
     assert (cal.cal_value, cal.current_lsb_ma, cal.power_lsb_w) == (26868, 0.1524, 0.003048)
     assert cal.config == (0x00 << 13) | (0x01 << 11) | (0x0D << 7) | (0x0D << 3) | 0x07
 
 
-def test_the_32v_2a_calibration_matches_waveshares_ups_hat_demo():
+def test_the_32v_2a_calibration_is_what_ups_ws_programs():
     cal = INA.CAL_32V_2A
     assert (cal.cal_value, cal.current_lsb_ma, cal.power_lsb_w) == (4096, 0.1, 0.002)
     assert cal.config == (0x01 << 13) | (0x03 << 11) | (0x0D << 7) | (0x0D << 3) | 0x07
