@@ -51,7 +51,9 @@ Run `kestrel capture status` first — it shows the three things that are
 usually the cause:
 
 - **No capture adapter.** Capture needs an **external USB Wi-Fi adapter** that
-  supports monitor mode; the Pi's built-in chip is never used for capture. If
+  supports monitor mode (or, with extra steps, a PCIe card on a Pi 5: see the
+  README's [WiFi capture adapter](../../README.md#wifi-capture-adapter)
+  section); the Pi's built-in chip is never used for capture. If
   `capture status` shows no adapter, plug one in (or set `[capture] interface`
   if detection picked the wrong one).
 - **Capture is still off.** It ships disabled and only turns on after you give

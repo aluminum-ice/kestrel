@@ -326,7 +326,7 @@ cmd_capture_enable() {
         esac
     done
     resolved=$(capture_resolve_iface "$iface") \
-        || die "no monitor-capable capture adapter found (plug in the USB dongle)"
+        || die "no monitor-capable capture adapter found (plug one in, or name it with --interface)"
     capture_ack "$yes" || { log "capture not enabled (acknowledgment declined)"; return 1; }
     capture_config_set enabled true
     if [ "$iface" = auto ]; then

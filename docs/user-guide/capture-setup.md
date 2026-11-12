@@ -7,6 +7,8 @@ nothing captures until you enable it and acknowledge authorized use.
 
 Capture uses only the USB dongle; the built-in Wi-Fi and Bluetooth stay free for
 management, so you can stay connected over your phone or Wi-Fi while capturing.
+A PCIe Wi-Fi card on a Pi 5 can work too, with extra steps: see the README's
+[WiFi capture adapter](../../README.md#wifi-capture-adapter) section.
 
 > **Only capture networks you are authorized to.** Enabling capture requires an
 > explicit authorized-use acknowledgment. The whitelist (see
