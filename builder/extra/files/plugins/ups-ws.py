@@ -58,14 +58,16 @@ BOARD = "UPS HAT"
 # The 2S Li-ion pack reads ~6.0V empty to ~8.4V full; percent is linear across
 # that span (Waveshare's demo formula).
 PACK = ups.Pack(cells=2)
-# What the chip is set up as. Waveshare's UPS HAT demo uses 32V_2A; this plugin
-# has always used 16V_5A, kept until a measurement on the board says otherwise.
-CALIBRATION = ina219.CAL_16V_5A
+# What the chip is set up as: 32V_2A (a 0.1 ohm shunt, 320 mV range), as
+# Waveshare's UPS HAT demo does. Up to 0.1.0 this plugin used 16V_5A, which
+# assumes a 0.01 ohm shunt and read the current and power about ten times too
+# high on a real board (an idle Pi 5 showed ~28 W).
+CALIBRATION = ina219.CAL_32V_2A
 
 
 class UpsWs(Plugin):
     __author__ = "kestrel"
-    __version__ = "0.1.0"
+    __version__ = "0.1.1"
     __license__ = "GPL3"
     __description__ = ("Waveshare UPS HAT / UPS HAT (B) battery readout and low-battery "
                        "auto-shutdown.")

@@ -1566,7 +1566,7 @@ def test_ups_ws_declares_only_ui_and_provides_battery(tmp_path):
     plugin, mod = _make_ups(tmp_path)
     assert plugin.__capabilities__ == ("ui",)      # local read, no ack needed
     assert plugin.__provides__ == ("battery",)
-    assert mod.PACK.cells == 2 and mod.CALIBRATION is mod.ina219.CAL_16V_5A
+    assert mod.PACK.cells == 2 and mod.CALIBRATION is mod.ina219.CAL_32V_2A
     assert mod.NAME == "ups-ws"
 
 
