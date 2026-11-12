@@ -137,11 +137,18 @@ Packet capture requires an external USB WiFi adapter on both boards. The built-i
 | --- | --- | --- | --- | --- |
 | MediaTek MT7612U (reference) | `mt76x2u` | 2.4 + 5 GHz | Yes | ALFA AWUS036ACM |
 | MediaTek MT7610U | `mt76x0u` | 2.4 + 5 GHz | Yes | ALFA AWUS036ACHM |
-| MediaTek MT7921U | `mt7921u` | 2.4 + 5 GHz (WiFi 6E) | Limited | ALFA AWUS036AXM (needs kernel 5.19+) |
+| MediaTek MT7921U | `mt7921u` | 2.4 + 5 + 6 GHz (WiFi 6E) | Limited | ALFA AWUS036AXM (needs kernel 5.19+) |
 | Atheros AR9271 | `ath9k_htc` | 2.4 GHz | No | ALFA AWUS036NHA |
 | Ralink RT5370 / RT5572 | `rt2800usb` | 2.4 GHz | No | Panda PAU09 |
 
 MT7612U is the reference adapter: dual-band and active-monitor capable. The Pi 5 has spare USB ports for it; on the Zero 2 W the single USB OTG port holds the adapter (power is separate). The built-in Wi-Fi and Bluetooth stay free for management (SSH over Bluetooth PAN or Wi-Fi), so capture and management run on separate radios.
+
+**PCIe Wi-Fi cards on the Pi 5 (community-tested, not supported).** A MediaTek MT7922 (AMD RZ616) M.2 E-key card on a PCIe-to-M.2 HAT has been reported capturing on a Pi 5, with the built-in Wi-Fi kept for management. It takes two extra steps today:
+
+- **The driver.** Raspberry Pi OS's 6.12 kernel, which Kestrel's base image uses, doesn't build the card's in-kernel `mt7921e` driver (Raspberry Pi turned it on from their 6.18 kernel). Build that module from the matching Raspberry Pi kernel source against the installed headers. A self-built module has to be rebuilt after a kernel upgrade.
+- **32-bit DMA.** The card can only reach memory below 4 GB, so without `dtoverlay=pcie-32bit-dma-pi5` in `/boot/firmware/config.txt` the driver fails to probe with error `-12`. Kestrel doesn't turn this overlay on by default, because it slows other PCIe devices such as NVMe drives.
+
+Detection doesn't depend on the bus: `--interface auto` picks any monitor-capable `wlan` that isn't the built-in chip. Results with other cards are welcome (see [CONTRIBUTING.md](CONTRIBUTING.md), "Reporting hardware test results").
 
 ### Python
 
