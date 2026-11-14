@@ -2921,6 +2921,63 @@ def test_markdown_images_become_links_and_are_never_loaded():
     assert "Picture: bad" in html and "Picture: data" in html
 
 
+def _md_tags(html):
+    """Every (tag, attrs) the browser would parse out of ``html``."""
+    from html.parser import HTMLParser
+
+    found = []
+
+    class _P(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            found.append((tag, attrs))
+
+    _P().feed(html)
+    return found
+
+
+_MD_ATTRS = {"href", "id", "data-label"}
+
+
+def test_markdown_never_re_reads_markup_it_generated():
+    # A link around an image (or links back to back) must come out as separate,
+    # well-formed links: no generated quote may close an href early.
+    for src in ("[L](http://x![A](http://u/q=1 zz=1) z)",
+                "[a](http://x/[b](http://y/c=d e=f))",
+                "![a](http://x/(b) ![c](http://y/d=e))",
+                "[**b**](http://x/*y*) and `[c](http://z/w=1 v=2)`"):
+        html = web._render_markdown(src)
+        for tag, attrs in _md_tags(html):
+            names = {k for k, _v in attrs}
+            assert names <= _MD_ATTRS, (src, tag, attrs)
+            if tag == "a":
+                assert len(attrs) == 1 and '"' not in attrs[0][1] and "<" not in attrs[0][1]
+
+
+def test_markdown_fuzz_only_ever_makes_safe_attributes():
+    import random
+
+    rnd = random.Random(1914)
+    parts = ["[", "]", "(", ")", "![", "](", "http://e.example/", "https://", "/", "#",
+             "*", "**", "`", " ", "a", "q=1", " x=y", "'", '"', "<", ">", "&", "javascript:",
+             "data:", "\n"]
+    for _ in range(3000):
+        src = "".join(rnd.choice(parts) for _ in range(rnd.randint(1, 18)))
+        for tag, attrs in _md_tags(web._render_markdown(src)):
+            assert {k for k, _v in attrs} <= _MD_ATTRS, (src, tag, attrs)
+            if tag == "a":
+                href = dict(attrs).get("href", "")
+                assert href.lower().startswith(("http://", "https://", "#", "/", "mailto:")), src
+
+
+def test_markdown_stays_fast_on_unmatched_brackets():
+    import time
+
+    for line in ("[" * 20000, "![" * 10000, "[a](" * 5000, "](" * 10000):
+        t0 = time.monotonic()
+        web._render_markdown(line)
+        assert time.monotonic() - t0 < 1.0, line[:8]
+
+
 def test_update_notes_show_an_image_as_a_link():
     state = _update_state_with_notes()
     state["notes"][0]["body"] = "Pictures:\n\n![Every face, labelled](https://example.com/sheet.png)\n"

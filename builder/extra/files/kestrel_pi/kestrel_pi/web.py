@@ -1808,11 +1808,10 @@ def _page(title, body, head=""):
 
 
 # -- a tiny, safe Markdown renderer for the shipped user guide (/guide) -------
-_MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
-# An image, ![alt](url). The page never loads it: it becomes a link to the
-# picture (release notes come off the network, and the dashboard fetches
-# nothing from off the device).
-_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+# A link, [label](url), or an image, ![alt](url), in one pattern and one pass.
+# Bounded and free of the brackets and spaces that would let a match run across
+# another one, so it stays linear on long lines of unmatched brackets.
+_MD_LINK = re.compile(r"(!?)\[([^\[\]\n]{0,500})\]\(([^()\s]{1,2048})\)")
 _MD_BOLD = re.compile(r"\*\*(\S(?:[^*]*\S)?)\*\*")
 _MD_ITALIC = re.compile(r"\*(\S(?:[^*]*\S)?)\*")
 # A GitHub-style table separator row, e.g. ``| --- | :--: |``.
@@ -1825,45 +1824,52 @@ _MD_MAX_CHARS = 200_000
 _MD_TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-+:?\s*)+\|?\s*$")
 
 
-def _md_link_sub(match):
-    label, url = match.group(1), match.group(2)
-    # url has already been through _esc(); only allow benign schemes so a
-    # javascript:/data: link in the guide source renders as plain text.
-    if url.strip().lower().startswith(("http://", "https://", "#", "/", "mailto:")):
-        return '<a href="' + url + '">' + label + "</a>"
-    return label
-
-
-def _md_image_sub(match):
-    alt, url = match.group(1).strip(), match.group(2)
-    label = "Picture: " + (alt or "untitled")
-    # As for links, only benign schemes become a link (no data: or javascript:).
-    if url.strip().lower().startswith(("http://", "https://", "/")):
+def _md_link_html(match):
+    """The HTML for one link or image match. An image becomes a link to the
+    picture, "Picture: alt", never an <img>: release notes come off the network,
+    and the dashboard fetches nothing from off the device. Only benign schemes
+    become links (a javascript:/data: URL leaves its label as plain text)."""
+    image, label, url = match.group(1), match.group(2).strip(), match.group(3)
+    if image:
+        label = "Picture: " + (label or "untitled")
+        schemes = ("http://", "https://", "/")
+    else:
+        schemes = ("http://", "https://", "#", "/", "mailto:")
+    label = _MD_ITALIC.sub(r"<em>\1</em>", _MD_BOLD.sub(r"<strong>\1</strong>", label))
+    if not label:
+        return match.group(0)
+    # label and url have already been through _esc().
+    if url.strip().lower().startswith(schemes):
         return '<a href="' + url + '">' + label + "</a>"
     return label
 
 
 def _md_inline(text):
     """Inline Markdown on one line: escape first, then apply inline code,
-    images (as links), links, bold and italic. Inline-code spans are stashed so their contents are not
-    re-formatted or treated as links."""
+    links and images, bold and italic. Code spans and generated links are
+    stashed behind placeholders, so no later pass sees (or re-matches) markup
+    this function made."""
     text = _esc(text)
     spans = []
 
-    def _stash(match):
-        spans.append(match.group(1))
+    def _stash(html):
+        spans.append(html)
         return "\x00%d\x00" % (len(spans) - 1)
 
-    text = re.sub(r"`([^`]+)`", _stash, text)
-    text = _MD_IMAGE.sub(_md_image_sub, text)
-    text = _MD_LINK.sub(_md_link_sub, text)
+    text = re.sub(r"`([^`]+)`", lambda m: _stash("<code>" + m.group(1) + "</code>"), text)
+    text = _MD_LINK.sub(lambda m: _stash(_md_link_html(m)), text)
     text = _MD_BOLD.sub(r"<strong>\1</strong>", text)
     text = _MD_ITALIC.sub(r"<em>\1</em>", text)
+
     def _restore(match):
         idx = int(match.group(1))
-        return "<code>" + spans[idx] + "</code>" if idx < len(spans) else ""
+        return spans[idx] if idx < len(spans) else ""
 
-    return re.sub(r"\x00(\d+)\x00", _restore, text)
+    # A link's label may hold a code span: restore until no placeholder is left
+    # (links are stashed after code, so two rounds always do).
+    for _ in range(2):
+        text = re.sub(r"\x00(\d+)\x00", _restore, text)
+    return text
 
 
 def _md_slug(text):
