@@ -115,6 +115,12 @@ With the optional `eink-ws27` plugin and a Waveshare 2.7" e-Paper HAT (or `eink-
 
 The panel shows a top icon strip (Bluetooth PAN and Wi-Fi link, a GPS satellite with signal bars, and battery), the mascot face with a mood-matched voice line, the **agent** mode (`off` / `baseline` / `learned`) and **capture** state, uptime, the channel plan and how many radios are in range (`NEAR`), the device's address on each connected link (so you can find the dashboard without your router's client list), the counters for captured handshakes (a key glyph, with this session's count in brackets), access points (`AP`) and networks (`NET`), and the Kestrel mark in the corner. With no HAT attached it still renders to the web mirror.
 
+The face can also be drawn from a **picture pack** instead of text: Kestrel ships one, `kestrel`, the bird's own face with the dark stripe under each eye and a small hooked beak, and you can install your own (see [Face packs](docs/user-guide/eink-ws27-setup.md#face-packs)).
+
+<p align="center">
+  <img src="docs/images/eink-face-pack.png" alt="The same e-ink panel with the built-in kestrel face pack: the bird's face, with plus signs for eyes in the smart mood, in place of the text emoticon" width="460">
+</p>
+
 `eink` was this plugin's old name and was removed in 1.0.11: if you used it, enable `eink-ws27` after reflashing (the same face, keys and options).
 
 The HAT's four keys work too: KEY1 opens an info screen, a long KEY2 press stops capture (or, after a second press, starts it again, but only once the authorized-use acknowledgment has been given on the dashboard), and long KEY3/KEY4 presses reboot or shut down after a second press.
