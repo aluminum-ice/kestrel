@@ -104,7 +104,9 @@ device with no round-trip and works even if the link is flaky when you open it.
 If no notes were captured — an older plugin, offline at the last check, or a
 private repo without a token — the page falls back to a link to the latest
 release page. The notes are release text, so they are rendered through the
-escaping Markdown renderer, never injected as raw HTML.
+escaping Markdown renderer, never injected as raw HTML. An image in the notes
+(`![alt](url)`) shows as a link, "Picture: alt", that opens it: the page never
+loads anything from off the device.
 
 ### Check now (don't wait for the timer)
 
