@@ -186,8 +186,11 @@ Leave it unset to keep the shipped phrases.
 Instead of the text emoticons, the face can be drawn from a **picture pack**,
 one picture per mood. Kestrel ships one, `kestrel`: the bird's own face, with
 the dark stripe a kestrel has under each eye and a small hooked beak. The eyes
-change with the mood: wide, sleepy, star-struck, in sunglasses. Turn it on
-from the terminal:
+change with the mood: wide, sleepy, star-struck, in sunglasses.
+
+![Every face in the built-in kestrel pack, one per mood, labelled: looking left and right, sleeping, bored, intense, in sunglasses, happy, star-struck, smart with plus-sign eyes, lonely, sad with a tear, angry, hearts for a friend, crossed-out eyes when broken, binary digits while uploading, and Kestrel's own tired, levelup, determined, focused and searching.](../images/face-pack-kestrel.png)
+
+Turn it on from the terminal:
 
 ```bash
 sudo kestrel plugins enable eink-ws27 --set face_pack=kestrel
