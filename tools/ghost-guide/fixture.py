@@ -504,11 +504,25 @@ class Demo:
         self._set("updates", {"installed": installed, "latest": self.tag,
                               "status": updates._status_text(self.update_state)})
 
-    def eink_image(self):
+    def eink_image(self, options=None):
         """The e-ink panel frame for the demo state, from the plugin's own
-        compositor (a 1-bit PIL image at panel resolution)."""
+        compositor (a 1-bit PIL image at panel resolution). ``options`` are
+        plugin options for this frame only (a figure's ``eink_options``, such
+        as a face pack), then put back."""
         state, mood, voice = self._eink_frame
-        return self._instance(self.eink_name)._compose_image(state, mood, voice)
+        eink = self._instance(self.eink_name)
+        if not options:
+            return eink._compose_image(state, mood, voice)
+        saved = (eink.context.options, getattr(eink, "_pack", None))
+        eink.context.options = dict(saved[0] or {}, **options)
+        # A face pack is resolved once at start-up (face library 1.2+).
+        lib = type(eink)._compose_image.__globals__.get("face")
+        if "face_pack" in options and hasattr(lib, "FacePack"):
+            eink._pack = lib.FacePack(options["face_pack"])
+        try:
+            return eink._compose_image(state, mood, voice)
+        finally:
+            eink.context.options, eink._pack = saved
 
     # -- serving -----------------------------------------------------------------
     def serve(self):

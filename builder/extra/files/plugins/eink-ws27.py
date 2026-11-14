@@ -63,7 +63,7 @@ PANEL_W, PANEL_H = 264, 176
 
 class EinkWs27(Plugin):
     __author__ = "kestrel"
-    __version__ = "0.2.0"
+    __version__ = "0.3.0"
     __license__ = "GPL3"
     __description__ = "e-ink tamagotchi face for the Waveshare 2.7\" e-Paper HAT (V1/V2)."
 
@@ -127,11 +127,21 @@ class EinkWs27(Plugin):
         # Optional per-mood voice overrides: a {mood_key: phrase-or-[phrases]}
         # table under [plugins.<name>.voices]. Unset keeps the shipped phrases.
         "voices": {"type": "dict"},
+        # Draw the face from a picture pack instead of text (face library 1.2):
+        # "kestrel", the shipped sample, or a folder of <face>.png files under
+        # /etc/kestrel/faces/ that an admin installs. Terminal-only, so the
+        # dashboard can't point the panel at anything an admin didn't put there.
+        "face_pack": {"type": "str", "default": "", "root_only": True,
+                      "help": "Draw the face from a picture pack: kestrel (built in), "
+                              "or the name of a folder of PNGs under /etc/kestrel/faces/. "
+                              "Empty keeps the text faces."},
     }
 
     # The mirror has no cadence of its own: the page reloads at refresh_seconds
     # and re-reads this one frame store, so the panel and the mirror can't drift.
     _MIN_REFRESH = 10
+    # The face area for a face pack's picture: x 10, y 30 (above the status row).
+    _PACK_BOX = (130, 46)
     # How long the render worker waits for on_ready before going on anyway.
     _READY_WAIT = 60
 
@@ -203,6 +213,7 @@ class EinkWs27(Plugin):
         self._absent = True             # no panel until a probe succeeds
         self._ready = threading.Event()  # set in on_ready: the panel's owner is settled
         self._standing_down = None      # the e-ink plugin that drives the panel instead
+        self._pack = face.FacePack(self.context.options.get("face_pack"))
         self._fault = False
         self._frame_png = None          # last composed frame (PNG bytes)
         self._frame_seq = 0             # increments on every frame change
@@ -255,6 +266,8 @@ class EinkWs27(Plugin):
         ui.add_element("voice", "", label="Says")
         ui.add_element("mobility", "gps?", label="Motion")
         ui.add_element("panel", "checking", label="Display")
+        if self._pack_or_none() is not None and self._pack.name:
+            ui.add_element("face_pack", self._pack.label, label="Face pack")
         if self._keys is not None or self._keys_note:
             last = self._keys.last if self._keys is not None else self._keys_note
             ui.add_element("keys", last, label="Last key press")
@@ -307,6 +320,25 @@ class EinkWs27(Plugin):
 
     def _face_glyph(self, mood):
         return face.face_glyph(mood, self.context.options.get("faces"))
+
+    def _pack_or_none(self):
+        """The resolved ``face_pack`` option (set in ``_setup``)."""
+        return getattr(self, "_pack", None)
+
+    def _draw_face(self, img, draw, mood, xy, font_big, text_xy):
+        """Draw the face at ``xy``: the pack's picture, fitted to and centred
+        in ``self._PACK_BOX``, else the text face at ``text_xy``. Returns the
+        width taken, for placing the voice beside it."""
+        pack = self._pack_or_none()
+        picture = pack.image(mood or "awake", self._PACK_BOX) if pack is not None else None
+        if picture is not None:
+            bw, bh = self._PACK_BOX
+            img.paste(picture, (xy[0] + (bw - picture.width) // 2,
+                                xy[1] + (bh - picture.height) // 2))
+            return bw
+        glyph = self._face_glyph(mood)
+        draw.text(text_xy, glyph, font=font_big, fill=0)
+        return face.text_w(draw, glyph, font_big)
 
     def _voice_for(self, mood, rot):
         """A phrase matching the decided mood (see ``face.voice_for``)."""
@@ -564,9 +596,8 @@ class EinkWs27(Plugin):
         # it, so the mascot "speaks" like classic pwnagotchi without claiming any
         # state the face is not already in.
         if opts.get("show_mascot", True):
-            glyph = self._face_glyph(mood)
-            draw.text((10, 32), glyph, font=big, fill=0)
-            vx = min(max(10 + face.text_w(draw, glyph, big) + 10, 150), 170)
+            face_w = self._draw_face(img, draw, mood, (10, 30), big, (10, 32))
+            vx = min(max(10 + face_w + 10, 150), 170)
             # The voice slot, in order: a HAT-key prompt (it answers a press
             # just made, e.g. "Press KEY4 again to shut down"), then just after
             # start-up the start of the HTTPS fingerprint (for checking the

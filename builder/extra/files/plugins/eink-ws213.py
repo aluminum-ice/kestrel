@@ -48,7 +48,7 @@ PANEL_W, PANEL_H = 250, 122
 
 class EinkWs213(Plugin):
     __author__ = "kestrel"
-    __version__ = "0.1.0"
+    __version__ = "0.2.0"
     __license__ = "GPL3"
     __description__ = ("e-ink face for the Waveshare 2.13\" e-Paper HAT (V2/V3/V4, "
                        "black and white). Not yet tested on hardware.")
@@ -99,11 +99,21 @@ class EinkWs213(Plugin):
         # Optional per-mood voice overrides: a {mood_key: phrase-or-[phrases]}
         # table under [plugins.eink-ws213.voices]. Unset keeps the shipped phrases.
         "voices": {"type": "dict"},
+        # Draw the face from a picture pack instead of text (face library 1.2):
+        # "kestrel", the shipped sample, or a folder of <face>.png files under
+        # /etc/kestrel/faces/ that an admin installs. Terminal-only, so the
+        # dashboard can't point the panel at anything an admin didn't put there.
+        "face_pack": {"type": "str", "default": "", "root_only": True,
+                      "help": "Draw the face from a picture pack: kestrel (built in), "
+                              "or the name of a folder of PNGs under /etc/kestrel/faces/. "
+                              "Empty keeps the text faces."},
     }
 
     # The mirror has no cadence of its own: the page reloads at refresh_seconds
     # and re-reads this one frame store, so the panel and the mirror can't drift.
     _MIN_REFRESH = 10
+    # The face area for a face pack's picture: x 5, y 18 (above the status row).
+    _PACK_BOX = (88, 35)
     # How long the render worker waits for on_ready before going on anyway.
     _READY_WAIT = 60
 
@@ -154,6 +164,7 @@ class EinkWs213(Plugin):
         self._absent = True             # no panel until a probe succeeds
         self._ready = threading.Event()  # set in on_ready: the panel's owner is settled
         self._standing_down = None      # the e-ink plugin that drives the panel instead
+        self._pack = face.FacePack(self.context.options.get("face_pack"))
         self._fault = False
         self._frame_png = None          # last composed frame (PNG bytes)
         self._frame_seq = 0             # increments on every frame change
@@ -196,6 +207,8 @@ class EinkWs213(Plugin):
         ui.add_element("voice", "", label="Says")
         ui.add_element("mobility", "gps?", label="Motion")
         ui.add_element("panel", "checking", label="Display")
+        if self._pack_or_none() is not None and self._pack.name:
+            ui.add_element("face_pack", self._pack.label, label="Face pack")
 
     def on_ui_update(self, ui, state):
         # Fast path only: stash the state and update the web card from the last
@@ -242,6 +255,25 @@ class EinkWs213(Plugin):
 
     def _face_glyph(self, mood):
         return face.face_glyph(mood, self.context.options.get("faces"))
+
+    def _pack_or_none(self):
+        """The resolved ``face_pack`` option (set in ``_setup``)."""
+        return getattr(self, "_pack", None)
+
+    def _draw_face(self, img, draw, mood, xy, font_big, text_xy):
+        """Draw the face at ``xy``: the pack's picture, fitted to and centred
+        in ``self._PACK_BOX``, else the text face at ``text_xy``. Returns the
+        width taken, for placing the voice beside it."""
+        pack = self._pack_or_none()
+        picture = pack.image(mood or "awake", self._PACK_BOX) if pack is not None else None
+        if picture is not None:
+            bw, bh = self._PACK_BOX
+            img.paste(picture, (xy[0] + (bw - picture.width) // 2,
+                                xy[1] + (bh - picture.height) // 2))
+            return bw
+        glyph = self._face_glyph(mood)
+        draw.text(text_xy, glyph, font=font_big, fill=0)
+        return face.text_w(draw, glyph, font_big)
 
     def _voice_for(self, mood, rot):
         """A phrase matching the decided mood (see ``face.voice_for``)."""
@@ -472,9 +504,8 @@ class EinkWs213(Plugin):
         # start-up (for checking the browser's certificate warning), else the
         # mood's phrase, two lines at most.
         if opts.get("show_mascot", True):
-            glyph = self._face_glyph(mood)
-            draw.text((5, 19), glyph, font=big, fill=0)
-            vx = min(max(5 + face.text_w(draw, glyph, big) + 8, 96), 120)
+            face_w = self._draw_face(img, draw, mood, (5, 18), big, (5, 19))
+            vx = min(max(5 + face_w + 8, 96), 120)
             lines = self._fingerprint_lines()
             if not lines and voice:
                 lines = face.wrap_text(draw, voice, tiny, PANEL_W - 4 - vx)

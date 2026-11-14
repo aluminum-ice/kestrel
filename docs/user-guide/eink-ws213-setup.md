@@ -105,6 +105,7 @@ every redraw a full refresh (it flashes each time), and please report it.
 | `refresh_seconds` | `10` | How often the face is composed (`10` is the floor). The panel redraws only when the frame changes. |
 | `partials_per_full` | `20` | Quick redraws between full refreshes; `0` makes every redraw a full refresh. |
 | `show_mascot` | `true` | Draw the face and its voice. |
+| `face_pack` | empty | Draw the face from a picture pack: `kestrel` (built in) or a folder under `/etc/kestrel/faces/`. Terminal-only; see [Face packs](eink-ws27-setup.md#face-packs). |
 | `show_brand_glyph` | `true` | Draw the Kestrel mark in the corner. |
 | `show_fingerprint_minutes` | `10` | Minutes after start-up that the voice shows the start of the HTTPS fingerprint; `0` never. |
 | `show_ip` | `true` | Draw the address row. Turn it off if the panel is visible to people who shouldn't see the addresses. |
@@ -115,6 +116,10 @@ every redraw a full refresh (it flashes each time), and please report it.
 Faces and voices can be overridden per mood under
 `[plugins.eink-ws213.faces]` and `[plugins.eink-ws213.voices]`, the same way as
 for `eink-ws27` (see [Faces and voices](eink-ws27-setup.md#faces-and-voices)).
+Picture packs work here too, with the same `face_pack` option and the same
+folders (see [Face packs](eink-ws27-setup.md#face-packs)): `sudo kestrel plugins
+enable eink-ws213 --set face_pack=kestrel`. The face area here is 88 x 35, so a
+pack drawn at about 3:1 fits both panels.
 
 ## Troubleshooting
 

@@ -49,6 +49,14 @@ PIL is imported only inside the functions that draw or measure, so loading this
 library (off a Pi, in the tests, on the build host) touches no display and needs
 no PIL.
 
+**Face packs** (*1.2*): a plugin's ``face_pack`` option draws the face as a
+picture instead of text: ``kestrel``, the shipped sample drawn in code
+(:func:`draw_pack_face`), or the name of a folder of ``<face>.png`` files under
+:data:`PACK_DIR` that the operator installs as admin. :class:`FacePack`
+resolves the option once and hands back a black-and-white image fitted to the
+plugin's face area, or ``None`` for a face the pack lacks (the plugin then draws
+the text face). A pack changes how a mood looks, never which mood shows.
+
 ``LIB_API`` follows docs/developer/plugin-libraries.md: a new face, voice,
 glyph or helper bumps the minor; a renamed or removed name, a changed signature
 or a changed mood rule that callers rely on bumps the major. Names with a
@@ -59,8 +67,10 @@ import calendar
 import fcntl
 import io
 import math
+import os
 import re
 import socket
+import stat
 import struct
 import threading
 import time
@@ -69,7 +79,7 @@ from dataclasses import dataclass
 
 from kestrel_pi.connectivity import MANAGEMENT_INTERFACES
 
-LIB_API = (1, 1)
+LIB_API = (1, 2)
 
 # --- faces -----------------------------------------------------------------
 # The 26 classic pwnagotchi faces (kept for their charm), plus a few Phase 5
@@ -535,6 +545,284 @@ def face_glyph(mood, overrides=None):
     if isinstance(overrides, dict) and mood in overrides:
         return str(overrides[mood])
     return FACES.get(mood, FACES["awake"])
+
+
+# --- face packs (1.2) -------------------------------------------------------
+# Image packs live in root-owned folders the operator fills as admin, one
+# folder per pack; the option names the folder, so the dashboard (which can't
+# write there) can only ever pick a pack an admin installed.
+PACK_DIR = "/etc/kestrel/faces"
+# Packs drawn in code and shipped with the library.
+BUILTIN_PACKS = ("kestrel",)
+_PACK_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+# Limits on a pack's files: anything bigger is skipped (the text face shows).
+PACK_MAX_BYTES = 512 * 1024
+PACK_MAX_SIDE = 2048
+# Kestrel's own moods, for a pack drawn for the classic faces only: the
+# nearest classic face stands in before the pack falls back to text.
+PACK_FALLBACK = {"tired": "sleep2", "levelup": "grateful", "determined": "intense",
+                 "focused": "look_r", "searching": "look_l"}
+
+
+class FacePack:
+    """A plugin's ``face_pack`` option, resolved once at start-up.
+
+    ``name`` empty keeps the text faces. A built-in name draws in code; any
+    other name must be a folder under ``pack_dir`` (:data:`PACK_DIR`) holding
+    ``<face>.png`` files (the keys of :data:`FACES`). :meth:`image` returns a
+    mode-"1" picture fitted to the plugin's face area, or ``None`` for a face
+    the pack doesn't have, so the plugin draws the text face there. ``label``
+    is the card's line: the pack in use, or why none is.
+    """
+
+    def __init__(self, name, pack_dir=None):
+        self.name = str(name or "").strip()
+        self.kind = None
+        self.label = "text faces"
+        self._dir = None
+        self._cache = {}
+        self._lock = threading.Lock()
+        if not self.name:
+            return
+        if self.name in BUILTIN_PACKS:
+            self.kind, self.label = "builtin", "%s (built in)" % self.name
+            return
+        if not _PACK_NAME.fullmatch(self.name):
+            self.label = ("%r isn't a pack name (lowercase letters, digits, - and _); "
+                          "using text faces" % self.name[:40])
+            return
+        folder = os.path.join(pack_dir or PACK_DIR, self.name)
+        if not os.path.isdir(folder):
+            self.label = "%s: no folder %s; using text faces" % (self.name, folder)
+            return
+        self.kind, self.label, self._dir = "files", self.name, folder
+
+    @property
+    def active(self):
+        return self.kind is not None
+
+    def image(self, mood, box):
+        """The face for ``mood`` fitted into ``box`` (width, height), as a
+        mode-"1" PIL image no bigger than the box, or ``None``."""
+        if self.kind is None:
+            return None
+        key = (mood, tuple(box))
+        with self._lock:
+            if key in self._cache:
+                return self._cache[key]
+        if self.kind == "builtin":
+            picture = draw_pack_face(self.name, mood, box)
+        else:
+            picture = None
+            for name in (mood, PACK_FALLBACK.get(mood)):
+                if name and name in FACES:
+                    picture = load_pack_png(os.path.join(self._dir, name + ".png"), box)
+                    if picture is not None:
+                        break
+        with self._lock:
+            self._cache[key] = picture
+        return picture
+
+
+def _resample():
+    from PIL import Image
+    return getattr(Image, "Resampling", Image).LANCZOS
+
+
+def fit_bitmap(gray, box):
+    """Scale a mode-"L" image to fit ``box`` (keeping its shape) and make it
+    black and white: anything darker than mid-grey is black."""
+    from PIL import Image
+    bw, bh = max(1, int(box[0])), max(1, int(box[1]))
+    ratio = min(bw / gray.width, bh / gray.height)
+    size = (max(1, min(bw, round(gray.width * ratio))),
+            max(1, min(bh, round(gray.height * ratio))))
+    small = gray.resize(size, _resample())
+    dither = getattr(Image, "Dither", Image).NONE
+    return small.point(lambda v: 255 if v >= 128 else 0).convert("1", dither=dither)
+
+
+def load_pack_png(path, box):
+    """One pack file as a fitted black-and-white image, or ``None`` if it's
+    missing, not a regular file, too big, or not a PNG. Transparent pixels
+    count as white. The file is read whole, within :data:`PACK_MAX_BYTES`."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > PACK_MAX_BYTES:
+            return None
+        chunks, left = [], PACK_MAX_BYTES + 1
+        while left > 0:
+            chunk = os.read(fd, min(left, 65536))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            left -= len(chunk)
+        data = b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if len(data) > PACK_MAX_BYTES:
+        return None
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as im:
+            if im.format != "PNG" or max(im.size) > PACK_MAX_SIDE or min(im.size) < 1:
+                return None
+            rgba = im.convert("RGBA")
+        page = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        page.alpha_composite(rgba)
+        return fit_bitmap(page.convert("L"), box)
+    except Exception:  # noqa: BLE001 - a bad file shows the text face, never stops the panel
+        return None
+
+
+# The built-in "kestrel" pack: the bird's face, drawn on an 84 x 40 grid. Two
+# round eyes with the dark "moustache" stripe a kestrel has under each, and a
+# small hooked beak; each mood changes the eyes (and sometimes adds brows or a
+# mark). Every key of FACES has one (a test checks).
+_PACK_W, _PACK_H, _PACK_SCALE = 84, 40, 8
+_EYES = (24, 60)
+_EYE_Y, _EYE_R = 19, 10
+KESTREL_PACK = {
+    "look_r": {"eye": "open", "dx": 4},
+    "look_l": {"eye": "open", "dx": -4},
+    "look_r_happy": {"eye": "open", "dx": 3, "r": 6.5},
+    "look_l_happy": {"eye": "open", "dx": -3, "r": 6.5},
+    "sleep": {"eye": "closed"},
+    "sleep2": {"eye": "half"},
+    "awake": {"eye": "open"},
+    "bored": {"eye": "flat"},
+    "intense": {"eye": "open", "r": 3, "brows": "low"},
+    "cool": {"eye": "shades"},
+    "happy": {"eye": "happy"},
+    "grateful": {"eye": "happy", "brows": "soft"},
+    "excited": {"eye": "open", "r": 6.5, "extra": "sparkle"},
+    "motivated": {"eye": "star"},
+    "demotivated": {"eye": "flat", "brows": "sad"},
+    "smart": {"eye": "plus"},
+    "lonely": {"eye": "open", "dy": 4, "r": 4, "brows": "sad"},
+    "sad": {"eye": "open", "dy": 4, "r": 4, "brows": "sad", "extra": "tear"},
+    "angry": {"eye": "open", "r": 4, "brows": "angry"},
+    "friend": {"eye": "heart"},
+    "broken": {"eye": "x"},
+    "debug": {"eye": "hash"},
+    "upload": {"eye": "digits", "digits": "10"},
+    "upload1": {"eye": "digits", "digits": "11"},
+    "upload2": {"eye": "digits", "digits": "01"},
+    "tired": {"eye": "half", "brows": "sad"},
+    "levelup": {"eye": "happy", "extra": "sparkle"},
+    "determined": {"eye": "squeeze"},
+    "focused": {"eye": "open", "r": 3},
+    "searching": {"eye": "open", "dx": -4, "dy": -4, "r": 4},
+}
+
+
+def draw_pack_face(pack, mood, box):
+    """A built-in pack's face for ``mood``, fitted into ``box``."""
+    from PIL import Image, ImageDraw
+    spec = KESTREL_PACK.get(mood) or KESTREL_PACK["awake"]
+    k = _PACK_SCALE
+    canvas = Image.new("L", (_PACK_W * k, _PACK_H * k), 255)
+    d = ImageDraw.Draw(canvas)
+
+    def P(x, y):
+        return (round(x * k), round(y * k))
+
+    def line(pts, w):
+        d.line([P(*p) for p in pts], fill=0, width=max(1, round(w * k)), joint="curve")
+
+    def disc(cx, cy, r, fill=0, outline=None, width=0):
+        d.ellipse([P(cx - r, cy - r), P(cx + r, cy + r)], fill=fill, outline=outline,
+                  width=max(0, round(width * k)))
+
+    # the beak (hooked, pointing down) and the two moustache stripes
+    d.polygon([P(37.5, 23), P(46.5, 23), P(45.5, 28.5), P(42.5, 35), P(41, 30.5),
+               P(38, 27.5)], fill=0)
+    for ex, out in zip(_EYES, (-1, 1)):
+        d.polygon([P(ex + out * 2, 31), P(ex + out * 6, 31), P(ex + out * 8.5, 40),
+                   P(ex + out * 4.5, 40)], fill=0)
+
+    eye, r_eye, y = spec["eye"], _EYE_R, _EYE_Y
+    if eye == "shades":
+        for ex in _EYES:
+            d.rounded_rectangle([P(ex - 13, y - 7), P(ex + 13, y + 6)], radius=4 * k, fill=0)
+        line([(_EYES[0] + 13, y - 3), (_EYES[1] - 13, y - 3)], 2.5)
+    for i, ex in enumerate(_EYES):
+        if eye == "open":
+            disc(ex, y, r_eye, fill=255, outline=0, width=2.5)
+            r = spec.get("r", 5)
+            limit = r_eye - 2.5 - r
+            dx = max(-limit, min(limit, spec.get("dx", 0)))
+            dy = max(-limit, min(limit, spec.get("dy", 0)))
+            disc(ex + dx, y + dy, r)
+        elif eye == "closed":
+            d.arc([P(ex - r_eye, y - r_eye), P(ex + r_eye, y + r_eye)], 15, 165,
+                  fill=0, width=round(3 * k))
+        elif eye == "happy":
+            d.arc([P(ex - r_eye, y - 3), P(ex + r_eye, y + 2 * r_eye - 3)], 195, 345,
+                  fill=0, width=round(3 * k))
+        elif eye == "half":
+            disc(ex, y, r_eye, fill=255, outline=0, width=2.5)
+            disc(ex, y + 3, 4.5)
+            d.chord([P(ex - r_eye, y - r_eye), P(ex + r_eye, y + r_eye)], 180, 360, fill=0)
+        elif eye == "flat":
+            line([(ex - r_eye, y + 1), (ex + r_eye, y + 1)], 3)
+        elif eye == "star":
+            pts = []
+            for j in range(10):
+                rad = (r_eye + 1.5) if j % 2 == 0 else (r_eye + 1.5) * 0.45
+                a = math.pi / 2 + j * math.pi / 5
+                pts.append(P(ex + rad * math.cos(a), y - rad * math.sin(a)))
+            d.polygon(pts, fill=0)
+        elif eye == "plus":
+            disc(ex, y, r_eye, fill=255, outline=0, width=2.5)
+            line([(ex - 5, y), (ex + 5, y)], 3)
+            line([(ex, y - 5), (ex, y + 5)], 3)
+        elif eye == "heart":
+            disc(ex - 4.6, y - 3, 5.6)
+            disc(ex + 4.6, y - 3, 5.6)
+            d.polygon([P(ex - 10, y - 1.5), P(ex + 10, y - 1.5), P(ex, y + 10)], fill=0)
+        elif eye == "x":
+            line([(ex - 7, y - 7), (ex + 7, y + 7)], 3)
+            line([(ex - 7, y + 7), (ex + 7, y - 7)], 3)
+        elif eye == "hash":
+            for o in (-3.5, 3.5):
+                line([(ex + o, y - 8), (ex + o, y + 8)], 2.2)
+                line([(ex - 8, y + o), (ex + 8, y + o)], 2.2)
+        elif eye == "digits":
+            if spec["digits"][i] == "0":
+                d.ellipse([P(ex - 5, y - 9), P(ex + 5, y + 9)], outline=0, width=round(2.6 * k))
+            else:
+                line([(ex - 4, y - 5), (ex + 1, y - 9), (ex + 1, y + 9)], 2.6)
+        elif eye == "squeeze":
+            sx = 1 if i == 0 else -1
+            line([(ex - 7 * sx, y - 7), (ex + 6 * sx, y), (ex - 7 * sx, y + 7)], 3)
+    brows = spec.get("brows")
+    for i, ex in enumerate(_EYES):
+        sx = 1 if i == 0 else -1          # +1: the inner end is to the right
+        if brows == "low":
+            line([(ex - 10, 5), (ex + 10, 5)], 2.5)
+        elif brows == "angry":
+            line([(ex - 10 * sx, 2), (ex + 9 * sx, 7.5)], 2.5)
+        elif brows == "sad":
+            line([(ex - 10 * sx, 7.5), (ex + 9 * sx, 2)], 2.5)
+        elif brows == "soft":
+            d.arc([P(ex - 10, 1.5), P(ex + 10, 12)], 200, 340, fill=0, width=round(2.2 * k))
+    extra = spec.get("extra")
+    if extra == "sparkle":
+        for cx, cy, s in ((5, 10, 3.6), (79, 10, 3.6), (10, 3.5, 2), (74, 3.5, 2)):
+            line([(cx - s, cy), (cx + s, cy)], 1.8)
+            line([(cx, cy - s), (cx, cy + s)], 1.8)
+    elif extra == "tear":
+        tx, ty = _EYES[1] + 12, 27
+        d.polygon([P(tx, ty - 5), P(tx - 2.6, ty), P(tx + 2.6, ty)], fill=0)
+        disc(tx, ty + 0.6, 2.7)
+    return fit_bitmap(canvas, box)
 
 
 def voice_for(mood, rot, overrides=None):

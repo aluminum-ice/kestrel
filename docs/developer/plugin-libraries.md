@@ -113,7 +113,7 @@ its `LIB_API`; a test (`tests/test_load_library.py`) keeps the two in step.
 | Library | File | API | Status | Used by |
 | --- | --- | --- | --- | --- |
 | `alerts` | `_lib_alerts.py` | 1.0 | stable | `ntfy`, `telegram` |
-| `eink_face` | `_lib_eink_face.py` | 1.1 | stable | `eink-ws27`, `eink-ws213` |
+| `eink_face` | `_lib_eink_face.py` | 1.2 | stable | `eink-ws27`, `eink-ws213` |
 | `hat_keys` | `_lib_hat_keys.py` | 0.1 | provisional | `eink-ws27` |
 | `ina219` | `_lib_ina219.py` | 1.1 | stable | `ups-ws`, `ups-wsc`, `ups-wsd` |
 | `ups` | `_lib_ups.py` | 0.3 | provisional | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-wse` |
@@ -340,6 +340,20 @@ class TinyFace(Plugin):
   `[plugins.<name>.faces]`); `voice_phrases(mood, overrides)` gives the whole
   list. Advance `rot` when the mood changes, not every frame, so the words vary
   without redrawing a still face.
+- **Face packs** (*1.2*). `FacePack(name)` resolves a plugin's `face_pack`
+  option once (declare it `root_only`, so it's set from the terminal):
+  `kestrel` is the built-in pack, drawn in code by `draw_pack_face` from
+  `KESTREL_PACK`, and any other name is a folder of `<face>.png` files under
+  `PACK_DIR` (`/etc/kestrel/faces/`), which only an admin can fill. The name is
+  limited to lowercase letters, digits, `-` and `_`, so it can't point anywhere
+  else. `image(mood, (w, h))` returns a mode-"1" picture fitted to your face
+  area (scaled to fit, transparent as white, darker than mid-grey as black), or
+  `None` for a face the pack lacks, so you draw the text face there; Kestrel's
+  own moods fall back to the nearest classic face first (`PACK_FALLBACK`).
+  Files over `PACK_MAX_BYTES` (512 KB) or `PACK_MAX_SIDE` (2048 px), symlinks
+  and anything that isn't a PNG are skipped. `label` is a line for your card:
+  the pack in use, or why it isn't. `load_pack_png` and `fit_bitmap` are the
+  parts.
 - **Motion.** `MobilityTracker()`: `update(fix)` folds in a `position` service
   fix (or None) and returns `parked`, `walking`, `driving` or `unknown`
   (`.state` keeps it). Speed is timed by when each fix was taken

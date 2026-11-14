@@ -36,7 +36,7 @@ class _Owner:
 
 
 def test_library_api_and_the_owner_rule():
-    assert FACE.LIB_API == (1, 1)
+    assert FACE.LIB_API == (1, 2)
     a, b, c = _Owner(), _Owner(), _Owner()
     assert FACE.panel_owner() is None
     FACE.claim_panel(a, "old-face", yields=True)
