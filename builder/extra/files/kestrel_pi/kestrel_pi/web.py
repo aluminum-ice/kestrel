@@ -1809,6 +1809,10 @@ def _page(title, body, head=""):
 
 # -- a tiny, safe Markdown renderer for the shipped user guide (/guide) -------
 _MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+# An image, ![alt](url). The page never loads it: it becomes a link to the
+# picture (release notes come off the network, and the dashboard fetches
+# nothing from off the device).
+_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _MD_BOLD = re.compile(r"\*\*(\S(?:[^*]*\S)?)\*\*")
 _MD_ITALIC = re.compile(r"\*(\S(?:[^*]*\S)?)\*")
 # A GitHub-style table separator row, e.g. ``| --- | :--: |``.
@@ -1830,9 +1834,18 @@ def _md_link_sub(match):
     return label
 
 
+def _md_image_sub(match):
+    alt, url = match.group(1).strip(), match.group(2)
+    label = "Picture: " + (alt or "untitled")
+    # As for links, only benign schemes become a link (no data: or javascript:).
+    if url.strip().lower().startswith(("http://", "https://", "/")):
+        return '<a href="' + url + '">' + label + "</a>"
+    return label
+
+
 def _md_inline(text):
-    """Inline Markdown on one line: escape first, then apply inline code, links,
-    bold and italic. Inline-code spans are stashed so their contents are not
+    """Inline Markdown on one line: escape first, then apply inline code,
+    images (as links), links, bold and italic. Inline-code spans are stashed so their contents are not
     re-formatted or treated as links."""
     text = _esc(text)
     spans = []
@@ -1842,6 +1855,7 @@ def _md_inline(text):
         return "\x00%d\x00" % (len(spans) - 1)
 
     text = re.sub(r"`([^`]+)`", _stash, text)
+    text = _MD_IMAGE.sub(_md_image_sub, text)
     text = _MD_LINK.sub(_md_link_sub, text)
     text = _MD_BOLD.sub(r"<strong>\1</strong>", text)
     text = _MD_ITALIC.sub(r"<em>\1</em>", text)

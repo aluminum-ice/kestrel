@@ -2907,6 +2907,28 @@ def test_markdown_escapes_html_and_blocks_bad_links():
     assert "<p>x</p>" in html
 
 
+def test_markdown_images_become_links_and_are_never_loaded():
+    html = web._render_markdown(
+        "Before\n\n![The panel with a face pack](https://example.com/face.png)\n\n"
+        "Inline ![](/static/x.png) and ![bad](javascript:alertxss) and "
+        "![data](data:image/png;base64,AAAA) end.\n")
+    assert "<img" not in html                  # nothing is fetched by the page
+    assert '<a href="https://example.com/face.png">Picture: The panel with a face pack</a>' in html
+    assert "!<a" not in html and "![" not in html
+    assert '<a href="/static/x.png">Picture: untitled</a>' in html
+    # only benign schemes become links; the rest keep their label as text
+    assert "javascript:" not in html and "data:image" not in html
+    assert "Picture: bad" in html and "Picture: data" in html
+
+
+def test_update_notes_show_an_image_as_a_link():
+    state = _update_state_with_notes()
+    state["notes"][0]["body"] = "Pictures:\n\n![Every face, labelled](https://example.com/sheet.png)\n"
+    html = web._render_update_notes(_ctl(), state)
+    assert "<img" not in html
+    assert '<a href="https://example.com/sheet.png">Picture: Every face, labelled</a>' in html
+
+
 # -- the "What's new" update notes page / link ------------------------------
 def _update_state_with_notes():
     return {
