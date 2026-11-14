@@ -417,6 +417,8 @@ The same battery card and auto-shutdown for Waveshare's UPS HAT (E) (four 21700 
 
 The face reads the learning agent's state and the battery when those are available (the agent and `ups-ws`), and degrades cleanly when they are not. The faces themselves are the classic pwnagotchi emoticons and can be overridden per mood in `config.toml` under `[plugins.eink-ws27.faces]`.
 
+**Face packs.** The face can also be drawn from a picture pack, one picture per mood. Kestrel ships one, `kestrel`: the bird's own face, with the dark stripe under each eye and a small hooked beak, its eyes changing with the mood. Turn it on from the terminal with `sudo kestrel plugins enable eink-ws27 --set face_pack=kestrel` (`--set face_pack=` goes back to text). To use your own, put one PNG per mood, named after the mood (`happy.png`, `cool.png` and so on), in a folder under `/etc/kestrel/faces/` named with lowercase letters, digits, `-` and `_`, and set `face_pack` to the folder's name. Pictures are scaled to fit the face area (about 3:1) and drawn in black and white, transparent as white; a mood the pack lacks shows the text face, and files over 512 KB or 2048 px, links and anything that isn't a PNG are skipped. The pack is read when the daemon starts (`sudo systemctl restart kestrel-daemon` after changing its files). The setting is terminal-only, so the dashboard can't point the face at anything an admin didn't install; the card's **Face pack** row says which pack is in use, or why none is. Only use pictures you have the right to use.
+
 **The HAT's keys.** With `eink-ws27` on, the HAT's four keys work too (turn them off with `buttons = false`):
 
 - **KEY1** (short) shows an info screen for 30 seconds: version, addresses, the dashboard's HTTPS fingerprint, uptime and free space.
@@ -432,7 +434,7 @@ The same face as `eink-ws27`, for the smaller Waveshare 2.13" e-Paper HAT (250×
 - Enable: `sudo kestrel plugins enable eink-ws213`, or pick it on the Plugins page. **View** opens the live mirror, as for `eink-ws27`.
 - Option `variant` (default `v4`): the panel revision printed on the sticker on its back, chosen from `v4`, `v3` or `v2` (software can't tell them apart).
 - Option `partials_per_full` (default `20`): the panel redraws with quick partial updates (no flash) and a full refresh, which flashes and clears ghosting, after this many of them, never sooner than 3 minutes after the last one. `0` makes every redraw a full refresh.
-- Options `rotation` (`0`/`90`/`180`/`270`; `180` for a HAT mounted the other way up), `refresh_seconds` (`10`), `show_mascot`, `show_brand_glyph`, `show_fingerprint_minutes`, `show_ip`, `battery_low_percent`, `bored_epochs`, `sad_epochs`, and the `faces`/`voices` overrides under `[plugins.eink-ws213.faces]` and `[plugins.eink-ws213.voices]` work as for `eink-ws27`.
+- Options `rotation` (`0`/`90`/`180`/`270`; `180` for a HAT mounted the other way up), `refresh_seconds` (`10`), `show_mascot`, `show_brand_glyph`, `show_fingerprint_minutes`, `show_ip`, `battery_low_percent`, `bored_epochs`, `sad_epochs`, the `faces`/`voices` overrides under `[plugins.eink-ws213.faces]` and `[plugins.eink-ws213.voices]`, and `face_pack` (terminal-only) work as for `eink-ws27`.
 
 ### wpa-sec (upload and fetch recovered results)
 

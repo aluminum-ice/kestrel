@@ -154,6 +154,7 @@ never drift apart.
 | `rotation` | `0` | Rotate the image `0` / `90` / `180` / `270` (chosen from a list) if the HAT is mounted turned. |
 | `refresh_seconds` | `10` | How often the face re-renders (`10` is the floor). The panel only redraws when the face actually changes, to limit e-ink wear, so a faster cadence mainly makes it react sooner. |
 | `show_mascot` | `true` | Draw the emoticon face (and its voice line). |
+| `face_pack` | empty | Draw the face from a picture pack instead of text: `kestrel` (built in) or the name of a folder under `/etc/kestrel/faces/`. Set from the terminal only; see [Face packs](#face-packs). |
 | `show_brand_glyph` | `true` | Draw the small corner Kestrel mark. |
 | `show_fingerprint_minutes` | `10` | For this many minutes after start-up, the voice line shows the start of the dashboard's HTTPS certificate fingerprint, to compare with your browser on first sign-in. `0` never shows it. |
 | `show_ip` | `true` | Draw the address row: the Bluetooth tether and Wi-Fi addresses. Turn it off if the panel is visible to people who shouldn't see them. |
@@ -179,6 +180,50 @@ bored = "anything out there?"
 ```
 
 Leave it unset to keep the shipped phrases.
+
+### Face packs
+
+Instead of the text emoticons, the face can be drawn from a **picture pack**,
+one picture per mood. Kestrel ships one, `kestrel`: the bird's own face, with
+the dark stripe a kestrel has under each eye and a small hooked beak. The eyes
+change with the mood: wide, sleepy, star-struck, in sunglasses. Turn it on
+from the terminal:
+
+```bash
+sudo kestrel plugins enable eink-ws27 --set face_pack=kestrel
+```
+
+`--set face_pack=` (empty) goes back to the text faces. The setting is
+terminal-only: the Plugins page shows it but can't change it, and the plugin's
+card has a **Face pack** row saying which pack is in use, or why none is.
+
+**Your own pack.** Make a folder under `/etc/kestrel/faces/`, named with
+lowercase letters, digits, `-` and `_` (up to 32), and put one PNG in it per
+mood, named after the mood (`happy.png`, `cool.png` and so on):
+
+```bash
+sudo install -d /etc/kestrel/faces/mypack
+sudo install -m 0644 ~/mypack/*.png /etc/kestrel/faces/mypack/
+sudo kestrel plugins enable eink-ws27 --set face_pack=mypack
+```
+
+- **Names.** The moods are `look_r`, `look_l`, `look_r_happy`, `look_l_happy`, `sleep`, `sleep2`, `awake`, `bored`, `intense`, `cool`, `happy`, `grateful`, `excited`, `motivated`, `demotivated`, `smart`, `lonely`, `sad`, `angry`, `friend`, `broken`, `debug`, `upload`, `upload1`, `upload2`, and Kestrel's own `tired`, `levelup`, `determined`, `focused` and `searching`. A mood your pack doesn't have
+  shows the text face; Kestrel's own five first try the nearest classic face
+  (`tired` uses `sleep2`, `levelup` `grateful`, `determined` `intense`,
+  `focused` `look_r`, `searching` `look_l`).
+- **Size and colour.** Each picture is scaled to fit the face area (about 3:1;
+  130 x 46 on this panel, so 390 x 130 px is a good size to draw at) and drawn in
+  black and white: transparent counts as white, anything darker than mid-grey
+  as black. Bold shapes read best on e-ink.
+- **Limits.** Files over 512 KB or 2048 px on a side, links and anything that
+  isn't a PNG are skipped (the text face shows instead).
+- **Changes.** The pack is read when the daemon starts; after changing its
+  files, run `sudo systemctl restart kestrel-daemon`.
+- **Only use pictures you have the right to use.** Characters from films,
+  games and shows belong to their owners.
+
+The same `face_pack` option, and the same packs, work on the
+[2.13" HAT](eink-ws213-setup.md).
 
 ## What it reads from other plugins
 

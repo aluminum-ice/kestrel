@@ -124,7 +124,7 @@ def capture(demo, base_url, figures, out_dir, browser="webkit"):
     results = {}
     for fig in figures:
         if fig.get("source") == "eink":
-            img = frame_eink(demo.eink_image())
+            img = frame_eink(demo.eink_image(fig.get("eink_options")))
             path = os.path.join(out_dir, fig["key"] + ".png")
             img.save(path, optimize=True)
             results[fig["key"]] = (path, img.width, img.height)

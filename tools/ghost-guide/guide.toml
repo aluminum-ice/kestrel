@@ -21,7 +21,7 @@ hero_caption = "Kestrel at a glance: the phone dashboard, the e-ink face, and th
 # one heading keep this file's order). Phone shots load `path` on the demo
 # device (optionally scrolled so the text in `focus` sits `lift` pt below the
 # top, 24 by default, in the named `scenario`); `source = "eink"` is the e-ink
-# panel frame.
+# panel frame, with `eink_options` (plugin options for that frame only) if set.
 
 [[figure]]
 key = "phone-dashboard"
@@ -136,3 +136,12 @@ scenario = "update-available"
 focus = "Update available"
 alt = "The dashboard offering an in-place upgrade"
 caption = "When a newer stable release can be applied in place, the dashboard offers the upgrade."
+
+[[figure]]
+key = "eink-face-pack"
+after = "eink-ws27-the-animated-face"
+since = "1.0.14"
+source = "eink"
+eink_options = { face_pack = "kestrel" }
+alt = "The e-ink face drawn with the built-in kestrel face pack"
+caption = "The built-in kestrel face pack: the bird's face in place of the text emoticon, with the same voice and status rows."
