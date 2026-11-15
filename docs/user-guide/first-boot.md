@@ -37,6 +37,12 @@ passwd
 
 Enter the current password (`raspberry`), then your new password twice.
 
+`sudo` asks for this same password on a card flashed with 1.0.14 or later
+(stock Raspberry Pi OS lets `pi` skip it), so the new password is also what you
+type for every `sudo kestrel ...` command. On a card first flashed with an older
+image, once you know your password, `sudo rm /etc/sudoers.d/010_pi-nopasswd`
+makes `sudo` ask too.
+
 **This matters for more than SSH:** the device's web dashboard login uses this
 same account (the `[web] auth = system` default verifies your login against the
 device account), so changing the Pi password changes the **web dashboard login at

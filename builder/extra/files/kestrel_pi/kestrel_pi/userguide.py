@@ -63,6 +63,8 @@ Answer `yes` to the first-connection host-key prompt, enter `raspberry`, then:
 passwd
 ```
 
+`sudo` asks for this same password (on a card flashed with 1.0.14 or later; stock Raspberry Pi OS lets `pi` skip it), so the new one is also what you type for every `sudo kestrel ...` command. On a card first flashed with an older image, once you know your password, `sudo rm /etc/sudoers.d/010_pi-nopasswd` makes `sudo` ask too.
+
 Because the dashboard logs in with this *same* device account, changing the Pi password changes the dashboard login at the same time — there is no separate web password stored anywhere, and the two can never drift apart. That is why you confirm the default dashboard login first and change the password after: your next dashboard login simply uses the new password.
 
 For a guided, menu-driven setup instead, run `sudo kestrel setup`. Other first-run settings are optional: `sudo raspi-config` sets the hostname (System Options) and toggles SSH (Interface Options).

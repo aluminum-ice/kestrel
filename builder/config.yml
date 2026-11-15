@@ -448,6 +448,24 @@
         After cancel-rename, userconfig.service must be disabled and
         getty@tty1.service enabled.
 
+  # Stock Raspberry Pi OS lets its first user run sudo without a password
+  # (/etc/sudoers.d/010_pi-nopasswd). On Kestrel pi is also the account the
+  # daemon, the agent and the collector run as, so sudo asks for pi's password:
+  # becoming root takes the login, not just a process running as pi.
+  - name: make sudo ask for the pi password
+    file:
+      path: /etc/sudoers.d/010_pi-nopasswd
+      state: absent
+
+  - name: check every sudo rule asks for a password and the rules parse
+    shell: |
+      set -e
+      visudo -c >/dev/null
+      ! grep -rqsE '^[^#]*NOPASSWD' /etc/sudoers /etc/sudoers.d/
+    args:
+      executable: /bin/bash
+    changed_when: false
+
   # Install screenrc configuration
   # DISABLED: the aluminum-ice/screenrc repo is no longer on GitHub (the clone
   # 404s and fails the build). Kept commented out, not removed, so it can be
