@@ -78,7 +78,21 @@ PY
 models=("$boot"/kestrel-model*.zip)
 [ "${#models[@]}" -gt 0 ] || exit 0
 
-mkdir -p "$PWN_AGENT_DIR" "$PWN_AGENT_DIR/episodes"
+# The agent dir is pi's (the agent and the trainer write it), so everything
+# inside it is written as pi, never as root: root only reads the staged files
+# from the boot partition and hands their bytes to a pi process. Root creates
+# the agent dir itself only when it is missing, under the root-owned
+# $PWN_STATE_DIR, the same way kestrel.sh's pi_dir does.
+as_pi() { runuser -u pi -- "$@"; }
+
+# Copy a staged file into the agent dir, as pi and atomically (the agent never
+# reads a half-written model).
+pi_copy() {  # SRC DEST
+    as_pi sh -c 'umask 022; tmp="$1.tmp.$$"; cat > "$tmp" && mv -f "$tmp" "$1"' _ "$2" < "$1"
+}
+
+[ -d "$PWN_AGENT_DIR" ] || install -d -o pi -g pi -m 0755 "$PWN_AGENT_DIR"
+episodes_dir="$PWN_AGENT_DIR/episodes"
 
 imported_algos=""          # space-separated, imported this run
 legacy_algo=""             # the plain kestrel-model.zip's algorithm
@@ -96,8 +110,11 @@ for model_src in "${models[@]}"; do
         continue
     fi
     slug=$(slugify "$algo")
-    install -o pi -g pi -m 0644 "$model_src" "$PWN_AGENT_DIR/model-$slug.zip"
-    install -o pi -g pi -m 0644 "$meta_src" "$PWN_AGENT_DIR/model-$slug.meta.json"
+    if ! pi_copy "$model_src" "$PWN_AGENT_DIR/model-$slug.zip" \
+        || ! pi_copy "$meta_src" "$PWN_AGENT_DIR/model-$slug.meta.json"; then
+        log "could not copy ${model_src##*/} into $PWN_AGENT_DIR; leaving it staged"
+        continue
+    fi
     log "imported agent model ${model_src##*/} as model-$slug.zip (algorithm $algo)"
     imported_algos="$imported_algos $algo"
     [ "$model_src" = "$boot/kestrel-model.zip" ] && legacy_algo="$algo"
@@ -109,9 +126,14 @@ if [ -z "${imported_algos// /}" ]; then
     exit 0
 fi
 
+# The episode archive is extracted by pi, into a plain episodes folder only: a
+# link in its place is refused, and the archive is left staged.
 if [ -f "$episodes_src" ]; then
-    if tar -xzf "$episodes_src" -C "$PWN_AGENT_DIR/episodes" 2>/dev/null; then
-        chown -R pi:pi "$PWN_AGENT_DIR/episodes"
+    if [ -L "$episodes_dir" ] || { [ -e "$episodes_dir" ] && [ ! -d "$episodes_dir" ]; }; then
+        log "$episodes_dir isn't a plain folder; not extracting ${episodes_src##*/} (it stays staged)"
+    elif as_pi mkdir -p "$episodes_dir" \
+        && as_pi tar -xzf - -C "$episodes_dir" --no-same-owner --no-same-permissions \
+            < "$episodes_src" 2>/dev/null; then
         log "imported staged episode logs"
         remove+=("$episodes_src")
     else
