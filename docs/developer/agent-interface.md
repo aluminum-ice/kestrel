@@ -54,8 +54,15 @@ the contract.
 - **The allowed set** (`explore.allowed_actions`). `[agent.action]`
   `postures`, `dwell_buckets` and `transmit_modes` (defaults: the whole
   vocabulary) define the actions the agent may run: every combination of listed
-  parts; unknown values are dropped, and a set left empty is the baseline's
-  action alone. The controller maps every action it runs (the learned
+  parts; unknown values are dropped (strings compared without case or
+  surrounding spaces, a lone string read as a one-entry list). Each list stands
+  on its own: one that is set but names nothing known keeps the baseline's
+  posture or dwell, and for `transmit_modes` means passive only, so an agent
+  window transmits only when `transmit_modes` is absent or names `active`
+  (`explore.may_transmit`). The capture launcher (root) applies the same
+  transmit rule to `scan-override.json` itself (`agent_may_transmit`, kept in
+  step by `test_capture_launch.py`), and only a plan whose `transmit` is
+  exactly `active` transmits. The controller maps every action it runs (the learned
   policy's, the baseline's) into it with `explore.nearest_allowed` (same
   posture and transmit mode where possible, then the nearest dwell), logging
   once per run when a model asked for one outside it, and exploration draws

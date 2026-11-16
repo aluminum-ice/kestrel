@@ -586,7 +586,7 @@ A learned policy picks its best-known scan every time, so on its own it would ne
 
 Until a scan has been tried in at least 8 windows, training and the contest assume it does no better than the weakest well-tried scan, so a model can't win by betting on scans nobody has tried.
 
-**Which scans the agent may run.** `[agent.action]` `postures`, `dwell_buckets` and `transmit_modes` limit every scan the agent runs: the learned policy's, the baseline sweep's and the exploring ones. For example, `transmit_modes = ["passive"]` keeps every agent window passive. A model that asks for a scan outside the lists runs the nearest allowed one instead.
+**Which scans the agent may run.** `[agent.action]` `postures`, `dwell_buckets` and `transmit_modes` limit every scan the agent runs: the learned policy's, the baseline sweep's and the exploring ones. For example, `transmit_modes = ["passive"]` keeps every agent window passive. A model that asks for a scan outside the lists runs the nearest allowed one instead. An agent window transmits only when `transmit_modes` is left out or names `"active"`: an empty list, a misspelling or any other value keeps every window passive, and the capture launcher checks that itself too.
 
 These settings live in the `[agent]` table of `config.toml` (not on the Advanced page); they take effect the next time the agent starts (for example `sudo systemctl restart kestrel-agent`).
 

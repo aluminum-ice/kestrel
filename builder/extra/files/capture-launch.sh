@@ -123,6 +123,33 @@ print(hashlib.sha256(data).hexdigest() if data is not None else "none")
 PY
 }
 
+# Whether [agent.action] transmit_modes lets an agent window transmit. The plan
+# comes from the agent (pi), so root applies the setting itself: only when it is
+# absent (the default allows both) or names "active" (any case, a lone string
+# or a list). Anything else, or a config it can't read, means passive. Mirrors
+# kestrel_pi.agent.explore.may_transmit (tests keep the two in step).
+agent_may_transmit() {
+    PWN_CONFIG="$PWN_CONFIG" python3 -I - <<'PY' 2>/dev/null
+import os, sys, tomllib
+try:
+    with open(os.environ["PWN_CONFIG"], "rb") as fh:
+        cfg = tomllib.load(fh)
+    action = cfg.get("agent", {}).get("action", {})
+except Exception:
+    sys.exit(1)
+if not isinstance(action, dict):
+    sys.exit(1)
+modes = action.get("transmit_modes")
+if modes is None:
+    sys.exit(0)
+if isinstance(modes, str):
+    modes = [modes]
+if not isinstance(modes, list):
+    sys.exit(1)
+sys.exit(0 if any(isinstance(m, str) and m.strip().lower() == "active" for m in modes) else 1)
+PY
+}
+
 # Read the agent override JSON into the scan flags in the global `args`, and set
 # `dwell_sec` from it. Returns non-zero (leaving args untouched) if the file is
 # missing or unreadable, so the caller falls back to the configured sweep.
@@ -153,10 +180,13 @@ try:
     dwell = int(o.get("dwell", 5))
 except Exception:
     dwell = 5
-print("\t".join([kind, band, chans, transmit, str(dwell)]))
+# One line, fields split by the unit separator: unlike a tab it isn't IFS white
+# space, so an empty field (no band, no channels) keeps its place.
+fields = [kind, band, chans, transmit, str(dwell)]
+print("\x1f".join("".join(c for c in f if c >= " ") for f in fields))
 PY
     ) || return 1
-    IFS=$'\t' read -r kind band channels transmit dwell <<<"$parsed"
+    IFS=$'\x1f' read -r kind band channels transmit dwell <<<"$parsed"
     [[ $dwell =~ ^[0-9]+$ ]] && [ "$dwell" -ge 1 ] || dwell=5
     dwell_sec=$dwell
     case "$kind" in
@@ -181,6 +211,14 @@ PY
                 [ -n "$chans" ] && args+=(--channel "$chans")
             fi ;;
     esac
+    # Only a plan that says "active" may transmit, and only when the setting
+    # allows it.
+    if [ "$transmit" != active ]; then
+        transmit=passive
+    elif ! agent_may_transmit; then
+        log "agent override asks to transmit, which [agent.action] transmit_modes doesn't allow; this window is passive"
+        transmit=passive
+    fi
     [ "$transmit" = passive ] && args+=(--notransmit)
     log "agent scan plan: kind=$kind band=${band:-} channels=${channels:-} dwell=${dwell}s transmit=$transmit"
     return 0
@@ -252,8 +290,13 @@ build_args() {
     [ -s "$PWN_WHITELIST_FILE" ] && args+=(--whitelist "$PWN_WHITELIST_FILE")
 
     # Extra pass-through flags, one per line.
+    # (--notransmit only once: the agent's passive plan may have added it.)
     while IFS= read -r extra; do
-        [ -n "$extra" ] && args+=("$extra")
+        [ -n "$extra" ] || continue
+        if [ "$extra" = --notransmit ] && [[ " ${args[*]} " == *" --notransmit "* ]]; then
+            continue
+        fi
+        args+=("$extra")
     done < <("$PWN_CONFIG_GET" capture.angryoxide.extra_args "")
 }
 

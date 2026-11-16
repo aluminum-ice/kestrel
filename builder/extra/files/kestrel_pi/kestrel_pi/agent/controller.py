@@ -431,6 +431,13 @@ class AgentController:
             dwell_seconds=self._dwell_seconds).predict(None)[0]
         self._action_set = explore_mod.allowed_actions(
             self.agent_cfg.get("action"), baseline_action)
+        bad = explore_mod.unreadable(self.agent_cfg.get("action"))
+        if bad:
+            self.log.warning(
+                "[agent.action] %s: a value isn't one Kestrel knows; ignoring it "
+                "(an unreadable postures or dwell_buckets keeps the baseline's, "
+                "an unreadable transmit_modes keeps every window passive)",
+                ", ".join(bad))
         self._outside_noted = False
         self._explorer = explore_mod.Explorer(
             self.agent_cfg.get("explore_rate", 0.05),

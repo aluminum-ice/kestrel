@@ -139,3 +139,103 @@ def test_angryoxide_is_never_sent_sigterm_and_the_unit_signals_only_the_launcher
     with open(unit, encoding="utf-8") as handle:
         text = handle.read()
     assert "KillMode=mixed" in text and "TimeoutStopSec=" in text
+
+
+# -- [agent.action] transmit_modes, enforced by the launcher too ------------
+
+TRANSMIT_CASES = [
+    (None, True), ('["active", "passive"]', True), ('["passive"]', False),
+    ('[]', False), ('"passive"', False), ('"Active"', True), ('["Passive"]', False),
+    ('[" ACTIVE "]', True), ('["pasive"]', False), ('1', False), ('true', False),
+    ('["passive", 1]', False), ('[["active"]]', False), ('{ a = "active" }', False),
+]
+
+
+def _toml_value(raw):
+    import tomllib
+    return tomllib.loads("v = %s" % raw)["v"]
+
+
+def _config(tmp_path, modes):
+    cfg = tmp_path / "config.toml"
+    text = '[agent]\nenabled = true\n'
+    if modes is not None:
+        text += '[agent.action]\ntransmit_modes = %s\n' % modes
+    cfg.write_text(text)
+    return cfg
+
+
+@pytest.mark.parametrize("modes,expected", TRANSMIT_CASES)
+def test_the_launcher_and_the_agent_agree_on_transmit_modes(tmp_path, modes, expected):
+    from kestrel_pi.agent import explore
+    cfg = _config(tmp_path, modes)
+    out = _bash(_function("agent_may_transmit") + "agent_may_transmit\n",
+                {"PWN_CONFIG": str(cfg)})
+    assert (out.returncode == 0) is expected
+    agent_cfg = {} if modes is None else {"transmit_modes": _toml_value(modes)}
+    assert explore.may_transmit(agent_cfg) is expected
+
+
+@pytest.mark.parametrize("text", ["", "not toml [", '[agent]\naction = 3\n', "agent = 1\n"])
+def test_an_unreadable_config_means_passive(tmp_path, text):
+    cfg = tmp_path / "config.toml"
+    if text:
+        cfg.write_text(text)
+    out = _bash(_function("agent_may_transmit") + "agent_may_transmit\n",
+                {"PWN_CONFIG": str(cfg)})
+    assert out.returncode != 0
+
+
+def _agent_args(tmp_path, modes, plan):
+    override = tmp_path / "scan-override.json"
+    override.write_text(plan)
+    script = ("log() { echo \"LOG $*\"; }\n" + _function("agent_may_transmit")
+              + _function("build_agent_args")
+              + 'args=(); iface=wlan1; dwell_sec=5\nbuild_agent_args\nprintf "%s\\n" "${args[@]}"\n')
+    out = _bash(script, {"PWN_CONFIG": str(_config(tmp_path, modes)),
+                         "PWN_AGENT_OVERRIDE": str(override)})
+    assert out.returncode == 0, out.stderr
+    return [line for line in out.stdout.splitlines() if not line.startswith("LOG ")]
+
+
+@pytest.mark.parametrize("modes,plan,passive", [
+    (None, '{"kind": "autohunt", "transmit": "active"}', False),
+    (None, '{"kind": "autohunt", "transmit": "passive"}', True),
+    ('["passive"]', '{"kind": "autohunt", "transmit": "active"}', True),
+    ('[]', '{"kind": "autohunt", "transmit": "active"}', True),
+    ('"passive"', '{"kind": "autohunt"}', True),
+    (None, '{"kind": "autohunt", "transmit": "ACTIVE"}', True),
+    (None, '{"kind": "autohunt", "transmit": 1}', True),
+])
+def test_an_agent_window_transmits_only_when_the_plan_and_the_setting_allow(
+        tmp_path, modes, plan, passive):
+    args = _agent_args(tmp_path, modes, plan)
+    assert "--autohunt" in args
+    assert ("--notransmit" in args) is passive
+
+
+def test_extra_args_never_repeat_notransmit():
+    body = _function("build_args")
+    assert "--notransmit" in body and 'continue' in body
+
+
+@pytest.mark.parametrize("plan,want_args,want_dwell", [
+    ('{"kind": "autohunt", "transmit": "passive", "dwell": 20}', ["--autohunt", "--notransmit"], "20"),
+    ('{"kind": "band", "band": "5", "transmit": "passive", "dwell": 10}',
+     ["--band", "5", "--notransmit"], "10"),
+    ('{"kind": "band", "band": "2", "transmit": "active", "dwell": 2}', ["--band", "2"], "2"),
+    ('{"kind": "channels", "channels": [1, 6], "transmit": "passive", "dwell": 5}',
+     ["--channel", "1,6", "--notransmit"], "5"),
+    ('{"kind": "band", "band": "5\\t\\n", "transmit": "active", "dwell": 10}', ["--band", "5"], "10"),
+])
+def test_every_field_of_the_plan_keeps_its_place(tmp_path, plan, want_args, want_dwell):
+    override = tmp_path / "scan-override.json"
+    override.write_text(plan)
+    script = ("log() { :; }\ncapture_auto_channels() { return 1; }\n"
+              + _function("agent_may_transmit") + _function("build_agent_args")
+              + 'args=(); iface=wlan1; dwell_sec=5\nbuild_agent_args\n'
+              'printf "%s\\n" "${args[@]}" "dwell=$dwell_sec"\n')
+    out = _bash(script, {"PWN_CONFIG": str(_config(tmp_path, None)),
+                         "PWN_AGENT_OVERRIDE": str(override)})
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.splitlines() == want_args + ["dwell=" + want_dwell]
