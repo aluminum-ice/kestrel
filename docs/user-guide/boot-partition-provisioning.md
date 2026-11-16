@@ -73,6 +73,9 @@ these at the top level of the boot partition:
 
 Optionally, also drop `kestrel-model-episodes.tar.gz` — the model's
 training history, so the device can keep learning from where you left off.
+It is unpacked by the everyday `pi` account, into the agent's `episodes`
+folder only; if it can't be unpacked there, it stays on the card and the model
+still installs.
 
 The next time the device boots it installs the model, points the agent at it,
 and removes the files it installed. It does **not** turn the agent or capture
