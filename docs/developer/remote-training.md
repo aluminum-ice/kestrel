@@ -223,7 +223,11 @@ a blocking SSH call the device babysits.
      A model already staged, one the agent has already judged
      (`.remote-staging/evaluated.json`) or one with a different env-spec isn't
      pulled again. A new one is pulled to a **staging path**
-     (`.remote-staging/<slug>/` under the agent dir). The plugin never loads a
+     (`.remote-staging/<slug>/` under the agent dir). Each pull is one regular
+     file of bounded size (`rsync --max-size`: 64 KB for a sidecar, 256 MB for
+     a model; a directory or link in its place is skipped), and every host
+     command runs through the `hostrun` plugin library, which keeps at most
+     64 KB of what the host prints and stops the command past that. The plugin never loads a
      model and never touches the active slot; the **agent process** runs the
      same contest for it as for a model trained on the device (see "One contest
      for every model" below, and

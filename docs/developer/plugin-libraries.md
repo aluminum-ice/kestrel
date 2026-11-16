@@ -115,6 +115,7 @@ its `LIB_API`; a test (`tests/test_load_library.py`) keeps the two in step.
 | `alerts` | `_lib_alerts.py` | 1.0 | stable | `ntfy`, `telegram` |
 | `eink_face` | `_lib_eink_face.py` | 1.2 | stable | `eink-ws27`, `eink-ws213` |
 | `hat_keys` | `_lib_hat_keys.py` | 0.1 | provisional | `eink-ws27` |
+| `hostrun` | `_lib_hostrun.py` | 0.1 | provisional | `backup`, `remote-train` |
 | `ina219` | `_lib_ina219.py` | 1.1 | stable | `ups-ws`, `ups-wsc`, `ups-wsd` |
 | `ups` | `_lib_ups.py` | 0.3 | provisional | `ups-ws`, `ups-wsc`, `ups-wsd`, `ups-wse` |
 
@@ -550,6 +551,47 @@ Its declarations (including the key options above), which key does what, any
 screen of its own (`eink-ws27`'s info screen on KEY1 is a plugin function), and
 where the prompt is shown. A plugin that only reads keys needs no `network`
 capability; the actions go through the same checks as the dashboard.
+
+## `hostrun`: commands that talk to another host
+
+`load_library(__file__, "hostrun", api=0)`. Runs a command whose output
+another host decides (`ssh`, `rsync`, `scp` against a backup or training
+host) without letting that output grow inside the daemon. `backup` and
+`remote-train` run every host command through it.
+
+```python
+from kestrel_pi import Plugin, load_library
+
+hostrun = load_library(__file__, "hostrun", api=0)
+
+
+class MyPlugin(Plugin):
+    def _push(self):
+        try:
+            res = hostrun.run(["rsync", "-az", "/src/", "host:/dst/"], timeout=600)
+        except (OSError, hostrun.TimeoutExpired) as exc:
+            return str(exc)
+        if res.truncated:
+            return "the host sent more output than expected"
+        return res.stderr.strip() if res.returncode else ""
+```
+
+- **`run(cmd, input=None, timeout=None, limit=OUTPUT_LIMIT)`** returns a
+  `Result(returncode, stdout, stderr, truncated)`: text, undecodable bytes
+  replaced. It raises what `subprocess.run` raises (`FileNotFoundError` and
+  other `OSError` when the command can't start, `TimeoutExpired`, the same
+  class as `subprocess.TimeoutExpired`, after `timeout`), so callers keep
+  their `except` clauses.
+- **The rule it keeps:** at most `limit` bytes (`OUTPUT_LIMIT`, 64 KB) of each
+  of stdout and stderr are kept. Past that the command is killed, with every
+  process it started (it runs in its own session, so an `ssh` started by
+  `rsync` goes too), and `truncated` is True. A process the command left
+  holding a pipe after it exited is stopped the same way, so a call never
+  hangs on it. Treat a truncated result as a failure.
+- **What stays in your plugin:** the command line, retries, and what a result
+  means. Files a host sends are held to a size by the command itself (for
+  example `rsync --max-size`), and anything read from them is checked like any
+  input from that host.
 
 ## `ina219`: the INA219 current/voltage monitor
 
