@@ -29,32 +29,92 @@ MAX_RATE = 0.25
 MAX_WINDOWS = 4
 
 
-def _listed(value, vocabulary, cast):
-    """The entries of a configured list that are in ``vocabulary``, in the
-    vocabulary's order. A missing or non-list value allows the whole
-    vocabulary; a list with nothing valid allows nothing."""
+def _word(item):
+    """A posture or transmit-mode entry: a string, compared without case or
+    surrounding spaces."""
+    if not isinstance(item, str):
+        raise TypeError(item)
+    return item.strip().lower()
+
+
+def _dwell(item):
+    if isinstance(item, bool):
+        raise TypeError(item)
+    return int(item)
+
+
+def _entries(value, cast):
+    """The readable entries of a configured list, or None when it isn't set. A
+    lone string counts as a one-entry list; any other non-list has none."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [value]
     if not isinstance(value, (list, tuple)):
-        return list(vocabulary)
-    wanted = set()
+        return []
+    out = []
     for item in value:
         try:
-            wanted.add(cast(item))
+            out.append(cast(item))
         except (TypeError, ValueError):
             continue
-    return [v for v in vocabulary if v in wanted]
+    return out
+
+
+def _listed(value, vocabulary, cast, fallback):
+    """The vocabulary entries a configured list names, in the vocabulary's
+    order. Not set: the whole vocabulary. Set, but naming nothing in it:
+    ``fallback`` alone."""
+    entries = _entries(value, cast)
+    if entries is None:
+        return list(vocabulary)
+    wanted = set(entries)
+    return [v for v in vocabulary if v in wanted] or [fallback]
+
+
+def unreadable(action_cfg):
+    """The ``[agent.action]`` lists with a value or an entry that names nothing
+    in their vocabulary, for a warning at start-up."""
+    action_cfg = action_cfg if isinstance(action_cfg, dict) else {}
+    bad = []
+    for key, vocabulary, cast in (("postures", spec.POSTURES, _word),
+                                  ("dwell_buckets", spec.DWELLS, _dwell),
+                                  ("transmit_modes", spec.TRANSMIT, _word)):
+        value = action_cfg.get(key)
+        if value is None:
+            continue
+        items = [value] if isinstance(value, str) else value
+        entries = _entries(value, cast)
+        if (not isinstance(items, (list, tuple)) or len(entries) != len(items)
+                or any(e not in vocabulary for e in entries) or not entries):
+            bad.append(key)
+    return bad
 
 
 def allowed_actions(action_cfg, fallback):
     """The sorted ``Discrete`` indices ``[agent.action]`` allows: every
-    posture x dwell x transmit combination whose parts are all listed. When
-    the lists allow nothing, only ``fallback`` (the baseline's action)."""
+    posture x dwell x transmit combination whose parts are all listed.
+
+    Each list stands on its own. One that isn't set allows its whole
+    vocabulary; one that is set but names nothing Kestrel knows (a typo, an
+    empty list, a number) keeps the baseline's (``fallback``'s) posture or
+    dwell, and for ``transmit_modes`` means passive: an agent window never
+    transmits unless the setting is absent or names ``active``. The capture
+    launcher (root) applies the same transmit rule to the agent's plan."""
     action_cfg = action_cfg if isinstance(action_cfg, dict) else {}
-    postures = _listed(action_cfg.get("postures"), spec.POSTURES, str)
-    dwells = _listed(action_cfg.get("dwell_buckets"), spec.DWELLS, int)
-    modes = _listed(action_cfg.get("transmit_modes"), spec.TRANSMIT, str)
-    actions = sorted(spec.encode(p, d, t)
-                     for p in postures for d in dwells for t in modes)
-    return actions or [int(fallback)]
+    base_posture, base_dwell, _ = spec.decode(int(fallback))
+    postures = _listed(action_cfg.get("postures"), spec.POSTURES, _word, base_posture)
+    dwells = _listed(action_cfg.get("dwell_buckets"), spec.DWELLS, _dwell, base_dwell)
+    modes = _listed(action_cfg.get("transmit_modes"), spec.TRANSMIT, _word, "passive")
+    return sorted(spec.encode(p, d, t)
+                  for p in postures for d in dwells for t in modes)
+
+
+def may_transmit(action_cfg):
+    """Whether any allowed action transmits (the launcher's rule, mirrored)."""
+    action_cfg = action_cfg if isinstance(action_cfg, dict) else {}
+    entries = _entries(action_cfg.get("transmit_modes"), _word)
+    return entries is None or "active" in entries
 
 
 def nearest_allowed(action, allowed):

@@ -233,7 +233,9 @@ scan nobody has tried; exploring is how such scans get their data.
 **The allowed scans.** `[agent.action]` `postures`, `dwell_buckets` and
 `transmit_modes` limit every scan the agent runs (the learned policy's, the
 sweep's and the exploring ones); a model that asks for one outside them runs the
-nearest allowed scan.
+nearest allowed scan. An agent window transmits only when `transmit_modes` is
+left out or names `"active"`; any other value (an empty list, a misspelling)
+keeps every window passive, and the capture launcher checks that itself too.
 
 ### When training runs, and why the defaults are what they are
 

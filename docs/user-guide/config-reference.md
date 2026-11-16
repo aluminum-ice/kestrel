@@ -122,6 +122,12 @@ can leave them alone.
 runs (the learned policy's, the baseline sweep's and the exploring ones): for
 example `transmit_modes = ["passive"]` keeps every agent window passive. A model
 that asks for a scan outside the lists runs the nearest allowed one instead.
+An agent window transmits only when `transmit_modes` is left out or names
+`"active"`: an empty list, a misspelling or any other value keeps every window
+passive, and the capture launcher applies that rule itself, whatever the agent
+asks for. A value in `postures` or `dwell_buckets` that Kestrel doesn't know is
+ignored (a list with nothing it knows keeps the sweep's own), and the agent
+names the setting in its log at start-up.
 
 ## `[daemon]` — the plugin host
 

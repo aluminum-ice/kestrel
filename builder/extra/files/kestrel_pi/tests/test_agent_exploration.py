@@ -6,6 +6,8 @@ and no action outside [agent.action] ever runs. No torch."""
 import json
 import random
 
+import pytest
+
 from kestrel_pi.agent import EPISODES_DIR, STATUS_NAME, spec
 from kestrel_pi.agent import controller as ctrl_mod
 from kestrel_pi.agent import explore
@@ -56,7 +58,49 @@ def test_unknown_values_are_dropped_and_nothing_valid_falls_back():
         {"postures": ["autohunt", "teleport"], "dwell_buckets": [5, "x", 7],
          "transmit_modes": ["passive"]}, fallback=2)
     assert [spec.decode(a) for a in allowed] == [("autohunt", 5, "passive")]
-    assert explore.allowed_actions({"postures": ["teleport"]}, fallback=2) == [2]
+    # A list naming nothing valid keeps the baseline's posture (or dwell); the
+    # other lists still apply on their own.
+    base_posture, base_dwell, _ = spec.decode(2)
+    only_base = explore.allowed_actions({"postures": ["teleport"]}, fallback=2)
+    assert {spec.decode(a)[0] for a in only_base} == {base_posture}
+    assert len(only_base) == len(spec.DWELLS) * len(spec.TRANSMIT)
+    no_dwell = explore.allowed_actions({"dwell_buckets": [7]}, fallback=2)
+    assert {spec.decode(a)[1] for a in no_dwell} == {base_dwell}
+
+
+ACTIVE_BASELINE = spec.encode("sweep-band", 5, "active")
+
+
+@pytest.mark.parametrize("modes", [
+    [], ["Passive"], "passive", " PASSIVE ", ["pasive"], 1, True, {"a": "active"},
+    ["passive", 1], [["active"]],
+])
+def test_transmit_modes_that_dont_name_active_never_transmit(modes):
+    allowed = explore.allowed_actions({"transmit_modes": modes}, fallback=ACTIVE_BASELINE)
+    assert allowed and all(spec.decode(a)[2] == "passive" for a in allowed), modes
+    assert not explore.may_transmit({"transmit_modes": modes})
+    # with a typo in another list as well, still passive only
+    allowed = explore.allowed_actions({"transmit_modes": modes, "postures": ["x"]},
+                                      fallback=ACTIVE_BASELINE)
+    assert all(spec.decode(a)[2] == "passive" for a in allowed), modes
+
+
+@pytest.mark.parametrize("modes", [None, ["active"], "Active", ["passive", " active"]])
+def test_transmit_modes_that_name_active_or_are_unset_may_transmit(modes):
+    cfg = {} if modes is None else {"transmit_modes": modes}
+    assert explore.may_transmit(cfg)
+    assert any(spec.decode(a)[2] == "active"
+               for a in explore.allowed_actions(cfg, fallback=ACTIVE_BASELINE))
+
+
+def test_unreadable_lists_are_named_for_the_warning():
+    assert explore.unreadable({}) == []
+    assert explore.unreadable({"postures": list(spec.POSTURES),
+                               "dwell_buckets": [2, 5], "transmit_modes": "passive"}) == []
+    assert explore.unreadable({"postures": ["teleport"], "dwell_buckets": 5,
+                               "transmit_modes": ["passive", 1]}) == [
+        "postures", "dwell_buckets", "transmit_modes"]
+    assert explore.unreadable({"transmit_modes": []}) == ["transmit_modes"]
 
 
 def test_nearest_allowed_keeps_posture_and_transmit_then_dwell():
@@ -213,3 +257,14 @@ def test_agreement():
     assert metrics.agreement([1, 2, 3, 4], [1, 2, 0, 4]) == 0.75
     assert metrics.agreement([], []) is None
     assert metrics.agreement(None, [1]) is None
+
+
+def test_the_controller_warns_and_runs_passive_on_an_unreadable_transmit_setting(
+        tmp_path, caplog):
+    with caplog.at_level("WARNING", logger="kestrel_pi.agent"):
+        c, _ = _make(tmp_path, extra='[agent.action]\ntransmit_modes = ["pasive"]\n')
+    assert "transmit_modes" in caplog.text
+    assert c._action_set and all(spec.decode(a)[2] == "passive" for a in c._action_set)
+    # every action the policy could ask for runs passive
+    assert all(spec.decode(c._choose_action(a))[2] == "passive"
+               for a in range(spec.ACTION_N))
