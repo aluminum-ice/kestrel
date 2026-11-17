@@ -61,6 +61,17 @@ FULL_CONFIG = {
 }
 
 
+def _patch_hostrun(monkeypatch, mod, fake):
+    """Stand ``fake`` (a subprocess.run-style function) in for the hostrun
+    library's ``run``, which backup and remote-train call for every host
+    command; its result becomes a hostrun Result with nothing truncated."""
+    def run(cmd, **kw):
+        proc = fake(cmd, **kw)
+        return mod.hostrun.Result(proc.returncode, getattr(proc, "stdout", "") or "",
+                                  getattr(proc, "stderr", "") or "", False)
+    monkeypatch.setattr(mod.hostrun, "run", run)
+
+
 def _loader(config, store):
     return Loader(
         config=config,
@@ -1208,7 +1219,7 @@ def test_backup_rsync_command_mirrors_store_over_ssh(tmp_path, monkeypatch):
         captured["cmd"] = cmd
         return _Proc()
 
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    _patch_hostrun(monkeypatch, mod, fake_run)
     ok, files, nbytes, detail = plugin._rsync(str(tmp_path), "/remote/dir",
                                               ["/.run/", "/.run"])
     assert ok and files == 2 and nbytes == 4096 and detail == ""
@@ -1231,7 +1242,7 @@ def test_backup_rsync_failure_reports_detail(tmp_path, monkeypatch):
         stderr = "ssh: connect to host h port 22: No route to host\nrsync error: ...\n"
 
     monkeypatch.setattr(mod.time, "sleep", lambda *_a: None)   # don't wait out retries
-    monkeypatch.setattr(mod.subprocess, "run", lambda cmd, **kw: _Proc())
+    _patch_hostrun(monkeypatch, mod, lambda cmd, **kw: _Proc())
     ok, files, nbytes, detail = plugin._rsync(str(tmp_path), "/remote/dir")
     assert not ok and files == 0 and "rsync error" in detail
 
@@ -1250,7 +1261,7 @@ def test_backup_rsync_failure_surfaces_the_specific_cause(tmp_path, monkeypatch)
                   'main.c(787) [Receiver=3.2.3]\n')
 
     monkeypatch.setattr(mod.time, "sleep", lambda *_a: None)   # don't wait out retries
-    monkeypatch.setattr(mod.subprocess, "run", lambda cmd, **kw: _Proc())
+    _patch_hostrun(monkeypatch, mod, lambda cmd, **kw: _Proc())
     ok, _files, _nbytes, detail = plugin._rsync(str(tmp_path), "/remote/dir")
     assert not ok
     assert "Permission denied" in detail        # the actionable cause
@@ -1274,7 +1285,7 @@ def test_backup_rsync_retries_a_dropped_transfer(tmp_path, monkeypatch):
             returncode=0, stderr="",
             stdout=("Number of regular files transferred: 3\n"
                     "Total transferred file size: 2,560 bytes\n"))
-    monkeypatch.setattr(mod.subprocess, "run", flaky_then_ok)
+    _patch_hostrun(monkeypatch, mod, flaky_then_ok)
     ok, files, nbytes, detail = plugin._rsync(str(tmp_path), "/remote/dir")
     assert ok and files == 3 and nbytes == 2560 and detail == ""
     assert calls["n"] == 2                       # retried once, then succeeded
@@ -1297,7 +1308,7 @@ def test_backup_scp_fallback_copies_store(tmp_path, monkeypatch):
         return _Proc()
 
     monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/" + name)
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    _patch_hostrun(monkeypatch, mod, fake_run)
     ok, files, nbytes, detail = plugin._transfer(str(tmp_path))
     assert ok and detail == ""
     scp = [c for c in calls if c and c[0] == "scp"][0]
@@ -1327,7 +1338,7 @@ def test_backup_mirrors_the_agent_dir_to_a_subpath(tmp_path, monkeypatch):
         stderr = ""
 
     monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/" + name)
-    monkeypatch.setattr(mod.subprocess, "run",
+    _patch_hostrun(monkeypatch, mod,
                         lambda cmd, **kw: (runs.append(cmd), _Proc())[1])
     ok, files, _nbytes, detail = plugin._transfer(str(store))
     assert ok and detail == ""
@@ -1354,7 +1365,7 @@ def test_backup_without_an_agent_dir_mirrors_only_the_store(tmp_path, monkeypatc
 
     runs = []
     monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/" + name)
-    monkeypatch.setattr(mod.subprocess, "run",
+    _patch_hostrun(monkeypatch, mod,
                         lambda cmd, **kw: (runs.append(cmd), _Proc())[1])
     ok, _files, _nbytes, _detail = plugin._transfer(str(store))
     assert ok
@@ -1807,7 +1818,7 @@ def test_remote_train_should_stage_rules(tmp_path):
 def _fake_host(meta, model=b"REMOTE-MODEL", pulls=None):
     import json as _json
 
-    def fake_down(remote_path, local_path):
+    def fake_down(remote_path, local_path, max_bytes):
         if pulls is not None:
             pulls.append(os.path.basename(remote_path))
         if os.path.basename(local_path).endswith(".meta.json"):
@@ -1992,7 +2003,7 @@ def _fake_ssh(monkeypatch, mod, returncode=None, raises=None):
         if raises is not None:
             raise raises
         return subprocess.CompletedProcess(cmd, returncode, "", "")
-    monkeypatch.setattr(mod.subprocess, "run", run)
+    _patch_hostrun(monkeypatch, mod, run)
 
 
 def test_remote_train_ssh_failure_marks_the_host_unreachable(tmp_path, monkeypatch):
@@ -2293,16 +2304,74 @@ def test_remote_train_run_rsync_retries_a_dropped_transfer(tmp_path, monkeypatch
         calls["n"] += 1
         rc = 0 if calls["n"] >= 2 else 12      # rsync 12 = stream/connection error
         return types.SimpleNamespace(returncode=rc, stdout="done", stderr="")
-    monkeypatch.setattr(mod.subprocess, "run", flaky_then_ok)
+    _patch_hostrun(monkeypatch, mod, flaky_then_ok)
     ok, _out = plugin._run_rsync(["rsync", "-az", "a", "b"])
     assert ok is True and calls["n"] == 2       # retried once, then succeeded
 
     def always_fnf(cmd, **_kw):
         raise FileNotFoundError()
     calls["n"] = 0
-    monkeypatch.setattr(mod.subprocess, "run", always_fnf)
+    _patch_hostrun(monkeypatch, mod, always_fnf)
     ok, msg = plugin._run_rsync(["rsync", "-az", "a", "b"])
     assert ok is False and "not installed" in msg and calls["n"] == 0
+
+
+def _truncated(mod):
+    return lambda cmd, **kw: mod.hostrun.Result(-9, "x" * 10, "", True)
+
+
+def test_remote_train_stops_a_host_that_floods_its_output(tmp_path, monkeypatch):
+    plugin, mod, _ad = _make_remote_train(tmp_path)
+    monkeypatch.setattr(mod.time, "sleep", lambda *_a: None)
+    monkeypatch.setattr(mod.hostrun, "run", _truncated(mod))
+    rc, out = plugin._remote_rc("true")
+    assert rc is None and "more output than expected" in out
+    ok, out = plugin._run_rsync(["rsync", "-tz", "a", "b"])
+    assert ok is False and "more output than expected" in out
+
+
+def test_remote_train_pulls_one_bounded_file(tmp_path, monkeypatch):
+    plugin, mod, _ad = _make_remote_train(tmp_path)
+    seen = []
+    _patch_hostrun(monkeypatch, mod, lambda cmd, **kw: (
+        seen.append(cmd), types.SimpleNamespace(returncode=0, stdout="", stderr=""))[1])
+    plugin._rsync_down("/remote/agent/model-ppo.zip", str(tmp_path / "in.zip"), 4096)
+    cmd = seen[0]
+    assert "--max-size=4096" in cmd
+    assert not any(a.startswith("-") and not a.startswith("--") and ("a" in a or "r" in a
+                   or "l" in a) for a in cmd if a != "-e")
+
+
+def test_remote_train_reads_only_small_regular_json(tmp_path):
+    import json as _json
+    plugin, mod, _ad = _make_remote_train(tmp_path)
+    small = tmp_path / "small.json"
+    small.write_text(_json.dumps({"algorithm": "PPO"}))
+    assert plugin._read_json(str(small), {}, mod._MAX_META_BYTES) == {"algorithm": "PPO"}
+    big = tmp_path / "big.json"
+    big.write_text(_json.dumps({"pad": "x" * mod._MAX_META_BYTES}))
+    assert plugin._read_json(str(big), {}, mod._MAX_META_BYTES) == {}
+    fifo = tmp_path / "fifo.json"
+    os.mkfifo(fifo)                               # must not block the worker
+    assert plugin._read_json(str(fifo), {}) == {}
+    folder = tmp_path / "dir.json"
+    folder.mkdir()
+    assert plugin._read_json(str(folder), {}) == {}
+
+
+def test_backup_stops_a_remote_that_floods_its_output(tmp_path, monkeypatch):
+    plugin, mod = _make_backup(tmp_path)
+    monkeypatch.setattr(mod.time, "sleep", lambda *_a: None)
+    monkeypatch.setattr(mod.hostrun, "run", _truncated(mod))
+    ok, files, nbytes, detail = plugin._rsync(str(tmp_path), "/remote/dir")
+    assert not ok and "more output than expected" in detail
+
+
+def test_backup_and_remote_train_never_capture_host_output_themselves():
+    for name in ("backup.py", "remote-train.py"):
+        with open(os.path.join(PLUGIN_DIR, name), encoding="utf-8") as handle:
+            src = handle.read()
+        assert "capture_output" not in src and "subprocess.run(" not in src, name
 
 
 def test_remote_train_algo_running_respects_the_stale_lock(tmp_path):

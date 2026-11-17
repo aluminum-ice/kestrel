@@ -41,9 +41,13 @@ import threading
 import time
 from urllib.parse import urlencode
 
-from kestrel_pi import Plugin
+from kestrel_pi import Plugin, load_library
 
 _DEFAULT_KEY = "/home/pi/.ssh/id_ed25519"
+
+# What the remote prints back is kept to hostrun.OUTPUT_LIMIT per stream.
+hostrun = load_library(__file__, "hostrun", api=0)
+_TOO_MUCH = "the remote sent more output than expected; stopped it"
 # Retry a dropped transfer a few times: a flaky BT-PAN/Wi-Fi tether drops rsync
 # mid-stream, and --partial keeps the progress so a retry resumes it.
 _RSYNC_TRIES = 3
@@ -357,13 +361,14 @@ class Backup(Plugin):
         last_err = ""
         for attempt in range(_RSYNC_TRIES):
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True,
-                                      timeout=self._timeout(), check=False)
+                proc = hostrun.run(cmd, timeout=self._timeout())
             except FileNotFoundError:
                 return (False, 0, 0, "rsync not installed")
             except (OSError, subprocess.SubprocessError) as exc:
                 last_err = str(exc)
             else:
+                if proc.truncated:
+                    return (False, 0, 0, _TOO_MUCH)
                 if proc.returncode == 0:
                     files, nbytes = _parse_rsync_stats(proc.stdout)
                     return (True, files, nbytes, "")
@@ -399,15 +404,15 @@ class Backup(Plugin):
                    "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
         try:
             # scp has no --mkpath, so create the destination directory first.
-            subprocess.run(["ssh", "-i", key, "-p", port] + sshopts
-                           + ["%s@%s" % (user, host), "mkdir", "-p", remote],
-                           capture_output=True, text=True, timeout=60, check=False)
+            hostrun.run(["ssh", "-i", key, "-p", port] + sshopts
+                        + ["%s@%s" % (user, host), "mkdir", "-p", remote], timeout=60)
             cmd = (["scp", "-r", "-p", "-C", "-i", key, "-P", port] + sshopts + items
                    + ["%s@%s:%s" % (user, host, remote)])
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  timeout=self._timeout(), check=False)
+            proc = hostrun.run(cmd, timeout=self._timeout())
         except (OSError, subprocess.SubprocessError) as exc:
             return (False, 0, 0, str(exc))
+        if proc.truncated:
+            return (False, 0, 0, _TOO_MUCH)
         if proc.returncode != 0:
             return (False, 0, 0, _best_error(proc.stderr or proc.stdout)
                     or ("scp exit %d" % proc.returncode))

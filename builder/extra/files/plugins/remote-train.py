@@ -51,11 +51,12 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import threading
 import time
 
-from kestrel_pi import Plugin
+from kestrel_pi import Plugin, load_library
 from kestrel_pi.agent import (EPISODES_DIR, EVALUATED_NAME, HOST_MODELS_NAME,
                                  REMOTE_STAGING_DIR, model_meta_name_for,
                                  model_name_for, model_slug)
@@ -64,6 +65,13 @@ from kestrel_pi.agent import policies as policies_mod
 from kestrel_pi.config import DEFAULT_CONFIG_PATH, load_config
 
 _DEFAULT_KEY = "/home/pi/.ssh/id_ed25519"
+
+# What the host prints is kept to hostrun.OUTPUT_LIMIT per stream, and what it
+# sends is held to these sizes: a sidecar is a few hundred bytes, a model a few
+# MB. A larger file is skipped (rsync --max-size), so it is never staged.
+hostrun = load_library(__file__, "hostrun", api=0)
+_MAX_META_BYTES = 64 * 1024
+_MAX_MODEL_BYTES = 256 * 1024 * 1024
 # The ML stack installed into the host venv. torch last (the big download).
 _ML_STACK = ("numpy", "gymnasium", "stable-baselines3", "sb3-contrib", "torch")
 # Markers under <train_path>, relative to it.
@@ -422,12 +430,17 @@ class RemoteTrain(Plugin):
     def _staging_root(self):
         return os.path.join(self._agent_dir(), REMOTE_STAGING_DIR)
 
-    def _read_json(self, path, default):
+    def _read_json(self, path, default, max_bytes=_MAX_META_BYTES * 16):
         """The JSON in ``path`` when it has ``default``'s type (a dict or a
-        list), else ``default``."""
+        list) and the file is a regular one of at most ``max_bytes``, else
+        ``default``."""
         try:
-            with open(path, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as handle:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
+                    return default
+                data = json.loads(handle.read(max_bytes + 1).decode("utf-8"))
         except (OSError, ValueError):
             return default
         return data if isinstance(data, type(default)) else default
@@ -502,8 +515,9 @@ class RemoteTrain(Plugin):
             self.log.warning("remote-train: cannot stage: %s", exc)
             return False
         incoming_meta = os.path.join(staging, ".incoming-" + meta_name)
-        self._rsync_down("%s/%s" % (remote_agent, meta_name), incoming_meta)
-        remote_meta = self._read_json(incoming_meta, {})
+        self._rsync_down("%s/%s" % (remote_agent, meta_name), incoming_meta,
+                         _MAX_META_BYTES)
+        remote_meta = self._read_json(incoming_meta, {}, _MAX_META_BYTES)
         _remove(incoming_meta)
         if not remote_meta:
             return False             # no finished model on the host yet
@@ -519,7 +533,8 @@ class RemoteTrain(Plugin):
                             else "env-spec mismatch")
             return False
         incoming_model = os.path.join(staging, ".incoming-" + model_name)
-        self._rsync_down("%s/%s" % (remote_agent, model_name), incoming_model)
+        self._rsync_down("%s/%s" % (remote_agent, model_name), incoming_model,
+                         _MAX_MODEL_BYTES)
         if not os.path.isfile(incoming_model):
             return False
         try:
@@ -569,13 +584,13 @@ class RemoteTrain(Plugin):
         cmd = (["ssh"] + self._ssh_opts()
                + ["%s@%s" % (self._user(), self._host()), "sh", "-s"])
         try:
-            proc = subprocess.run(cmd, input=script, capture_output=True,
-                                  text=True, timeout=timeout or self._timeout(),
-                                  check=False)
+            proc = hostrun.run(cmd, input=script, timeout=timeout or self._timeout())
         except (OSError, subprocess.SubprocessError) as exc:
             self._note_contact(False)
             return (None, str(exc))
         self._note_contact(proc.returncode != _SSH_FAILED)
+        if proc.truncated:
+            return (None, "the host sent more output than expected; stopped it")
         out = (proc.stdout or "") + (proc.stderr or "")
         return (proc.returncode, out.strip())
 
@@ -650,8 +665,10 @@ class RemoteTrain(Plugin):
                "%s@%s:%s" % (self._user(), self._host(), remote_dir)]
         return self._run_rsync(cmd)
 
-    def _rsync_down(self, remote_path, local_path):
-        cmd = ["rsync", "-az", "--partial",
+    def _rsync_down(self, remote_path, local_path, max_bytes):
+        # One regular file: no -r or -l (a directory or link in its place is
+        # skipped, not copied), and nothing over max_bytes.
+        cmd = ["rsync", "-tz", "--partial", "--max-size=%d" % max_bytes,
                "-e", self._ssh_e(),
                "%s@%s:%s" % (self._user(), self._host(), remote_path),
                local_path]
@@ -663,13 +680,14 @@ class RemoteTrain(Plugin):
         last_err = ""
         for attempt in range(_RSYNC_TRIES):
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True,
-                                      timeout=self._timeout(), check=False)
+                proc = hostrun.run(cmd, timeout=self._timeout())
             except FileNotFoundError:
                 return (False, "rsync not installed")
             except (OSError, subprocess.SubprocessError) as exc:
                 last_err = str(exc)
             else:
+                if proc.truncated:
+                    return (False, "the host sent more output than expected; stopped it")
                 if proc.returncode == 0:
                     return (True, (proc.stderr or proc.stdout or "").strip())
                 last_err = (proc.stderr or proc.stdout or "").strip()
