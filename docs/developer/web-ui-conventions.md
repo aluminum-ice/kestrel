@@ -85,6 +85,24 @@ screen first and let it widen.
   writes this line itself (a test fails on any shipped plugin that does, since
   it would show twice); its body starts with its own `<h1>`, and any extra links
   a page needs (Cancel, the JSON view) go below the heading.
+- **Every page shows when it's working.** `_page()` adds the shared "working"
+  indicator (`_BUSY_HTML`, `_BUSY_JS`): a tap on a link to another dashboard
+  page, or a form sent, marks the page busy at once, and if the answer takes
+  longer than a moment a bar slides across the top with a "Working…" label
+  (announced to screen readers, still under reduced motion). While busy, a
+  second send of a form is dropped, so a double tap can't apply a change twice;
+  buttons aren't disabled, because that would drop their value from the form.
+  Downloads (`<a download>`), new tabs, links off the device and jumps within
+  the page are left alone. A page doesn't add its own spinner.
+- **An auto-refresh never reloads under a tap.** A script that reloads the page
+  on a timer checks `_BUSY_TEST` first and skips that turn while a tap is
+  loading; otherwise the reload cancels the page the tap asked for, which looks
+  like the dashboard ignoring it.
+- **Slow answers are logged.** The daemon logs any response that took
+  `SLOW_RESPONSE_SECONDS` (2 s) or more as `web: slow response: METHOD ROUTE
+  took N s`, with the route's pattern (a plugin page with its plugin's name),
+  never the URL, whose query can carry a login token. The beta check counts
+  them per route on every beta (its item 1.6).
 - **Assemble by concatenation, not `str.format`, for anything holding CSS or
   JS.** The stylesheet contains literal `{` `}`, which `str.format` reads as
   fields (this once 500'd the page with `KeyError: 'font-family'`). Per-row
@@ -157,6 +175,7 @@ The web subsystem is described in
 - [ ] Reads well at phone width: no sideways scroll; any wide table reflows to
       cards (`data-label` + hidden `thead`); touch-sized controls.
 - [ ] Colour meaning is backed by text/label (not colour alone).
+- [ ] Any timed reload checks `_BUSY_TEST`, so it never cancels a tap.
 - [ ] All interpolated text through `_esc()`; script values through `_js()`.
 - [ ] Served on the management link only; honours `[web] auth`; writes carry the
       CSRF token; the security headers are present; no secret is echoed back.

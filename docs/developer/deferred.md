@@ -61,6 +61,23 @@ How to use this file:
   script), have both sides use it, and drop the duplicate.
 - **Pick up when:** either side's decision logic next changes.
 
+## Dashboard (`kestrel_pi.web`)
+
+### Answer the capture switch at once
+
+- **What:** the capture switch's POST holds the page while the root helper runs
+  `kestrel capture enable`/`disable` and then waits up to 5 s for the service
+  to settle (`capture_submit`, `wait_capture_state`), so it is among the
+  slowest taps. It could answer straight away with a "Starting…"/"Stopping…"
+  capture row and let the page catch up by itself.
+- **Why deferred:** the slow-response log (`web: slow response`, beta check
+  item 1.6) came first, so the slow pages are known from devices before any
+  are reworked.
+- **What to do:** reply once the helper has answered, without the settle wait;
+  show the in-between state on the capture row and refresh until it settles,
+  keeping the toggle's direction right.
+- **Trigger:** item 1.6 showing `POST /capture` among the slow responses.
+
 ## Learning agent
 
 ### Confirm contests with real handshakes

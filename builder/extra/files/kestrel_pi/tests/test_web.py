@@ -7,6 +7,7 @@ the bind/rebind logic is tested without opening real sockets)."""
 
 import io
 import logging
+import subprocess
 import threading
 import time
 import types
@@ -649,13 +650,21 @@ def test_plugins_page_surfaces_health_note_and_violations():
     assert "undeclared: gps" in html
 
 
+def _own(html):
+    """A page without the shell's "working" indicator script, which every page
+    carries, so a test can look at the page's own scripts."""
+    assert html.count(web._BUSY_JS) == 1
+    return html.replace(web._BUSY_JS, "")
+
+
 def test_plugins_page_escapes_html():
     html = web._render_plugins(_status([
         {"name": "x", "state": "loaded", "target_api": 1, "capabilities": [],
          "capability_violations": [], "reason": "<script>", "note": "",
          "last_error": ""},
     ]))
-    assert "<script>" not in html
+    # The shared "working" indicator is the shell's own script, not the plugin's.
+    assert "<script>" not in _own(html)
     assert "&lt;script&gt;" in html
 
 
@@ -1381,7 +1390,7 @@ def test_widget_values_and_labels_are_escaped():
     html = web._render_status(status)
     # The dashboard's own reorder/refresh script is the only <script> tag; the
     # evil widget value and label must be escaped, never injected as markup.
-    assert html.count("<script>") == 1
+    assert _own(html).count("<script>") == 1
     assert "&lt;script&gt;" in html
     assert "&lt;b&gt;" in html
 
@@ -1626,8 +1635,9 @@ def test_refresh_seconds_reads_config_and_fails_safe():
 
 def test_plain_dashboard_carries_no_script():
     # No widgets and no refresh: nothing to enhance, so no <script> at all.
-    assert "<script>" not in web._render_status(_status([]))
-    assert "<script>" not in web._render_status(_status([]), refresh=0)
+    # (Every page has the shell's "working" indicator script, and only that.)
+    assert "<script>" not in _own(web._render_status(_status([])))
+    assert "<script>" not in _own(web._render_status(_status([]), refresh=0))
 
 
 def test_dashboard_script_emits_refresh_interval_in_ms():
@@ -3686,3 +3696,165 @@ def test_headers_trickled_past_the_deadline_are_cut_off(monkeypatch):
             assert closed and time.monotonic() - started < 4
     finally:
         server.shutdown()
+
+
+# -- the "working" indicator and the slow-response log ------------------------
+
+def test_every_page_carries_the_working_indicator():
+    html = web._page("Title", "<h1>Body</h1>")
+    # the bar and its label come first in the body, the script last
+    assert html.index(web._BUSY_HTML) < html.index("<h1>Body</h1>")
+    assert html.rindex(web._BUSY_JS) > html.index("<h1>Body</h1>")
+    assert "role='status'" in web._BUSY_HTML and "Working…" in web._BUSY_HTML
+    # the bar and label stay hidden until a tap has waited
+    assert ".kbusy{display:none;" in web._STATUS_CSS
+    assert "html[data-kbusy-show] .kbusy{display:block;}" in web._STATUS_CSS
+    assert "prefers-reduced-motion:reduce" in web._STATUS_CSS
+
+
+def test_the_working_indicator_never_disables_a_button():
+    # A disabled button's name/value would drop out of the form being sent
+    # (e.g. the capture switch's action=enable).
+    assert "disabled" not in web._BUSY_JS
+
+
+def test_the_dashboard_refresh_waits_while_a_tap_is_loading():
+    script = web._dashboard_script(30, has_widgets=False)
+    assert "location.reload()" in script
+    assert "!" + web._BUSY_TEST in script
+    assert "!" + web._BUSY_TEST in web._AGENT_STARTING_JS
+
+
+def _run_busy_js(scenario):
+    """Run the indicator's script under node with a tiny stand-in DOM, then the
+    ``scenario`` JS; returns what the scenario printed (JSON)."""
+    import json
+    import shutil
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node isn't installed")
+    body = web._BUSY_JS[len("<script>"):-len("</script>")]
+    harness = r"""
+const attrs = new Set(), doc = {}, win = {}, timers = [];
+const say = {textContent: ''};
+global.setTimeout = (f, ms) => { timers.push({f, ms, live: true}); return timers.length; };
+global.clearTimeout = (id) => { if (timers[id - 1]) timers[id - 1].live = false; };
+function runTimers(upTo) { timers.forEach(t => { if (t.live && t.ms <= upTo) { t.live = false; t.f(); } }); }
+global.location = {origin: 'https://device.example:8443', pathname: '/', search: ''};
+global.document = {
+  documentElement: {hasAttribute: n => attrs.has(n), setAttribute: n => attrs.add(n),
+                    removeAttribute: n => attrs.delete(n)},
+  addEventListener: (t, f) => { doc[t] = f; },
+  getElementById: id => id === 'kbusy-say' ? say : null,
+};
+global.window = {addEventListener: (t, f) => { win[t] = f; }};
+function link(href, extra) {
+  const u = new URL(href, 'https://device.example:8443/');
+  return Object.assign({origin: u.origin, pathname: u.pathname, search: u.search,
+                        hash: u.hash, target: '', attrs: {}},
+                       extra || {}, {hasAttribute(n) { return n in this.attrs; }});
+}
+function click(a, ev) {
+  const e = Object.assign({defaultPrevented: false, button: 0, metaKey: false,
+                           ctrlKey: false, shiftKey: false, altKey: false,
+                           target: {closest: () => a}}, ev || {});
+  doc.click(e);
+}
+function submit(form) {
+  const e = {defaultPrevented: false, target: form || {target: ''}, prevented: false,
+             preventDefault() { this.prevented = true; }};
+  doc.submit(e);
+  return e.prevented;
+}
+const busy = () => attrs.has('data-kbusy'), shown = () => attrs.has('data-kbusy-show');
+function reset() { win.pageshow({}); }
+""" + body + "\n" + scenario
+    out = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_the_working_indicator_shows_only_for_a_slow_page_load():
+    got = _run_busy_js(r"""
+const r = {};
+click(link('/networks'));
+r.busyAtOnce = busy(); r.shownAtOnce = shown();
+runTimers(150);
+r.shownLater = shown(); r.said = say.textContent;
+reset();
+r.clearedOnPageshow = !busy() && !shown() && say.textContent === '';
+click(link('/plugins')); runTimers(60000);
+r.guardClears = !busy();
+console.log(JSON.stringify(r));
+""")
+    assert got == {"busyAtOnce": True, "shownAtOnce": False, "shownLater": True,
+                   "said": "Working…", "clearedOnPageshow": True,
+                   "guardClears": True}
+
+
+def test_the_working_indicator_leaves_downloads_and_other_links_alone():
+    got = _run_busy_js(r"""
+const r = {};
+const cases = {
+  download: () => click(link('/plugins/downloads/new.zip', {attrs: {download: ''}})),
+  newTab: () => click(link('/guide', {target: '_blank'})),
+  offDevice: () => click(link('https://www.example.org/')),
+  samePageJump: () => click(link('/#capture')),
+  handled: () => click(link('/networks'), {defaultPrevented: true}),
+  modified: () => click(link('/networks'), {ctrlKey: true}),
+  middle: () => click(link('/networks'), {button: 1}),
+  notALink: () => doc.click({defaultPrevented: false, button: 0, target: {closest: () => null}}),
+};
+for (const k in cases) { cases[k](); r[k] = busy(); reset(); }
+console.log(JSON.stringify(r));
+""")
+    assert not any(got.values()), got
+
+
+def test_a_second_send_of_a_form_is_dropped_while_the_first_loads():
+    got = _run_busy_js(r"""
+const r = {};
+r.firstPrevented = submit(); r.busy = busy();
+r.secondPrevented = submit();
+reset();
+r.afterBackPrevented = submit();
+reset();
+r.newTabForm = (submit({target: '_blank'}), busy());
+console.log(JSON.stringify(r));
+""")
+    assert got == {"firstPrevented": False, "busy": True, "secondPrevented": True,
+                   "afterBackPrevented": False, "newTabForm": False}
+
+
+def test_a_slow_response_is_logged_with_its_route_not_its_url(monkeypatch, tmp_path, caplog):
+    client, _ = _client(monkeypatch, tmp_path, {"auth": "none"})
+    monkeypatch.setattr(web, "SLOW_RESPONSE_SECONDS", 0.0)
+    caplog.set_level(logging.INFO, logger="kestrel_pi.web")
+    assert client.get("/networks?q=secret-looking-query").status_code == 200
+    client.get("/no-such-page?token=T0k")
+    lines = [r.getMessage() for r in caplog.records if "slow response" in r.getMessage()]
+    assert any(line.startswith("web: slow response: GET /networks took ") for line in lines)
+    assert any(line.startswith("web: slow response: GET (unmatched) took ") for line in lines)
+    assert not any("secret" in line or "T0k" in line for line in lines)
+
+
+def test_a_quick_response_isnt_logged(caplog):
+    ticks = iter([10.0, 11.9, 20.0, 22.0])
+    app = web._timed(lambda environ, start: [b"ok"], clock=lambda: next(ticks))
+    caplog.set_level(logging.INFO, logger="kestrel_pi.web")
+    app({"REQUEST_METHOD": "GET", "kestrel.route": "/"}, None)
+    assert "slow response" not in caplog.text
+    app({"REQUEST_METHOD": "POST", "kestrel.route": "/capture"}, None)
+    assert "web: slow response: POST /capture took 2.0 s" in caplog.text
+
+
+def test_a_plugin_page_is_logged_with_the_plugin_name():
+    class Rule:
+        rule = "/plugins/<name>/<path:subpath>"
+
+    assert web._route_label(Rule, {"name": "map", "subpath": "x"}) == \
+        "/plugins/map/<path:subpath>"
+    # anything odd in the name is left as the pattern
+    assert web._route_label(Rule, {"name": "a b\n"}) == "/plugins/<name>/<path:subpath>"
+    assert web._route_label(None, {}) == "(unmatched)"

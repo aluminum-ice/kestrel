@@ -106,6 +106,11 @@ upd=/var/lib/kestrel/update-run/status.json
 cap_on=$(svc_active kestrel-capture.service)
 echo "capture service: $cap_on"
 
+# The venv is the device user's, so it's found and read as that user.
+pkg_dir=$(as_dev "$VENV_PY" -I -c 'import os, kestrel_pi; print(os.path.dirname(kestrel_pi.__file__))' 2>/dev/null)
+pkg_has() { [ -n "$pkg_dir" ] && as_dev grep -q -- "$2" "$pkg_dir/$1" 2>/dev/null; }
+pkg_note=""; [ -n "$pkg_dir" ] || pkg_note=" (package not found)"
+
 # ---------------------------------------------------------------- 1. update to this beta
 sec "1. update to this beta"
 ver=$(cat /etc/kestrel/version 2>/dev/null || echo "")
@@ -160,6 +165,25 @@ elif [ -f "$upd" ]; then
   check 1.5 INFO "settings unchanged by the update" "config.toml changed after the update (by you?)"
 else
   check 1.5 SKIP "settings unchanged by the update" "no in-place update recorded"
+fi
+# 1.6, in every beta: how quickly the dashboard answered this boot. The daemon
+# logs an answer that took 2 s or more as "web: slow response: METHOD ROUTE
+# took N s"; only the method, the route's pattern (never a URL) and the time
+# are kept, counted per route.
+if pkg_has web.py 'web: slow response:'; then
+  slow=$(journalctl -b -q --no-pager -u kestrel-daemon -o cat 2>/dev/null \
+    | sed -nE 's/.*web: slow response: ([A-Z]{3,7}) ([A-Za-z0-9_.<>:\/()-]{1,120}) took ([0-9]{1,6}\.[0-9]) s$/\1 \2 \3/p')
+  nslow=$(printf '%s\n' "$slow" | grep -c . || true)
+  up_h=$(awk '{printf "%.1f", $1 / 3600}' /proc/uptime 2>/dev/null)
+  if [ "${nslow:-0}" -eq 0 ]; then
+    check 1.6 PASS "the dashboard answered every request within 2 s" "this boot (up ${up_h} h)"
+  else
+    check 1.6 INFO "slow dashboard responses" "$nslow over 2 s this boot (up ${up_h} h); per route below"
+    printf '%s\n' "$slow" | awk '{k = $1 " " $2; n[k]++; if ($3 + 0 > m[k] + 0) m[k] = $3}
+      END {for (k in n) printf "  %-48s %4d  slowest %s s\n", k, n[k], m[k]}' | sort
+  fi
+else
+  check 1.6 SKIP "dashboard response times" "the installed daemon doesn't log slow responses${pkg_note}"
 fi
 
 # ---------------------------------------------------------------- 2. face packs for the e-ink face (#191)
@@ -508,10 +532,6 @@ check 8.2 MANUAL "see the checklist" "by hand (a from-scratch row in the diagnos
 
 # ---------------------------------------------------------------- 9. regressions from 1.0.14-beta.1: the learning agent tries other scans (#175)
 sec "9. regressions from 1.0.14-beta.1: the learning agent tries other scans (#175)"
-# The venv is the device user's, so it's found and read as that user.
-pkg_dir=$(as_dev "$VENV_PY" -I -c 'import os, kestrel_pi; print(os.path.dirname(kestrel_pi.__file__))' 2>/dev/null)
-pkg_has() { [ -n "$pkg_dir" ] && as_dev grep -q -- "$2" "$pkg_dir/$1" 2>/dev/null; }
-pkg_note=""; [ -n "$pkg_dir" ] || pkg_note=" (package not found)"
 since=""
 [ -f "$upd" ] && since="@$(stat -c %Y "$upd")"
 since_ts=${since#@}

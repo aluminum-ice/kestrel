@@ -35,6 +35,17 @@ The report has one `CHECK <id> <result>` line per checklist item the script can
 judge (`PASS`, `FAIL`, `INFO`, `SKIP`, `MANUAL`), the readings behind them, and
 a by-hand list at the end. The ids are the checklist's item numbers.
 
+## Checks every beta keeps
+
+Section 1 of every beta's checklist is the update to that beta, and it always
+ends with the same standing item, **1.6, the dashboard's response times**: the
+script counts this boot's `web: slow response` lines from the daemon's log per
+route (method, route pattern, count, slowest time; never a URL). It is `PASS`
+when no answer took 2 s or more, and `INFO` with that list otherwise, which the
+review reports to the maintainer so slow pages are followed up release by
+release. Keep the item, and its number, when rewriting the script for a new
+beta.
+
 ## Rules for changing these scripts
 
 The scripts are published in this public repository and attached to public
