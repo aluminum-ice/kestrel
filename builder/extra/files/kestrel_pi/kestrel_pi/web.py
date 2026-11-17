@@ -563,11 +563,59 @@ def _refused_table(daemon, record, change):
     return table
 
 
+# A request that takes this long or longer to answer is logged ("web: slow
+# response: ..."), with the method, the page's route and the time, so slow
+# pages can be found from the journal (the beta check counts them per route).
+SLOW_RESPONSE_SECONDS = 2.0
+# What may stand for a plugin's name in that log line.
+_ROUTE_NAME_OK = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def _route_label(rule, view_args):
+    """The route a request matched, for the slow-response log: the rule's own
+    pattern (never the URL, whose query string can carry a login token), with a
+    plugin's name put in so a slow plugin page can be told apart."""
+    if rule is None:
+        return "(unmatched)"
+    label = rule.rule
+    name = (view_args or {}).get("name")
+    if "<name>" in label and isinstance(name, str) and _ROUTE_NAME_OK.fullmatch(name):
+        label = label.replace("<name>", name)
+    return label
+
+
+def _timed(wsgi_app, clock=time.monotonic):
+    """Wrap ``wsgi_app`` to log a response that took SLOW_RESPONSE_SECONDS or
+    more to produce: everything up to the body being ready, sign-in check
+    included, but not the time spent sending it."""
+
+    def app(environ, start_response):
+        started = clock()
+        try:
+            return wsgi_app(environ, start_response)
+        finally:
+            took = clock() - started
+            if took >= SLOW_RESPONSE_SECONDS:
+                log.info("web: slow response: %s %s took %.1f s",
+                         environ.get("REQUEST_METHOD", "?"),
+                         environ.get("kestrel.route", "(unmatched)"), took)
+
+    return app
+
+
 def create_app(daemon):
     """Build the Flask app for ``daemon`` (a :class:`~kestrel_pi.daemon.Daemon`)."""
     from flask import Flask, Response, g, jsonify, redirect, request
 
     app = Flask("kestrel_pi")
+    app.wsgi_app = _timed(app.wsgi_app)
+
+    @app.teardown_request
+    def _note_route(_exc):  # noqa: ANN202
+        # Runs for every request, a refused or failed one included, while the
+        # request is still current; _timed reads it from the environ.
+        request.environ["kestrel.route"] = _route_label(request.url_rule,
+                                                        request.view_args)
     # Every form the dashboard has is small: a bigger body is refused (413)
     # before anything parses it. The potfile import raises its own limit, after
     # the login and controls checks.
@@ -1734,6 +1782,22 @@ _STATUS_CSS = (
     # decorative glyph still carries its meaning without relying on the title tip.
     ".vh{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;"
     "overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}"
+    # The "working" indicator (_BUSY_JS): hidden until a tap has waited a moment,
+    # then a sliding bar across the top and a "Working..." label, so it never
+    # relies on the colour or the motion alone.
+    ".kbusy{display:none;position:fixed;top:0;left:0;right:0;z-index:1000;"
+    "pointer-events:none;}"
+    "html[data-kbusy-show] .kbusy{display:block;}"
+    "html[data-kbusy-show]{cursor:progress;}"
+    ".kbusy-bar{position:relative;overflow:hidden;height:4px;background:var(--border);}"
+    ".kbusy-bar::before{content:'';position:absolute;top:0;bottom:0;left:-40%;"
+    "width:40%;background:var(--link);animation:kbusy 1.2s ease-in-out infinite;}"
+    "@keyframes kbusy{from{left:-40%;}to{left:100%;}}"
+    ".kbusy-label{position:absolute;top:10px;right:12px;font-size:.85rem;"
+    "padding:.25em .75em;border-radius:999px;background:var(--card);color:var(--fg);"
+    "border:1px solid var(--border);box-shadow:var(--shadow);}"
+    "@media(prefers-reduced-motion:reduce){"
+    ".kbusy-bar::before{animation:none;left:0;width:100%;}}"
 )
 
 
@@ -1797,13 +1861,56 @@ def _render_logout(control):
     return _page("Sign out - Kestrel", body)
 
 
+# Every page's "working" indicator. A tap on a link to another dashboard page,
+# or a form sent, marks the page busy at once (html[data-kbusy], which the
+# auto-refresh scripts check, so a reload never cancels the tap), and shows the
+# bar and the label only if the answer takes longer than a moment. While busy,
+# a second send of a form is dropped, so a double tap can't apply a change
+# twice; the buttons aren't disabled, because a disabled button's value would
+# drop out of the form being sent. A download, a new tab, a link off the
+# device, a jump within the page and a gesture a page script has already
+# handled (preventDefault) are left alone. It clears when the page is shown
+# again (the back button) and after a minute in any case, past the longest wait
+# for the root helper (applyclient's 55 s). Without scripts the pages work as
+# before, without the indicator.
+_BUSY_HTML = (
+    "<div class='kbusy' aria-hidden='true'><div class='kbusy-bar'></div>"
+    "<span class='kbusy-label'>Working\u2026</span></div>"
+    "<span class='vh' id='kbusy-say' role='status' aria-live='polite'></span>"
+)
+_BUSY_JS = (
+    "<script>(function(){var d=document,h=d.documentElement,show=null,guard=null;"
+    "function clear(){h.removeAttribute('data-kbusy');h.removeAttribute('data-kbusy-show');"
+    "if(show){clearTimeout(show);show=null;}if(guard){clearTimeout(guard);guard=null;}"
+    "var say=d.getElementById('kbusy-say');if(say)say.textContent='';}"
+    "function start(){if(h.hasAttribute('data-kbusy'))return;h.setAttribute('data-kbusy','');"
+    "show=setTimeout(function(){h.setAttribute('data-kbusy-show','');"
+    "var say=d.getElementById('kbusy-say');if(say)say.textContent='Working\u2026';},150);"
+    "guard=setTimeout(clear,60000);}"
+    "d.addEventListener('click',function(e){"
+    "if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;"
+    "var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(!a)return;"
+    "if(a.hasAttribute('download')||(a.target&&a.target!=='_self'))return;"
+    "if(a.origin!==location.origin)return;"
+    "if(a.hash&&a.pathname===location.pathname&&a.search===location.search)return;"
+    "start();});"
+    "d.addEventListener('submit',function(e){if(e.defaultPrevented)return;"
+    "var f=e.target;if(f&&f.target&&f.target!=='_self')return;"
+    "if(h.hasAttribute('data-kbusy')){e.preventDefault();return;}start();});"
+    "window.addEventListener('pageshow',clear);})();</script>"
+)
+# What the auto-refresh scripts test before reloading: true while a tap is on
+# its way, so the reload never replaces it.
+_BUSY_TEST = "document.documentElement.hasAttribute('data-kbusy')"
+
+
 def _page(title, body, head=""):
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>" + _esc(title) + "</title>"
         "<style>" + _STATUS_CSS + "</style>" + head + "</head><body>"
-        + body + _doc_footer() + "</body></html>"
+        + _BUSY_HTML + body + _doc_footer() + _BUSY_JS + "</body></html>"
     )
 
 
@@ -2577,7 +2684,7 @@ _AGENT_REVEAL_JS = (
 # user mid-edit (per docs/developer/web-ui-conventions.md).
 _AGENT_STARTING_JS = (
     "<script>(function(){setInterval(function(){"
-    "if(!document.hidden){location.reload();}},4000);})();</script>"
+    "if(!document.hidden&&!" + _BUSY_TEST + "){location.reload();}},4000);})();</script>"
 )
 
 
@@ -2748,8 +2855,12 @@ if(grid){
 }
 """
 
+# The dashboard's auto-refresh. It skips a turn while a tap is on its way
+# (_BUSY_TEST): a reload then would cancel the tap's page load, which looked
+# like the dashboard ignoring the tap.
 _REFRESH_JS = ("if(REFRESH>0){setInterval(function(){"
-               "if(!dragging&&!document.hidden){location.reload();}},REFRESH*1000);}")
+               "if(!dragging&&!document.hidden&&!" + _BUSY_TEST + "){location.reload();}}"
+               ",REFRESH*1000);}")
 
 
 def _dashboard_script(refresh, has_widgets):
