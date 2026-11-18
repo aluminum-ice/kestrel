@@ -91,22 +91,21 @@ echo "uptime:     $(uptime -p 2>/dev/null)"
 echo "python3:    $(/usr/bin/python3 -V 2>&1)"
 echo "web auth:   $web_auth"
 
-# ================================================================ 1.0.14-beta.6 checks
-# 1.0.14-beta.6 is an in-place update on top of 1.0.14-beta.5, as sections 2-6:
-# the dashboard's "working" indicator and slow-response log (#201), the agent's
-# transmit modes in the agent and the launcher (#199), backup and remote-train
-# holding a host's output to a size (#200), the boot-partition model import as
-# the device user (#197), and Markdown images as links (#195, #196). Section 1
-# ends with 1.6, the dashboard's response times, kept in every beta (README,
-# "Checks every beta keeps"). Section 7 repeats beta 5's checks as regressions
-# (face packs #191), 8-9 beta 4's (the UPS HAT's calibration #186, the
-# no-adapter message #187), 10-11 beta 3's (adapter detection #183, the
-# pwnagotchi credit #182), 12-13 beta 2's (the census board family #177, the
-# diagnostics script #179), 14-19 beta 1's (the learning agent's #175 and the
-# GPS fix #174), 20-33 1.0.13's, and 34-39 1.0.12's, 1.0.11's and 1.0.10's.
-# Nothing here reads capture content: only the installed code, the counts the
-# dashboard already shows, and counts over the agent's own logs. The CHECK ids
-# match the checklist issue for 1.0.14-beta.6.
+# ================================================================ 1.0.14-beta.7 checks
+# 1.0.14-beta.7 is an in-place update on top of 1.0.14-beta.6, as section 2:
+# the capture launcher keeps rogue M2 off with a whitelist on AngryOxide before
+# 0.9.5 (#204). Section 1 ends with 1.6, the dashboard's response times, kept
+# in every beta (README, "Checks every beta keeps"). Sections 3-7 repeat beta
+# 6's checks as regressions (the working indicator #201, transmit modes #199,
+# hostrun #200, the boot import #197, Markdown #195/#196), 8 beta 5's (face
+# packs #191), 9-10 beta 4's (the UPS HAT's calibration #186, the no-adapter
+# message #187), 11-12 beta 3's (adapter detection #183, the pwnagotchi credit
+# #182), 13-14 beta 2's (the census board family #177, the diagnostics script
+# #179), 15-20 beta 1's (the learning agent's #175 and the GPS fix #174), 21-34
+# 1.0.13's, and 35-40 1.0.12's, 1.0.11's and 1.0.10's. Nothing here reads
+# capture content: only the installed code, the counts the dashboard already
+# shows, and counts over the agent's own logs. The CHECK ids match the
+# checklist issue for 1.0.14-beta.7.
 upd=/var/lib/kestrel/update-run/status.json
 cap_on=$(svc_active kestrel-capture.service)
 echo "capture service: $cap_on"
@@ -191,30 +190,115 @@ else
   check 1.6 SKIP "dashboard response times" "the installed daemon doesn't log slow responses${pkg_note}"
 fi
 
-# ---------------------------------------------------------------- 2. the dashboard shows when it's working (#201)
-sec "2. the dashboard shows when it's working (#201)"
-# 2.1: the installed package, read as text.
+# ---------------------------------------------------------------- 2. rogue M2 stays off with a whitelist on AngryOxide before 0.9.5 (#204)
+sec "2. rogue M2 stays off with a whitelist on AngryOxide before 0.9.5 (#204)"
+# 2.1: the installed launcher, read as text: it has the version check and adds
+# --disable-roguem2 with a whitelist.
+if grep -q '^ao_checks_whitelist_by_name() {' "$LIBDIR/capture-launch" 2>/dev/null \
+    && grep -q -- 'args+=(--disable-roguem2)' "$LIBDIR/capture-launch" 2>/dev/null; then
+  check 2.1 PASS "the capture launcher keeps rogue M2 off with a whitelist on an older AngryOxide" ""
+else
+  check 2.1 FAIL "the capture launcher keeps rogue M2 off with a whitelist on an older AngryOxide" "the installed capture-launch is older"
+fi
+# 2.2: the launcher's own check (its text, run in a subshell as root) against
+# the installed AngryOxide, beside the version that binary prints, compared
+# here on its own. Only the version line is read.
+ao_line=$(/usr/bin/angryoxide --version 2>/dev/null | head -n 1)
+ao_ver=$(printf '%s\n' "$ao_line" | sed -nE 's/^AngryOxide v?([0-9]+\.[0-9]+\.[0-9]+)$/\1/p')
+wn_fn=$(sed -n '/^ao_checks_whitelist_by_name() {/,/^}/p' "$LIBDIR/capture-launch" 2>/dev/null)
+wn_min=$(sed -nE 's/^AO_WHITELIST_BY_NAME=([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' "$LIBDIR/capture-launch" 2>/dev/null)
+if [ -n "$wn_fn" ] && [ -n "$wn_min" ] \
+    && ( eval "$wn_fn"; AO_WHITELIST_BY_NAME=$wn_min; ANGRYOXIDE=/usr/bin/angryoxide; ao_checks_whitelist_by_name ); then
+  wn_launch=yes
+else
+  wn_launch=no
+fi
+wn_want=$(/usr/bin/python3 -I -c '
+import sys
+def key(v):
+    return tuple(int(x) for x in v.split("."))
+print("yes" if sys.argv[1] and sys.argv[2] and key(sys.argv[1]) >= key(sys.argv[2]) else "no")' "$ao_ver" "${wn_min:-0.9.5}" 2>/dev/null)
+echo "  angryoxide --version: ${ao_line:-?}; the launcher's check: $wn_launch; expected: ${wn_want:-?}"
+if [ -z "$wn_fn" ] || [ -z "$wn_min" ]; then
+  check 2.2 FAIL "the launcher reads the installed AngryOxide's version" "the installed capture-launch has no ao_checks_whitelist_by_name"
+elif [ "$wn_launch" = "$wn_want" ]; then
+  check 2.2 PASS "the launcher reads the installed AngryOxide's version" "AngryOxide ${ao_ver:-?}: rogue M2 with a whitelist $([ "$wn_launch" = yes ] && echo allowed || echo off)"
+else
+  check 2.2 FAIL "the launcher reads the installed AngryOxide's version" "launcher $wn_launch, expected ${wn_want:-?}"
+fi
+# 2.3: the running AngryOxide's command line has --disable-roguem2 exactly when
+# it should: once with a whitelist on an older AngryOxide (or when extra_args
+# asks for it), never otherwise. Only the whitelist's entry count and that
+# flag's presence are read.
+wl_n=$(grep -c . /var/lib/kestrel/whitelist 2>/dev/null || true)
+wl_n=${wl_n:-0}
+xa_has=$(/usr/bin/python3 -I - "$CONFIG" <<'PY' 2>/dev/null
+import sys, tomllib
+try:
+    xa = tomllib.load(open(sys.argv[1], "rb")).get("capture", {}).get("angryoxide", {}).get("extra_args", [])
+except Exception:
+    xa = []
+print("yes" if isinstance(xa, list) and "--disable-roguem2" in xa else "no")
+PY
+)
+ao_pids=$(pgrep -x angryoxide 2>/dev/null | tr '\n' ' ')
+if { [ "$wl_n" -gt 0 ] && [ "$wn_launch" = no ]; } || [ "$xa_has" = yes ]; then rm_want=1; else rm_want=0; fi
+echo "  whitelist: $wl_n entries; extra_args has --disable-roguem2: ${xa_has:-?}; angryoxide: ${ao_pids:-not running}"
+if [ -z "$ao_pids" ]; then
+  check 2.3 SKIP "AngryOxide has --disable-roguem2 exactly when it should" "AngryOxide isn't running"
+else
+  rm_bad=""
+  for p in $ao_pids; do
+    c=$(tr '\0' '\n' <"/proc/$p/cmdline" 2>/dev/null | grep -cx -- '--disable-roguem2' || true)
+    [ "${c:-0}" -eq "$rm_want" ] || rm_bad="$rm_bad $p:${c:-0}"
+  done
+  if [ -z "$rm_bad" ]; then
+    check 2.3 PASS "AngryOxide has --disable-roguem2 exactly when it should" "$rm_want time(s), as expected"
+  else
+    check 2.3 FAIL "AngryOxide has --disable-roguem2 exactly when it should" "expected $rm_want, found (pid:count)$rm_bad"
+  fi
+fi
+# 2.4: the launcher says why in the capture journal (a count of its line).
+rm_said=$(journalctl -b -q --no-pager -u kestrel-capture -o cat 2>/dev/null | grep -c 'so rogue M2 stays off' || true)
+if [ "$cap_on" != active ]; then
+  check 2.4 SKIP "the capture log says why rogue M2 is off" "capture isn't running"
+elif [ "$wl_n" -gt 0 ] && [ "$wn_launch" = no ]; then
+  if [ "${rm_said:-0}" -ge 1 ]; then
+    check 2.4 PASS "the capture log says why rogue M2 is off" "$rm_said time(s) this boot"
+  else
+    check 2.4 FAIL "the capture log says why rogue M2 is off" "no such line this boot"
+  fi
+else
+  check 2.4 SKIP "the capture log says why rogue M2 is off" "rogue M2 isn't held off on this device (empty whitelist or AngryOxide $wn_min or later)"
+fi
+# 2.5 comes from the dashboard section below.
+check 2.6 MANUAL "see the checklist" "by hand (the guide's whitelist section reads normally on the phone)"
+check 2.7 MANUAL "see the checklist" "by hand, optional (with a whitelist, no new AP-less handshakes after the update)"
+
+# ---------------------------------------------------------------- 3. regressions from 1.0.14-beta.6: the dashboard shows when it's working (#201)
+sec "3. regressions from 1.0.14-beta.6: the dashboard shows when it's working (#201)"
+# 3.1: the installed package, read as text.
 if pkg_has web.py "id='kbusy-say'" && pkg_has web.py '_BUSY_TEST = ' \
     && pkg_has web.py '!" + _BUSY_TEST + "){location.reload();}' && pkg_has web.py 'web: slow response:'; then
-  check 2.1 PASS "the dashboard has the working indicator, the refresh guard and the slow-response log" ""
+  check 3.1 PASS "the dashboard has the working indicator, the refresh guard and the slow-response log" ""
 else
-  check 2.1 FAIL "the dashboard has the working indicator, the refresh guard and the slow-response log" "the installed web.py is older${pkg_note}"
+  check 3.1 FAIL "the dashboard has the working indicator, the refresh guard and the slow-response log" "the installed web.py is older${pkg_note}"
 fi
-# 2.2 comes from the dashboard section below.
-check 2.3 MANUAL "see the checklist" "by hand (the bar and Working... on a slow tap; no double send)"
-check 2.4 MANUAL "see the checklist" "by hand (a tap just before the dashboard's refresh opens its page)"
-check 2.5 MANUAL "see the checklist" "by hand (a download or an outside link leaves no bar; back clears it)"
+# 3.2 comes from the dashboard section below.
+check 3.3 MANUAL "see the checklist" "by hand (the bar and Working... on a slow tap; no double send)"
+check 3.4 MANUAL "see the checklist" "by hand (a tap just before the dashboard's refresh opens its page)"
+check 3.5 MANUAL "see the checklist" "by hand (a download or an outside link leaves no bar; back clears it)"
 
-# ---------------------------------------------------------------- 3. the agent's transmit modes, in the agent and the launcher (#199)
-sec "3. the agent's transmit modes, in the agent and the launcher (#199)"
-# 3.1: the installed launcher, read as text: it has the rule and uses it.
+# ---------------------------------------------------------------- 4. regressions from 1.0.14-beta.6: the agent's transmit modes, in the agent and the launcher (#199)
+sec "4. regressions from 1.0.14-beta.6: the agent's transmit modes, in the agent and the launcher (#199)"
+# 4.1: the installed launcher, read as text: it has the rule and uses it.
 tm_uses=$(grep -c 'agent_may_transmit' "$LIBDIR/capture-launch" 2>/dev/null || true)
 if grep -q '^agent_may_transmit() {' "$LIBDIR/capture-launch" 2>/dev/null && [ "${tm_uses:-0}" -ge 2 ]; then
-  check 3.1 PASS "the capture launcher applies transmit_modes to the agent's plan" ""
+  check 4.1 PASS "the capture launcher applies transmit_modes to the agent's plan" ""
 else
-  check 3.1 FAIL "the capture launcher applies transmit_modes to the agent's plan" "the installed capture-launch is older"
+  check 4.1 FAIL "the capture launcher applies transmit_modes to the agent's plan" "the installed capture-launch is older"
 fi
-# 3.2: the launcher's own function (its text, run in a subshell as root against
+# 4.2: the launcher's own function (its text, run in a subshell as root against
 # throwaway files in the root-only work folder) and the agent's own rule (the
 # installed package, run in memory as the device user) on the same settings.
 # Capture, the agent and the real config.toml aren't touched.
@@ -250,13 +334,13 @@ echo "  expected: $tm_want"
 echo "  launcher: $tm_launch"
 echo "  agent:    $tm_agent"
 if [ -z "$tm_fn" ]; then
-  check 3.2 FAIL "the launcher and the agent read transmit_modes alike" "the installed capture-launch has no agent_may_transmit"
+  check 4.2 FAIL "the launcher and the agent read transmit_modes alike" "the installed capture-launch has no agent_may_transmit"
 elif [ "$tm_launch" = "$tm_want" ] && [ "$tm_agent" = "$tm_want" ]; then
-  check 3.2 PASS "the launcher and the agent read transmit_modes alike" "${#tm_cases[@]} settings"
+  check 4.2 PASS "the launcher and the agent read transmit_modes alike" "${#tm_cases[@]} settings"
 else
-  check 3.2 FAIL "the launcher and the agent read transmit_modes alike" "see the three rows above"
+  check 4.2 FAIL "the launcher and the agent read transmit_modes alike" "see the three rows above"
 fi
-# 3.3: this device's own setting (read as root from the root-owned config.toml)
+# 4.3: this device's own setting (read as root from the root-owned config.toml)
 # and, while the agent drives capture, whether the running AngryOxide has
 # --notransmit. Only that flag's presence is read from its command line.
 tm_mine=$(/usr/bin/python3 -I - "$CONFIG" <<'PY' 2>/dev/null
@@ -277,35 +361,35 @@ PY
 ao_pids=$(pgrep -x angryoxide 2>/dev/null | tr '\n' ' ')
 echo "  transmit_modes: ${tm_mine:-?}; agent: $(svc_active kestrel-agent.service); override: $([ -f "$AGENT_DIR/scan-override.json" ] && echo present || echo none); angryoxide: ${ao_pids:-not running}"
 if [ "$tm_mine" != passive ]; then
-  check 3.3 SKIP "under transmit_modes = [\"passive\"], the agent's AngryOxide has --notransmit" "transmit_modes is ${tm_mine:-?} on this device"
+  check 4.3 SKIP "under transmit_modes = [\"passive\"], the agent's AngryOxide has --notransmit" "transmit_modes is ${tm_mine:-?} on this device"
 elif [ "$(svc_active kestrel-agent.service)" != active ] || [ ! -f "$AGENT_DIR/scan-override.json" ] || [ -z "$ao_pids" ]; then
-  check 3.3 SKIP "under transmit_modes = [\"passive\"], the agent's AngryOxide has --notransmit" "the agent isn't driving capture now"
+  check 4.3 SKIP "under transmit_modes = [\"passive\"], the agent's AngryOxide has --notransmit" "the agent isn't driving capture now"
 else
   ao_tx=""
   for p in $ao_pids; do
     tr '\0' '\n' <"/proc/$p/cmdline" 2>/dev/null | grep -qx -- '--notransmit' || ao_tx="$ao_tx $p"
   done
   if [ -z "$ao_tx" ]; then
-    check 3.3 PASS "under transmit_modes = [\"passive\"], the agent's AngryOxide has --notransmit" ""
+    check 4.3 PASS "under transmit_modes = [\"passive\"], the agent's AngryOxide has --notransmit" ""
   else
-    check 3.3 FAIL "under transmit_modes = [\"passive\"], the agent's AngryOxide has --notransmit" "an AngryOxide without it"
+    check 4.3 FAIL "under transmit_modes = [\"passive\"], the agent's AngryOxide has --notransmit" "an AngryOxide without it"
   fi
 fi
-# 3.4: the agent's start-up warning about [agent.action]; only the setting names
+# 4.4: the agent's start-up warning about [agent.action]; only the setting names
 # it gives are shown.
 tm_warn=$(journalctl -b -q --no-pager -u kestrel-agent -o cat 2>/dev/null \
   | sed -nE "s/.*\[agent\.action\] ([a-z_, ]{1,80}): a value isn't one Kestrel knows.*/\1/p" | sort -u | tr '\n' ';')
 if [ -z "$tm_warn" ]; then
-  check 3.4 PASS "no [agent.action] warning from the agent this boot" ""
+  check 4.4 PASS "no [agent.action] warning from the agent this boot" ""
 else
-  check 3.4 INFO "an [agent.action] warning from the agent this boot" "names: ${tm_warn%;}"
+  check 4.4 INFO "an [agent.action] warning from the agent this boot" "names: ${tm_warn%;}"
 fi
-check 3.5 MANUAL "see the checklist" "by hand (passive windows only, --notransmit on every launch; active back without the line)"
-check 3.6 MANUAL "see the checklist" "by hand, optional (a typo warns and keeps the windows passive)"
+check 4.5 MANUAL "see the checklist" "by hand (passive windows only, --notransmit on every launch; active back without the line)"
+check 4.6 MANUAL "see the checklist" "by hand, optional (a typo warns and keeps the windows passive)"
 
-# ---------------------------------------------------------------- 4. backup and remote-train hold a host's output to a size (#200)
-sec "4. backup and remote-train hold a host's output to a size (#200)"
-# 4.1: the installed library and the two plugins, read as text.
+# ---------------------------------------------------------------- 5. regressions from 1.0.14-beta.6: backup and remote-train hold a host's output to a size (#200)
+sec "5. regressions from 1.0.14-beta.6: backup and remote-train hold a host's output to a size (#200)"
+# 5.1: the installed library and the two plugins, read as text.
 hr_api=$(sed -n 's/^LIB_API = (\([0-9]*\), \([0-9]*\))$/\1.\2/p' "$LIBDIR/plugins/_lib_hostrun.py" 2>/dev/null | head -1)
 hr_users=""
 for f in backup remote-train; do
@@ -313,11 +397,11 @@ for f in backup remote-train; do
 done
 echo "  hostrun ${hr_api:-missing}; loaded by:${hr_users:- none}"
 if [ "$hr_api" = 0.1 ] && [ "$hr_users" = " backup remote-train" ]; then
-  check 4.1 PASS "the hostrun library is 0.1, and backup and remote-train load it" ""
+  check 5.1 PASS "the hostrun library is 0.1, and backup and remote-train load it" ""
 else
-  check 4.1 FAIL "the hostrun library is 0.1, and backup and remote-train load it" "hostrun ${hr_api:-missing}; loaded by:${hr_users:- none}"
+  check 5.1 FAIL "the hostrun library is 0.1, and backup and remote-train load it" "hostrun ${hr_api:-missing}; loaded by:${hr_users:- none}"
 fi
-# 4.2: the installed library, run as the device user in memory on two local
+# 5.2: the installed library, run as the device user in memory on two local
 # commands: a short one, and one that prints far more than the limit.
 hr=$(as_dev "$VENV_PY" -I - "$LIBDIR/plugins/backup.py" <<'PY' 2>&1 | tail -1
 import sys
@@ -332,44 +416,44 @@ print("ok kept %d of 1000000 bytes" % len(big.stdout) if ok else
 PY
 )
 case "$hr" in
-  ok\ *) check 4.2 PASS "hostrun passes a short output and stops a command past 64 KB" "${hr#ok }" ;;
-  *) check 4.2 FAIL "hostrun passes a short output and stops a command past 64 KB" "$(printf '%s' "$hr" | cut -c1-160)" ;;
+  ok\ *) check 5.2 PASS "hostrun passes a short output and stops a command past 64 KB" "${hr#ok }" ;;
+  *) check 5.2 FAIL "hostrun passes a short output and stops a command past 64 KB" "$(printf '%s' "$hr" | cut -c1-160)" ;;
 esac
-# 4.3: the plugins' "more output than expected" in the daemon's journal (a count).
+# 5.3: the plugins' "more output than expected" in the daemon's journal (a count).
 hr_much=$(journalctl -b -q --no-pager -u kestrel-daemon -o cat 2>/dev/null | grep -c 'more output than expected' || true)
 if [ "${hr_much:-0}" -eq 0 ]; then
-  check 4.3 PASS "no 'more output than expected' from backup or remote-train this boot" ""
+  check 5.3 PASS "no 'more output than expected' from backup or remote-train this boot" ""
 else
-  check 4.3 INFO "'more output than expected' from backup or remote-train this boot" "$hr_much line(s)"
+  check 5.3 INFO "'more output than expected' from backup or remote-train this boot" "$hr_much line(s)"
 fi
-check 4.4 MANUAL "see the checklist" "by hand (Back up now still mirrors the store)"
-check 4.5 MANUAL "see the checklist" "by hand (a remote training run still finishes and stages its model)"
+check 5.4 MANUAL "see the checklist" "by hand (Back up now still mirrors the store)"
+check 5.5 MANUAL "see the checklist" "by hand (a remote training run still finishes and stages its model)"
 
-# ---------------------------------------------------------------- 5. the boot-partition model import writes as the device user (#197)
-sec "5. the boot-partition model import writes as the device user (#197)"
-# 5.1: the installed import, read as text.
+# ---------------------------------------------------------------- 6. regressions from 1.0.14-beta.6: the boot-partition model import writes as the device user (#197)
+sec "6. regressions from 1.0.14-beta.6: the boot-partition model import writes as the device user (#197)"
+# 6.1: the installed import, read as text.
 if grep -q '^as_pi() {' "$LIBDIR/agent-provision" 2>/dev/null \
     && grep -q 'as_pi tar -xzf' "$LIBDIR/agent-provision" 2>/dev/null \
     && grep -q 'pi_copy "' "$LIBDIR/agent-provision" 2>/dev/null; then
-  check 5.1 PASS "the boot-partition import copies and unpacks as the device user" ""
+  check 6.1 PASS "the boot-partition import copies and unpacks as the device user" ""
 else
-  check 5.1 FAIL "the boot-partition import copies and unpacks as the device user" "the installed agent-provision is older"
+  check 6.1 FAIL "the boot-partition import copies and unpacks as the device user" "the installed agent-provision is older"
 fi
-# 5.2: who owns what in the agent's folder (counts only; nothing is opened).
+# 6.2: who owns what in the agent's folder (counts only; nothing is opened).
 ag_all=$(find "$AGENT_DIR" -xdev 2>/dev/null | wc -l)
 ag_other=$(find "$AGENT_DIR" -xdev ! -user "$DEV_USER" 2>/dev/null | wc -l)
 if [ "${ag_all:-0}" -eq 0 ]; then
-  check 5.2 SKIP "everything in the agent's folder is the device user's" "no agent folder"
+  check 6.2 SKIP "everything in the agent's folder is the device user's" "no agent folder"
 elif [ "${ag_other:-0}" -eq 0 ]; then
-  check 5.2 PASS "everything in the agent's folder is the device user's" "$ag_all entries"
+  check 6.2 PASS "everything in the agent's folder is the device user's" "$ag_all entries"
 else
-  check 5.2 INFO "everything in the agent's folder is the device user's" "$ag_other of $ag_all owned by another account (an import before this beta?)"
+  check 6.2 INFO "everything in the agent's folder is the device user's" "$ag_other of $ag_all owned by another account (an import before this beta?)"
 fi
-check 5.3 MANUAL "see the checklist" "by hand, optional (a model dropped on the boot partition imports)"
+check 6.3 MANUAL "see the checklist" "by hand, optional (a model dropped on the boot partition imports)"
 
-# ---------------------------------------------------------------- 6. Markdown in the guide and release notes (#195, #196)
-sec "6. Markdown in the guide and release notes (#195, #196)"
-# 6.1: the installed renderer, run as the device user in memory.
+# ---------------------------------------------------------------- 7. regressions from 1.0.14-beta.6: Markdown in the guide and release notes (#195, #196)
+sec "7. regressions from 1.0.14-beta.6: Markdown in the guide and release notes (#195, #196)"
+# 7.1: the installed renderer, run as the device user in memory.
 md=$(as_dev "$VENV_PY" -I - <<'PY' 2>&1 | tail -1
 import time
 from kestrel_pi import web
@@ -382,27 +466,27 @@ print("ok %.2f s" % took if ok else "bad img=%s link=%s took=%.2f s" % ("<img" i
 PY
 )
 case "$md" in
-  ok\ *) check 6.1 PASS "a Markdown image renders as a link; unmatched brackets render at once" "${md#ok }" ;;
-  *) check 6.1 FAIL "a Markdown image renders as a link; unmatched brackets render at once" "$(printf '%s' "$md" | cut -c1-160)" ;;
+  ok\ *) check 7.1 PASS "a Markdown image renders as a link; unmatched brackets render at once" "${md#ok }" ;;
+  *) check 7.1 FAIL "a Markdown image renders as a link; unmatched brackets render at once" "$(printf '%s' "$md" | cut -c1-160)" ;;
 esac
-# 6.2 comes from the dashboard section below.
-check 6.3 MANUAL "see the checklist" "by hand (/guide and What's new read normally on the phone)"
+# 7.2 comes from the dashboard section below.
+check 7.3 MANUAL "see the checklist" "by hand (/guide and What's new read normally on the phone)"
 
-# ---------------------------------------------------------------- 7. regressions from 1.0.14-beta.5: face packs for the e-ink face (#191)
-sec "7. regressions from 1.0.14-beta.5: face packs for the e-ink face (#191)"
-# 7.1: the installed face library and e-ink plugins, read as text.
+# ---------------------------------------------------------------- 8. regressions from 1.0.14-beta.5: face packs for the e-ink face (#191)
+sec "8. regressions from 1.0.14-beta.5: face packs for the e-ink face (#191)"
+# 8.1: the installed face library and e-ink plugins, read as text.
 lib_api=$(sed -n 's/^LIB_API = (\([0-9]*\), \([0-9]*\))$/\1.\2/p' "$LIBDIR/plugins/_lib_eink_face.py" 2>/dev/null | head -1)
 v27=$(sed -n 's/^    __version__ = "\(.*\)"$/\1/p' "$LIBDIR/plugins/eink-ws27.py" 2>/dev/null | head -1)
 v213=$(sed -n 's/^    __version__ = "\(.*\)"$/\1/p' "$LIBDIR/plugins/eink-ws213.py" 2>/dev/null | head -1)
 echo "  eink_face ${lib_api:-?}, eink-ws27 ${v27:-?}, eink-ws213 ${v213:-?}"
 if [ "$lib_api" = 1.2 ] && [ "$v27" = 0.3.0 ] && [ "$v213" = 0.2.0 ]; then
-  check 7.1 PASS "the face library is 1.2, eink-ws27 0.3.0 and eink-ws213 0.2.0" ""
+  check 8.1 PASS "the face library is 1.2, eink-ws27 0.3.0 and eink-ws213 0.2.0" ""
 else
-  check 7.1 FAIL "the face library is 1.2, eink-ws27 0.3.0 and eink-ws213 0.2.0" \
+  check 8.1 FAIL "the face library is 1.2, eink-ws27 0.3.0 and eink-ws213 0.2.0" \
     "eink_face ${lib_api:-?}, eink-ws27 ${v27:-?}, eink-ws213 ${v213:-?}"
 fi
-# 7.2 is in the config tests below.
-# 7.3: the installed library, run as the device user in memory: the built-in
+# 8.2 is in the config tests below.
+# 8.3: the installed library, run as the device user in memory: the built-in
 # pack draws every face at both panel sizes, and a pack name that could point
 # outside /etc/kestrel/faces/ is refused. No panel, pin or pack file is touched.
 fp=$(as_dev "$VENV_PY" -I - "$LIBDIR/plugins/eink-ws27.py" <<'PY' 2>&1 | tail -1
@@ -422,50 +506,50 @@ print("ok faces=%d" % len(face.FACES) if not bad and not named
 PY
 )
 case "$fp" in
-  ok\ *) check 7.3 PASS "the built-in kestrel pack draws every face at both panel sizes; out-of-folder names are refused" "${fp#ok }" ;;
-  *) check 7.3 FAIL "the built-in kestrel pack draws every face at both panel sizes; out-of-folder names are refused" "$(printf '%s' "$fp" | cut -c1-160)" ;;
+  ok\ *) check 8.3 PASS "the built-in kestrel pack draws every face at both panel sizes; out-of-folder names are refused" "${fp#ok }" ;;
+  *) check 8.3 FAIL "the built-in kestrel pack draws every face at both panel sizes; out-of-folder names are refused" "$(printf '%s' "$fp" | cut -c1-160)" ;;
 esac
-# 7.4 comes from the dashboard section below.
-# 7.5: the installed guide describes face packs.
+# 8.4 comes from the dashboard section below.
+# 8.5: the installed guide describes face packs.
 gfp=$(as_dev "$VENV_PY" -I -c 'from kestrel_pi.userguide import GUIDE_MD as g
 print(all(t in g for t in ("**Face packs.**", "face_pack=kestrel", "/etc/kestrel/faces/")))' 2>&1 | tail -1)
-[ "$gfp" = True ] && check 7.5 PASS "the guide's e-ink section describes face packs" "" \
-  || check 7.5 FAIL "the guide's e-ink section describes face packs" "$(printf '%s' "$gfp" | cut -c1-120)"
-check 7.6 MANUAL "see the checklist" "by hand (the kestrel pack on the panel and the View mirror)"
-check 7.7 MANUAL "see the checklist" "by hand, optional (a pack of your own in /etc/kestrel/faces/)"
+[ "$gfp" = True ] && check 8.5 PASS "the guide's e-ink section describes face packs" "" \
+  || check 8.5 FAIL "the guide's e-ink section describes face packs" "$(printf '%s' "$gfp" | cut -c1-120)"
+check 8.6 MANUAL "see the checklist" "by hand (the kestrel pack on the panel and the View mirror)"
+check 8.7 MANUAL "see the checklist" "by hand, optional (a pack of your own in /etc/kestrel/faces/)"
 
-# ---------------------------------------------------------------- 8. regressions from 1.0.14-beta.4: the UPS HAT's current and power (#186)
-sec "8. regressions from 1.0.14-beta.4: the UPS HAT's current and power (#186)"
-# 8.1: the installed ups-ws, read as text: its version and the calibration it
+# ---------------------------------------------------------------- 9. regressions from 1.0.14-beta.4: the UPS HAT's current and power (#186)
+sec "9. regressions from 1.0.14-beta.4: the UPS HAT's current and power (#186)"
+# 9.1: the installed ups-ws, read as text: its version and the calibration it
 # programs. Nothing is loaded or run, and the I2C bus isn't touched.
 upsf="$LIBDIR/plugins/ups-ws.py"
 ups_ver=$(sed -n 's/^    __version__ = "\(.*\)"$/\1/p' "$upsf" 2>/dev/null | head -1)
 ups_cal=$(sed -n 's/^CALIBRATION = ina219\.\(CAL_[A-Z0-9_]*\)$/\1/p' "$upsf" 2>/dev/null | head -1)
 echo "  ups-ws: version=${ups_ver:-unknown} calibration=${ups_cal:-unknown}"
 if [ "$ups_ver" = 0.1.1 ] && [ "$ups_cal" = CAL_32V_2A ]; then
-  check 8.1 PASS "ups-ws 0.1.1 is installed and programs the 32V_2A calibration" "version $ups_ver, $ups_cal"
+  check 9.1 PASS "ups-ws 0.1.1 is installed and programs the 32V_2A calibration" "version $ups_ver, $ups_cal"
 else
-  check 8.1 FAIL "ups-ws 0.1.1 is installed and programs the 32V_2A calibration" \
+  check 9.1 FAIL "ups-ws 0.1.1 is installed and programs the 32V_2A calibration" \
     "version ${ups_ver:-unknown}, ${ups_cal:-no calibration found}"
 fi
-# 8.2 comes from the dashboard section below.
-check 8.3 MANUAL "see the checklist" "by hand (the UPS card's current and power on battery)"
+# 9.2 comes from the dashboard section below.
+check 9.3 MANUAL "see the checklist" "by hand (the UPS card's current and power on battery)"
 
-# ---------------------------------------------------------------- 9. regressions from 1.0.14-beta.4: capture enable's no-adapter message (#187)
-sec "9. regressions from 1.0.14-beta.4: capture enable's no-adapter message (#187)"
-# 9.1: the installed CLI's text only; capture enable is never run.
+# ---------------------------------------------------------------- 10. regressions from 1.0.14-beta.4: capture enable's no-adapter message (#187)
+sec "10. regressions from 1.0.14-beta.4: capture enable's no-adapter message (#187)"
+# 10.1: the installed CLI's text only; capture enable is never run.
 if grep -qF 'no monitor-capable capture adapter found (plug one in, or name it with --interface)' "$CLI" 2>/dev/null \
     && ! grep -qF 'plug in the USB dongle' "$CLI" 2>/dev/null; then
-  check 9.1 PASS "the CLI's no-adapter message no longer assumes a USB dongle" ""
+  check 10.1 PASS "the CLI's no-adapter message no longer assumes a USB dongle" ""
 else
-  check 9.1 FAIL "the CLI's no-adapter message no longer assumes a USB dongle" \
+  check 10.1 FAIL "the CLI's no-adapter message no longer assumes a USB dongle" \
     "new wording $(grep -qF 'plug one in, or name it with --interface' "$CLI" 2>/dev/null && echo found || echo missing), old wording $(grep -qF 'plug in the USB dongle' "$CLI" 2>/dev/null && echo present || echo gone)"
 fi
-check 9.2 MANUAL "see the checklist" "by hand, optional (capture enable with no adapter)"
+check 10.2 MANUAL "see the checklist" "by hand, optional (capture enable with no adapter)"
 
-# ---------------------------------------------------------------- 10. regressions from 1.0.14-beta.3: capture adapter detection (#183)
-sec "10. regressions from 1.0.14-beta.3: capture adapter detection (#183)"
-# 10.1-10.3 run the installed helpers' own text in a subshell under the CLI's
+# ---------------------------------------------------------------- 11. regressions from 1.0.14-beta.3: capture adapter detection (#183)
+sec "11. regressions from 1.0.14-beta.3: capture adapter detection (#183)"
+# 11.1-11.3 run the installed helpers' own text in a subshell under the CLI's
 # set -euo pipefail, against a stand-in iw, ethtool and plugins-ctl in the
 # root-only work folder and a made-up /sys tree there. The stand-ins print a
 # long answer one line per write, as a tri-band adapter's iw does, so a pipe
@@ -516,27 +600,27 @@ if plugin_has_network_cap x; then echo "localcap=yes"; else echo "localcap=no"; 
 printf '%s\n' "$det" | sed 's/^/  /'
 fact2() { printf '%s\n' "$det" | sed -n "s/^$1=//p" | head -1; }
 if [ -z "$helpers" ]; then
-  check 10.1 FAIL "the adapter check finds monitor mode behind a long iw answer" "iface_monitor_capable not found in the installed common"
+  check 11.1 FAIL "the adapter check finds monitor mode behind a long iw answer" "iface_monitor_capable not found in the installed common"
 elif [ "$(fact2 capable)" = "10/10" ] && [ "$(fact2 nomon)" = refused ]; then
-  check 10.1 PASS "the adapter check finds monitor mode behind a long iw answer" "found 10 of 10 times; an adapter without it refused"
+  check 11.1 PASS "the adapter check finds monitor mode behind a long iw answer" "found 10 of 10 times; an adapter without it refused"
 else
-  check 10.1 FAIL "the adapter check finds monitor mode behind a long iw answer" "capable $(fact2 capable), no-monitor adapter $(fact2 nomon)"
+  check 11.1 FAIL "the adapter check finds monitor mode behind a long iw answer" "capable $(fact2 capable), no-monitor adapter $(fact2 nomon)"
 fi
 if [ "$(fact2 resolved)" = wlan1 ]; then
-  check 10.2 PASS "auto picks the USB adapter, never the built-in chip" "picked the stand-in USB adapter"
+  check 11.2 PASS "auto picks the USB adapter, never the built-in chip" "picked the stand-in USB adapter"
 else
-  check 10.2 FAIL "auto picks the USB adapter, never the built-in chip" "picked $(fact2 resolved)"
+  check 11.2 FAIL "auto picks the USB adapter, never the built-in chip" "picked $(fact2 resolved)"
 fi
-# 10.3: the network-capability check (behind the authorized-use prompt) on a
+# 11.3: the network-capability check (behind the authorized-use prompt) on a
 # long answer, and a code marker for the update's link count.
 if [ -n "$capfn" ] && [ "$(fact2 netcap)" = yes ] && [ "$(fact2 localcap)" = no ] \
     && grep -q "addrs=\$(ip -4 -o addr show dev \"\$ifc\"" "$CLI" 2>/dev/null \
     && ! grep -q "addr show dev \"\$ifc\" 2>/dev/null | grep -q" "$CLI"; then
-  check 10.3 PASS "the CLI's network-capability check and update link count match on captured output" ""
+  check 11.3 PASS "the CLI's network-capability check and update link count match on captured output" ""
 else
-  check 10.3 FAIL "the CLI's network-capability check and update link count match on captured output" "network $(fact2 netcap), local $(fact2 localcap), or the link-count marker is missing"
+  check 11.3 FAIL "the CLI's network-capability check and update link count match on captured output" "network $(fact2 netcap), local $(fact2 localcap), or the link-count marker is missing"
 fi
-# 10.4: this device's real adapter, from /sys and the capture journal only. The
+# 11.4: this device's real adapter, from /sys and the capture journal only. The
 # drivers are read from /sys; nothing calls iw.
 usb_drv=""
 for path in /sys/class/net/wlan*; do
@@ -550,23 +634,23 @@ cap_en=$(cfg capture.enabled false)
 noad=$(journalctl -b -q --no-pager -u kestrel-capture 2>/dev/null | grep -c 'no monitor-capable capture adapter' || true)
 echo "  other Wi-Fi adapters:${usb_drv:- none}; capture.interface: ${want_iface:-auto}; capture enabled: $cap_en, service: $cap_on; 'no adapter' lines this boot: ${noad:-0}"
 if [ -z "$usb_drv" ]; then
-  check 10.4 SKIP "capture finds this device's USB adapter" "no USB Wi-Fi adapter plugged in"
+  check 11.4 SKIP "capture finds this device's USB adapter" "no USB Wi-Fi adapter plugged in"
 elif [ -n "$want_iface" ] && [ "$want_iface" != auto ]; then
-  check 10.4 INFO "capture finds this device's USB adapter" "capture.interface is set, so detection isn't used"
+  check 11.4 INFO "capture finds this device's USB adapter" "capture.interface is set, so detection isn't used"
 elif [ "$cap_on" = active ] && [ "${noad:-0}" -eq 0 ]; then
-  check 10.4 PASS "capture finds this device's USB adapter" "capture running on it,${usb_drv}"
+  check 11.4 PASS "capture finds this device's USB adapter" "capture running on it,${usb_drv}"
 elif [ "$cap_on" = active ]; then
-  check 10.4 INFO "capture finds this device's USB adapter" "running now, after $noad 'no adapter' line(s) this boot (plugged in late?)"
+  check 11.4 INFO "capture finds this device's USB adapter" "running now, after $noad 'no adapter' line(s) this boot (plugged in late?)"
 elif [ "$cap_en" = true ]; then
-  check 10.4 FAIL "capture finds this device's USB adapter" "capture enabled but not running; $noad 'no adapter' line(s) this boot"
+  check 11.4 FAIL "capture finds this device's USB adapter" "capture enabled but not running; $noad 'no adapter' line(s) this boot"
 else
-  check 10.4 INFO "capture finds this device's USB adapter" "capture is off; rerun with it on"
+  check 11.4 INFO "capture finds this device's USB adapter" "capture is off; rerun with it on"
 fi
-check 10.5 MANUAL "see the checklist" "by hand (capture status names the adapter; capture turns on)"
+check 11.5 MANUAL "see the checklist" "by hand (capture status names the adapter; capture turns on)"
 
-# ---------------------------------------------------------------- 11. regressions from 1.0.14-beta.3: the guide credits pwnagotchi (#182)
-sec "11. regressions from 1.0.14-beta.3: the guide credits pwnagotchi (#182)"
-# 11.1: the installed guide's first paragraph, read with the venv's Python as
+# ---------------------------------------------------------------- 12. regressions from 1.0.14-beta.3: the guide credits pwnagotchi (#182)
+sec "12. regressions from 1.0.14-beta.3: the guide credits pwnagotchi (#182)"
+# 12.1: the installed guide's first paragraph, read with the venv's Python as
 # the device user. Only yes/no facts are printed (the link targets are not).
 gc=$(as_dev "$VENV_PY" -I - <<'PY' 2>&1 | tail -1
 import re
@@ -583,14 +667,14 @@ PY
 echo "  $gc"
 case "$gc" in
   "first=True links=3 pwn=True cmp=True")
-    check 11.1 PASS "the installed guide opens with the pwnagotchi credit and its links" "$gc" ;;
-  *) check 11.1 FAIL "the installed guide opens with the pwnagotchi credit and its links" "$gc" ;;
+    check 12.1 PASS "the installed guide opens with the pwnagotchi credit and its links" "$gc" ;;
+  *) check 12.1 FAIL "the installed guide opens with the pwnagotchi credit and its links" "$gc" ;;
 esac
-# 11.2 comes from the dashboard section below.
-check 11.3 MANUAL "see the checklist" "by hand (the credit on the phone, and its links)"
+# 12.2 comes from the dashboard section below.
+check 12.3 MANUAL "see the checklist" "by hand (the credit on the phone, and its links)"
 
-# ---------------------------------------------------------------- 12. regressions from 1.0.14-beta.2: census: the board family (#177)
-sec "12. regressions from 1.0.14-beta.2: census: the board family (#177)"
+# ---------------------------------------------------------------- 13. regressions from 1.0.14-beta.2: census: the board family (#177)
+sec "13. regressions from 1.0.14-beta.2: census: the board family (#177)"
 cp=$LIBDIR/plugins
 census_on=$(cfg plugins.census.enabled false)
 # The family this board should report, from its device-tree name by the
@@ -608,18 +692,18 @@ case "$model" in
 esac
 want_name=${board_names[$want_board]}
 echo "  this board's family: $want_name"
-# 12.1: the installed census is 0.2.0, and its helper has the board families.
+# 13.1: the installed census is 0.2.0, and its helper has the board families.
 c_ver=$(sed -n 's/^ *__version__ = "\([0-9.]*\)".*/\1/p' "$cp/census.py" 2>/dev/null | head -1)
 if [ "$c_ver" = "0.2.0" ] && grep -q '^TOKEN_MARKER = b"kb"$' "$cp/_census_proto.py" 2>/dev/null \
     && grep -q '^BOARD_FAMILIES = ' "$cp/_census_proto.py" \
     && grep -q '^def board_family(model):' "$cp/_census_proto.py" \
     && grep -q '^def token_board(token):' "$cp/_census_proto.py" \
     && grep -q '^def device_board(' "$cp/census.py"; then
-  check 12.1 PASS "census 0.2.0 is installed and its helper knows the board families" ""
+  check 13.1 PASS "census 0.2.0 is installed and its helper knows the board families" ""
 else
-  check 12.1 FAIL "census 0.2.0 is installed and its helper knows the board families" "version ${c_ver:-?}, or markers missing in the installed census files"
+  check 13.1 FAIL "census 0.2.0 is installed and its helper knows the board families" "version ${c_ver:-?}, or markers missing in the installed census files"
 fi
-# 12.2: the installed helper's own answer for this board, run as the device user
+# 13.2: the installed helper's own answer for this board, run as the device user
 # with the venv's Python (as the daemon runs it; the helper needs its packages).
 got_board=$(as_dev "$VENV_PY" -I - "$cp/_census_proto.py" <<'PY' 2>&1 | tail -1
 import importlib.util, sys
@@ -637,20 +721,20 @@ case "$got_board" in
   [0-9]|1[0-5])
     got_name=${board_names[$got_board]:-another board}
     if [ "$got_board" = "$want_board" ]; then
-      check 12.2 PASS "the census reads this board's family from its device-tree name" "$got_name"
+      check 13.2 PASS "the census reads this board's family from its device-tree name" "$got_name"
     else
-      check 12.2 FAIL "the census reads this board's family from its device-tree name" "census reads $got_name; the name says $want_name"
+      check 13.2 FAIL "the census reads this board's family from its device-tree name" "census reads $got_name; the name says $want_name"
     fi ;;
-  *) check 12.2 FAIL "the census reads this board's family from its device-tree name" "the helper didn't answer: $(printf '%s' "$got_board" | cut -c1-120)" ;;
+  *) check 13.2 FAIL "the census reads this board's family from its device-tree name" "the helper didn't answer: $(printf '%s' "$got_board" | cut -c1-120)" ;;
 esac
-# 12.3 and 12.4: today's number and the history, read as the device user. The
+# 13.3 and 13.4: today's number and the history, read as the device user. The
 # number is decoded here and never printed.
 cstate=$DEV_HOME/.local/state/kestrel-census
 upd_at=$(stat -c %Y "$upd" 2>/dev/null || echo 0)
 day_start=$(date -u -d "$(date -u +%F)" +%s)
 if [ "$census_on" != true ]; then
-  check 12.3 SKIP "today's census number carries this board's family" "census not enabled"
-  check 12.4 SKIP "the census history records board counts since the update" "census not enabled"
+  check 13.3 SKIP "today's census number carries this board's family" "census not enabled"
+  check 13.4 SKIP "the census history records board counts since the update" "census not enabled"
 else
   tb=$(as_dev /usr/bin/python3 -I - "$cstate/day.json" <<'PY' 2>&1 | tail -1
 import json, sys, time
@@ -670,19 +754,19 @@ print("none" if len(t) != 8 or t[:2] != b"kb" or t[2] & 1 else "board %d" % (t[2
 PY
 )
   case "$tb" in
-    "board $want_board") check 12.3 PASS "today's census number carries this board's family" "$want_name" ;;
+    "board $want_board") check 13.3 PASS "today's census number carries this board's family" "$want_name" ;;
     board\ *) n=${tb#board }
-      check 12.3 FAIL "today's census number carries this board's family" "it carries ${board_names[$n]:-another board}; this board is $want_name" ;;
+      check 13.3 FAIL "today's census number carries this board's family" "it carries ${board_names[$n]:-another board}; this board is $want_name" ;;
     none)
       if [ "$upd_at" -ge "$day_start" ]; then
-        check 12.3 INFO "today's census number carries this board's family" "no board yet: the update was applied this UTC day, so today's number may predate it; rerun after 00:00 UTC"
+        check 13.3 INFO "today's census number carries this board's family" "no board yet: the update was applied this UTC day, so today's number may predate it; rerun after 00:00 UTC"
       else
-        check 12.3 FAIL "today's census number carries this board's family" "today's number carries no board"
+        check 13.3 FAIL "today's census number carries this board's family" "today's number carries no board"
       fi ;;
-    not-today|missing) check 12.3 INFO "today's census number carries this board's family" "no census day started yet today (paused?)" ;;
-    *) check 12.3 FAIL "today's census number carries this board's family" "$tb" ;;
+    not-today|missing) check 13.3 INFO "today's census number carries this board's family" "no census day started yet today (paused?)" ;;
+    *) check 13.3 FAIL "today's census number carries this board's family" "$tb" ;;
   esac
-  # 12.4: days after the update's UTC day carry board counts; older days are
+  # 13.4: days after the update's UTC day carry board counts; older days are
   # still in the file, so they survived the daemon's load and save. Counts only.
   hb=$(as_dev /usr/bin/python3 -I - "$cstate/history.json" "$upd_at" "$want_board" <<'PY' 2>&1 | tail -1
 import json, sys, time
@@ -701,7 +785,7 @@ print("after=%d with=%d mine=%d older=%d" % (len(after), len(boards), len(mine),
 PY
 )
   case "$hb" in
-    after=0\ *) check 12.4 INFO "the census history records board counts since the update" "no day after the update's yet; ${hb##*older=} older day(s) kept" ;;
+    after=0\ *) check 13.4 INFO "the census history records board counts since the update" "no day after the update's yet; ${hb##*older=} older day(s) kept" ;;
     after=*)
       n_after=$(printf '%s' "$hb" | sed -n 's/^after=\([0-9]*\) .*/\1/p')
       n_with=$(printf '%s' "$hb" | sed -n 's/.* with=\([0-9]*\) .*/\1/p')
@@ -709,36 +793,36 @@ PY
       n_older=$(printf '%s' "$hb" | sed -n 's/.* older=\([0-9]*\)$/\1/p')
       detail="$n_with of $n_after day(s) since carry board counts, this board's family on $n_mine; $n_older older day(s) kept"
       if [ "$n_with" = "$n_after" ]; then
-        check 12.4 PASS "the census history records board counts since the update" "$detail"
+        check 13.4 PASS "the census history records board counts since the update" "$detail"
       else
-        check 12.4 FAIL "the census history records board counts since the update" "$detail"
+        check 13.4 FAIL "the census history records board counts since the update" "$detail"
       fi ;;
-    missing) check 12.4 INFO "the census history records board counts since the update" "no history.json yet" ;;
-    *) check 12.4 FAIL "the census history records board counts since the update" "$hb" ;;
+    missing) check 13.4 INFO "the census history records board counts since the update" "no history.json yet" ;;
+    *) check 13.4 FAIL "the census history records board counts since the update" "$hb" ;;
   esac
 fi
-# 12.5 and 12.6 come from the dashboard section below.
-check 12.7 MANUAL "see the checklist" "by hand (the Boards card on the phone)"
-check 12.8 MANUAL "see the checklist" "by hand (the desktop census report's board tables)"
+# 13.5 and 13.6 come from the dashboard section below.
+check 13.7 MANUAL "see the checklist" "by hand (the Boards card on the phone)"
+check 13.8 MANUAL "see the checklist" "by hand (the desktop census report's board tables)"
 
-# ---------------------------------------------------------------- 13. regressions from 1.0.14-beta.2: agent diagnostics: from-scratch contests (#179)
-sec "13. regressions from 1.0.14-beta.2: agent diagnostics: from-scratch contests (#179)"
-# 13.1: the shipped diagnostics script's contest pattern takes the optional
+# ---------------------------------------------------------------- 14. regressions from 1.0.14-beta.2: agent diagnostics: from-scratch contests (#179)
+sec "14. regressions from 1.0.14-beta.2: agent diagnostics: from-scratch contests (#179)"
+# 14.1: the shipped diagnostics script's contest pattern takes the optional
 # "(from scratch)" a from-scratch candidate's contest line carries.
 if grep -qF '( \(from scratch\))? candidate vs active' "$SCRIPTS_DIR/pull-agent-diagnostics.sh" 2>/dev/null; then
-  check 13.1 PASS "the installed diagnostics script recognizes a from-scratch contest" ""
+  check 14.1 PASS "the installed diagnostics script recognizes a from-scratch contest" ""
 else
-  check 13.1 FAIL "the installed diagnostics script recognizes a from-scratch contest" "the installed pull-agent-diagnostics.sh is older"
+  check 14.1 FAIL "the installed diagnostics script recognizes a from-scratch contest" "the installed pull-agent-diagnostics.sh is older"
 fi
-check 13.2 MANUAL "see the checklist" "by hand (a from-scratch row in the diagnostics)"
+check 14.2 MANUAL "see the checklist" "by hand (a from-scratch row in the diagnostics)"
 
-# ---------------------------------------------------------------- 14. regressions from 1.0.14-beta.1: the learning agent tries other scans (#175)
-sec "14. regressions from 1.0.14-beta.1: the learning agent tries other scans (#175)"
+# ---------------------------------------------------------------- 15. regressions from 1.0.14-beta.1: the learning agent tries other scans (#175)
+sec "15. regressions from 1.0.14-beta.1: the learning agent tries other scans (#175)"
 since=""
 [ -f "$upd" ] && since="@$(stat -c %Y "$upd")"
 since_ts=${since#@}
 # The agent's first journal line since the update: the journal may not reach
-# back to the update, so 14.4 compares only the span it still holds.
+# back to the update, so 15.4 compares only the span it still holds.
 if [ -n "$since" ]; then
   jfrom=$(journalctl -q --no-pager -u kestrel-agent -o short-unix --since "$since" 2>/dev/null | head -1 | cut -d' ' -f1)
 else
@@ -873,39 +957,39 @@ rn_n=$(num "$rn" n); rn_ones=$(num "$rn" ones); rn_twos=$(num "$rn" twos)
 rn_long=$(num "$rn" longer)
 ferr=$(fact error)
 if [ -n "$ferr" ]; then
-  check 14.1 FAIL "the explorer is installed and the agent reports exploring at its defaults" "couldn't read the agent's code, settings or logs: $ferr"
+  check 15.1 FAIL "the explorer is installed and the agent reports exploring at its defaults" "couldn't read the agent's code, settings or logs: $ferr"
 elif [ "$(fact import)" != ok ]; then
-  check 14.1 FAIL "the explorer is installed and the agent reports exploring at its defaults" "agent code: $(fact import)$pkg_note"
+  check 15.1 FAIL "the explorer is installed and the agent reports exploring at its defaults" "agent code: $(fact import)$pkg_note"
 elif ! pkg_has agent/explore.py 'class Explorer:'; then
-  check 14.1 FAIL "the explorer is installed and the agent reports exploring at its defaults" "agent/explore.py missing$pkg_note"
+  check 15.1 FAIL "the explorer is installed and the agent reports exploring at its defaults" "agent/explore.py missing$pkg_note"
 elif [ "$(fact defaults)" != "0.05 2 4 3 0" ] || [ "$(fact effective)" != "0.05 2" ]; then
-  check 14.1 INFO "the explorer is installed and the agent reports exploring at its defaults" "code defaults $(fact defaults), in effect $(fact effective) (set in config.toml: $(fact overrides))"
+  check 15.1 INFO "the explorer is installed and the agent reports exploring at its defaults" "code defaults $(fact defaults), in effect $(fact effective) (set in config.toml: $(fact overrides))"
 else
   case "$ast" in
     *"rate=0.05 windows=2 allowed=$(fact allowed) "*)
-      check 14.1 PASS "the explorer is installed and the agent reports exploring at its defaults" "5%, 2 windows, $(fact allowed) scans allowed" ;;
+      check 15.1 PASS "the explorer is installed and the agent reports exploring at its defaults" "5%, 2 windows, $(fact allowed) scans allowed" ;;
     none|unreadable|*"rate=None"*)
-      check 14.1 INFO "the explorer is installed and the agent reports exploring at its defaults" "installed; the agent hasn't written its exploring status (status: ${ast:-none})" ;;
-    *) check 14.1 FAIL "the explorer is installed and the agent reports exploring at its defaults" "status: $ast; expected allowed=$(fact allowed)" ;;
+      check 15.1 INFO "the explorer is installed and the agent reports exploring at its defaults" "installed; the agent hasn't written its exploring status (status: ${ast:-none})" ;;
+    *) check 15.1 FAIL "the explorer is installed and the agent reports exploring at its defaults" "status: $ast; expected allowed=$(fact allowed)" ;;
   esac
 fi
 if [ "${ep_learned:-0}" -eq 0 ]; then
-  check 14.2 SKIP "exploring windows are logged, with their chance, in runs of two" "no learned-policy window since the update (policy: ${apol:-?})"
+  check 15.2 SKIP "exploring windows are logged, with their chance, in runs of two" "no learned-policy window since the update (policy: ${apol:-?})"
 elif [ "${ep_exp:-0}" -eq 0 ]; then
-  check 14.2 INFO "exploring windows are logged, with their chance, in runs of two" "none yet in $ep_learned learned window(s)"
+  check 15.2 INFO "exploring windows are logged, with their chance, in runs of two" "none yet in $ep_learned learned window(s)"
 elif [ "${ep_nop:-0}" -gt 0 ] || [ "${rn_long:-0}" -gt 0 ]; then
-  check 14.2 FAIL "exploring windows are logged, with their chance, in runs of two" "$ep_exp exploring window(s), $ep_nop without a chance; runs: $rn"
+  check 15.2 FAIL "exploring windows are logged, with their chance, in runs of two" "$ep_exp exploring window(s), $ep_nop without a chance; runs: $rn"
 elif [ "${rn_twos:-0}" -ge "${rn_ones:-0}" ]; then
-  check 14.2 PASS "exploring windows are logged, with their chance, in runs of two" "$ep_exp exploring window(s) in $rn_n run(s): $rn_twos of two, $rn_ones of one"
+  check 15.2 PASS "exploring windows are logged, with their chance, in runs of two" "$ep_exp exploring window(s) in $rn_n run(s): $rn_twos of two, $rn_ones of one"
 else
-  check 14.2 INFO "exploring windows are logged, with their chance, in runs of two" "more single windows than pairs (a restart or policy change cuts a run short): $rn"
+  check 15.2 INFO "exploring windows are logged, with their chance, in runs of two" "more single windows than pairs (a restart or policy change cuts a run short): $rn"
 fi
 if [ "${ep_rows:-0}" -eq 0 ]; then
-  check 14.3 SKIP "no window outside the learned policy is marked as exploring" "no window logged since the update"
+  check 15.3 SKIP "no window outside the learned policy is marked as exploring" "no window logged since the update"
 elif [ "${ep_off:-0}" -eq 0 ]; then
-  check 14.3 PASS "no window outside the learned policy is marked as exploring" "$ep_base scripted-sweep window(s), none exploring"
+  check 15.3 PASS "no window outside the learned policy is marked as exploring" "$ep_base scripted-sweep window(s), none exploring"
 else
-  check 14.3 FAIL "no window outside the learned policy is marked as exploring" "$ep_off exploring window(s) outside the learned policy"
+  check 15.3 FAIL "no window outside the learned policy is marked as exploring" "$ep_off exploring window(s) outside the learned policy"
 fi
 alog=$work/agent-since.log
 if [ -n "$since" ]; then
@@ -925,42 +1009,42 @@ grep 'explore: trying ' "$alog" | tail -3 | jscrub
 gap=$(( ${trying:-0} - ${ep_expj:-0} )); [ "$gap" -lt 0 ] && gap=$(( -gap ))
 slack=$(( ${ep_expj:-0} / 20 )); [ "$slack" -lt 2 ] && slack=2
 if [ "${ep_expj:-0}" -eq 0 ] && [ "${trying:-0}" -eq 0 ]; then
-  check 14.4 SKIP "the journal has one 'explore: trying' line per exploring window" "no exploring window $jspan"
+  check 15.4 SKIP "the journal has one 'explore: trying' line per exploring window" "no exploring window $jspan"
 elif [ "${trying:-0}" -eq 0 ]; then
-  check 14.4 FAIL "the journal has one 'explore: trying' line per exploring window" "${ep_expj} exploring window(s) $jspan, no line"
+  check 15.4 FAIL "the journal has one 'explore: trying' line per exploring window" "${ep_expj} exploring window(s) $jspan, no line"
 elif [ "$gap" -le "$slack" ]; then
-  check 14.4 PASS "the journal has one 'explore: trying' line per exploring window" "$trying line(s), ${ep_expj:-0} window(s) $jspan"
+  check 15.4 PASS "the journal has one 'explore: trying' line per exploring window" "$trying line(s), ${ep_expj:-0} window(s) $jspan"
 elif [ "${trying:-0}" -gt "${ep_expj:-0}" ]; then
-  check 14.4 INFO "the journal has one 'explore: trying' line per exploring window" "$trying line(s), ${ep_expj:-0} window(s) $jspan (a capture stop mid-window logs a line without a row)"
+  check 15.4 INFO "the journal has one 'explore: trying' line per exploring window" "$trying line(s), ${ep_expj:-0} window(s) $jspan (a capture stop mid-window logs a line without a row)"
 else
-  check 14.4 INFO "the journal has one 'explore: trying' line per exploring window" "$trying line(s), ${ep_expj:-0} window(s) $jspan (fewer lines than windows: journald may have dropped some)"
+  check 15.4 INFO "the journal has one 'explore: trying' line per exploring window" "$trying line(s), ${ep_expj:-0} window(s) $jspan (fewer lines than windows: journald may have dropped some)"
 fi
-# 14.5 comes from the dashboard section below.
-check 14.6 MANUAL "see the checklist" "by hand (the Exploring row on the phone over a day or two)"
-check 14.7 MANUAL "see the checklist" "by hand, optional (explore_rate = 0 turns it off)"
+# 15.5 comes from the dashboard section below.
+check 15.6 MANUAL "see the checklist" "by hand (the Exploring row on the phone over a day or two)"
+check 15.7 MANUAL "see the checklist" "by hand, optional (explore_rate = 0 turns it off)"
 
-# ---------------------------------------------------------------- 15. regressions from 1.0.14-beta.1: training from scratch now and then (#175)
-sec "15. regressions from 1.0.14-beta.1: training from scratch now and then (#175)"
+# ---------------------------------------------------------------- 16. regressions from 1.0.14-beta.1: training from scratch now and then (#175)
+sec "16. regressions from 1.0.14-beta.1: training from scratch now and then (#175)"
 if [ "$(fact import)" = ok ] && [ "$(fact defaults)" = "0.05 2 4 3 0" ] \
     && pkg_has agent/train.py '"--seed"' && pkg_has agent/train.py '"--no-warm-start"'; then
   case ",$(fact overrides)," in
     *,fresh_every,*|*,stuck_contests,*|*,fresh_timesteps,*)
-      check 15.1 INFO "from-scratch settings at their defaults; the trainer takes --seed and --no-warm-start" "set in config.toml: $(fact overrides)" ;;
-    *) check 15.1 PASS "from-scratch settings at their defaults; the trainer takes --seed and --no-warm-start" "fresh_every 4, stuck_contests 3, fresh_timesteps 0" ;;
+      check 16.1 INFO "from-scratch settings at their defaults; the trainer takes --seed and --no-warm-start" "set in config.toml: $(fact overrides)" ;;
+    *) check 16.1 PASS "from-scratch settings at their defaults; the trainer takes --seed and --no-warm-start" "fresh_every 4, stuck_contests 3, fresh_timesteps 0" ;;
   esac
 else
-  check 15.1 FAIL "from-scratch settings at their defaults; the trainer takes --seed and --no-warm-start" "defaults $(fact defaults)$pkg_note"
+  check 16.1 FAIL "from-scratch settings at their defaults; the trainer takes --seed and --no-warm-start" "defaults $(fact defaults)$pkg_note"
 fi
 runs=$(grep -c ' training finished (' "$alog" || true)
 fresh=$(grep -c ' training from scratch (' "$alog" || true)
 echo "  since the update: $runs on-device run(s), $fresh from scratch"
 grep ' training from scratch (' "$alog" | tail -3 | jscrub
 if [ "${fresh:-0}" -ge 1 ]; then
-  check 15.2 PASS "a run from scratch comes at least every 4th run" "$fresh of $runs run(s) from scratch"
+  check 16.2 PASS "a run from scratch comes at least every 4th run" "$fresh of $runs run(s) from scratch"
 elif [ "${runs:-0}" -lt 4 ]; then
-  check 15.2 INFO "a run from scratch comes at least every 4th run" "$runs run(s) so far; none from scratch yet"
+  check 16.2 INFO "a run from scratch comes at least every 4th run" "$runs run(s) so far; none from scratch yet"
 else
-  check 15.2 FAIL "a run from scratch comes at least every 4th run" "$runs run(s), none from scratch"
+  check 16.2 FAIL "a run from scratch comes at least every 4th run" "$runs run(s), none from scratch"
 fi
 judged=$(grep -c ' candidate vs active (' "$alog" || true)
 agreed=$(grep ' candidate vs active (' "$alog" | grep -c 'same choice as the active model on [0-9]*% of rows' || true)
@@ -968,101 +1052,101 @@ scratch=$(grep -c ' (from scratch) candidate vs active (' "$alog" || true)
 echo "  contests since the update: $judged; with the agreement figure: $agreed; from scratch: $scratch"
 grep ' candidate vs active (' "$alog" | tail -3 | jscrub
 if [ "${judged:-0}" -eq 0 ]; then
-  check 15.3 SKIP "contests say how often the candidate chose like the active model" "no contest since the update"
+  check 16.3 SKIP "contests say how often the candidate chose like the active model" "no contest since the update"
 elif [ "$agreed" -eq "$judged" ] && { [ "${fresh:-0}" -eq 0 ] || [ "${scratch:-0}" -ge 1 ]; }; then
-  check 15.3 PASS "contests say how often the candidate chose like the active model" "$agreed of $judged; $scratch marked from scratch"
+  check 16.3 PASS "contests say how often the candidate chose like the active model" "$agreed of $judged; $scratch marked from scratch"
 elif [ "${agreed:-0}" -ge 1 ]; then
-  check 15.3 INFO "contests say how often the candidate chose like the active model" "$agreed of $judged (a contest with no active model has no figure); $scratch marked from scratch"
+  check 16.3 INFO "contests say how often the candidate chose like the active model" "$agreed of $judged (a contest with no active model has no figure); $scratch marked from scratch"
 else
-  check 15.3 FAIL "contests say how often the candidate chose like the active model" "none of $judged"
+  check 16.3 FAIL "contests say how often the candidate chose like the active model" "none of $judged"
 fi
 mt=$(fact metas)
 if pkg_has agent/train.py '"fresh": not warm_start' && pkg_has agent/train.py '"seed": int(seed) if seed is not None else None'; then
-  check 15.4 PASS "a model trained from scratch records that, with its seed" "trainer records both; model records here: $mt"
+  check 16.4 PASS "a model trained from scratch records that, with its seed" "trainer records both; model records here: $mt"
 else
-  check 15.4 FAIL "a model trained from scratch records that, with its seed" "markers missing$pkg_note"
+  check 16.4 FAIL "a model trained from scratch records that, with its seed" "markers missing$pkg_note"
 fi
-# 15.5 comes from the dashboard section below.
-check 15.6 MANUAL "see the checklist" "by hand (train-now --fresh and a plain train-now)"
-check 15.7 MANUAL "see the checklist" "by hand (Last contest's agreement after a day or two)"
+# 16.5 comes from the dashboard section below.
+check 16.6 MANUAL "see the checklist" "by hand (train-now --fresh and a plain train-now)"
+check 16.7 MANUAL "see the checklist" "by hand (Last contest's agreement after a day or two)"
 
-# ---------------------------------------------------------------- 16. regressions from 1.0.14-beta.1: untried scans aren't taken on trust (#175)
-sec "16. regressions from 1.0.14-beta.1: untried scans aren't taken on trust (#175)"
+# ---------------------------------------------------------------- 17. regressions from 1.0.14-beta.1: untried scans aren't taken on trust (#175)
+sec "17. regressions from 1.0.14-beta.1: untried scans aren't taken on trust (#175)"
 if pkg_has agent/train.py 'def _cautious_floor(per_action_mean, min_support):' \
     && pkg_has agent/train.py 'min_support=min_samples'; then
-  check 16.1 PASS "a scan with under 8 logged windows is scored at the weakest well-tried scan's mean" ""
+  check 17.1 PASS "a scan with under 8 logged windows is scored at the weakest well-tried scan's mean" ""
 else
-  check 16.1 FAIL "a scan with under 8 logged windows is scored at the weakest well-tried scan's mean" "markers missing$pkg_note"
+  check 17.1 FAIL "a scan with under 8 logged windows is scored at the weakest well-tried scan's mean" "markers missing$pkg_note"
 fi
 case "$mt" in
-  *" new=0 "*) check 16.2 INFO "a model trained since the update lists the scans it had too little data on" "no model from this release kept to look at (a losing candidate is deleted): $mt" ;;
-  *" unsupported=0") check 16.2 FAIL "a model trained since the update lists the scans it had too little data on" "$mt" ;;
-  *unsupported=*) check 16.2 PASS "a model trained since the update lists the scans it had too little data on" "$mt" ;;
-  *) check 16.2 INFO "a model trained since the update lists the scans it had too little data on" "${mt:-no answer}" ;;
+  *" new=0 "*) check 17.2 INFO "a model trained since the update lists the scans it had too little data on" "no model from this release kept to look at (a losing candidate is deleted): $mt" ;;
+  *" unsupported=0") check 17.2 FAIL "a model trained since the update lists the scans it had too little data on" "$mt" ;;
+  *unsupported=*) check 17.2 PASS "a model trained since the update lists the scans it had too little data on" "$mt" ;;
+  *) check 17.2 INFO "a model trained since the update lists the scans it had too little data on" "${mt:-no answer}" ;;
 esac
 
-# ---------------------------------------------------------------- 17. regressions from 1.0.14-beta.1: scan limits apply to every agent scan (#175)
-sec "17. regressions from 1.0.14-beta.1: scan limits apply to every agent scan (#175)"
+# ---------------------------------------------------------------- 18. regressions from 1.0.14-beta.1: scan limits apply to every agent scan (#175)
+sec "18. regressions from 1.0.14-beta.1: scan limits apply to every agent scan (#175)"
 if pkg_has agent/controller.py 'action = explore_mod.nearest_allowed(wanted, self._action_set)'; then
-  check 17.1 PASS "every scan the agent runs is mapped into the [agent.action] lists" ""
+  check 18.1 PASS "every scan the agent runs is mapped into the [agent.action] lists" ""
 else
-  check 17.1 FAIL "every scan the agent runs is mapped into the [agent.action] lists" "marker missing$pkg_note"
+  check 18.1 FAIL "every scan the agent runs is mapped into the [agent.action] lists" "marker missing$pkg_note"
 fi
 if [ -z "$cfg_sum" ] || [ "$cfg_sum" != "$cfg_after" ]; then
-  check 17.2 FAIL "listen-only lists allow only the 16 listen-only scans; config.toml unchanged" "config.toml checksum changed or unreadable"
+  check 18.2 FAIL "listen-only lists allow only the 16 listen-only scans; config.toml unchanged" "config.toml checksum changed or unreadable"
 elif [ "$(fact passive)" = "16 True" ]; then
-  check 17.2 PASS "listen-only lists allow only the 16 listen-only scans; config.toml unchanged" "an in-memory copy; config.toml checksum unchanged"
+  check 18.2 PASS "listen-only lists allow only the 16 listen-only scans; config.toml unchanged" "an in-memory copy; config.toml checksum unchanged"
 else
-  check 17.2 FAIL "listen-only lists allow only the 16 listen-only scans; config.toml unchanged" "allowed: $(fact passive)${ferr:+ (error: $ferr)}"
+  check 18.2 FAIL "listen-only lists allow only the 16 listen-only scans; config.toml unchanged" "allowed: $(fact passive)${ferr:+ (error: $ferr)}"
 fi
 if [ "${ep_rows:-0}" -eq 0 ]; then
-  check 17.3 SKIP "every window logged since the update ran an allowed scan" "no window logged since the update"
+  check 18.3 SKIP "every window logged since the update ran an allowed scan" "no window logged since the update"
 elif [ "${ep_out:-0}" -eq 0 ]; then
-  check 17.3 PASS "every window logged since the update ran an allowed scan" "$ep_rows window(s), $(fact allowed) scans allowed"
+  check 18.3 PASS "every window logged since the update ran an allowed scan" "$ep_rows window(s), $(fact allowed) scans allowed"
 else
-  check 17.3 FAIL "every window logged since the update ran an allowed scan" "$ep_out of $ep_rows outside the lists"
+  check 18.3 FAIL "every window logged since the update ran an allowed scan" "$ep_out of $ep_rows outside the lists"
 fi
-check 17.4 MANUAL "see the checklist" "by hand, optional (listen-only lists on the device)"
+check 18.4 MANUAL "see the checklist" "by hand, optional (listen-only lists on the device)"
 
-# ---------------------------------------------------------------- 18. regressions from 1.0.14-beta.1: GPS: captures tagged only with a current location (#174)
-sec "18. regressions from 1.0.14-beta.1: GPS: captures tagged only with a current location (#174)"
+# ---------------------------------------------------------------- 19. regressions from 1.0.14-beta.1: GPS: captures tagged only with a current location (#174)
+sec "19. regressions from 1.0.14-beta.1: GPS: captures tagged only with a current location (#174)"
 echo "gps: enabled=$(cfg plugins.gps.enabled false)"
 if grep -q 'FIX_MAX_AGE_S = SIGNAL_STALE_S' "$LIBDIR/plugins/gps.py" 2>/dev/null \
     && grep -q 'time.monotonic() - taken > FIX_MAX_AGE_S' "$LIBDIR/plugins/gps.py" 2>/dev/null \
     && grep -q 'if not self._fix or self._mode < 2:' "$LIBDIR/plugins/gps.py" 2>/dev/null; then
-  check 18.1 PASS "gps stops sharing its position once the fix is lost or over 30 s old" ""
+  check 19.1 PASS "gps stops sharing its position once the fix is lost or over 30 s old" ""
 else
-  check 18.1 FAIL "gps stops sharing its position once the fix is lost or over 30 s old" "markers missing"
+  check 19.1 FAIL "gps stops sharing its position once the fix is lost or over 30 s old" "markers missing"
 fi
-check 18.2 MANUAL "see the checklist" "by hand (lose the fix while capturing)"
+check 19.2 MANUAL "see the checklist" "by hand (lose the fix while capturing)"
 
-# ---------------------------------------------------------------- 19. regressions from 1.0.14-beta.1: the user guide (#175)
-sec "19. regressions from 1.0.14-beta.1: the user guide (#175)"
-# 19.1 comes from the dashboard section below.
-check 19.2 MANUAL "see the checklist" "by hand (What's new reads normally)"
+# ---------------------------------------------------------------- 20. regressions from 1.0.14-beta.1: the user guide (#175)
+sec "20. regressions from 1.0.14-beta.1: the user guide (#175)"
+# 20.1 comes from the dashboard section below.
+check 20.2 MANUAL "see the checklist" "by hand (What's new reads normally)"
 
-# ---------------------------------------------------------------- 20. regressions from 1.0.13: captured networks search (#167)
-sec "20. regressions from 1.0.13: captured networks search (#167)"
-# 20.1: the by-AP search matches BSSIDs only for a MAC-shaped query. Code marker only.
+# ---------------------------------------------------------------- 21. regressions from 1.0.13: captured networks search (#167)
+sec "21. regressions from 1.0.13: captured networks search (#167)"
+# 21.1: the by-AP search matches BSSIDs only for a MAC-shaped query. Code marker only.
 if pkg_has web.py 'def _mac_query(query):' && pkg_has web.py 'mac_needle = _mac_query(query)'; then
-  check 20.1 PASS "a by-AP search matches BSSIDs only when it looks like one" ""
+  check 21.1 PASS "a by-AP search matches BSSIDs only when it looks like one" ""
 else
-  check 20.1 FAIL "a by-AP search matches BSSIDs only when it looks like one" "markers missing$pkg_note"
+  check 21.1 FAIL "a by-AP search matches BSSIDs only when it looks like one" "markers missing$pkg_note"
 fi
-# 20.2 comes from the dashboard section below.
-check 20.3 MANUAL "see the checklist" "by hand (a name search and a pasted BSSID on the phone)"
+# 21.2 comes from the dashboard section below.
+check 21.3 MANUAL "see the checklist" "by hand (a name search and a pasted BSSID on the phone)"
 
-# ---------------------------------------------------------------- 21. regressions from 1.0.13: the agent's coverage figure (#169)
-sec "21. regressions from 1.0.13: the agent's coverage figure (#169)"
+# ---------------------------------------------------------------- 22. regressions from 1.0.13: the agent's coverage figure (#169)
+sec "22. regressions from 1.0.13: the agent's coverage figure (#169)"
 if pkg_has agent/env.py 'if event is not None and event.bssid and not event.apless:'; then
-  check 21.1 PASS "the agent's coverage figure skips AP-less handshakes" ""
+  check 22.1 PASS "the agent's coverage figure skips AP-less handshakes" ""
 else
-  check 21.1 FAIL "the agent's coverage figure skips AP-less handshakes" "marker missing$pkg_note"
+  check 22.1 FAIL "the agent's coverage figure skips AP-less handshakes" "marker missing$pkg_note"
 fi
 
-# ---------------------------------------------------------------- 22. regressions from 1.0.13: recovered passphrases matched by network (#161)
-sec "22. regressions from 1.0.13: recovered passphrases matched by network (#161)"
-# 22.1: the installed package reads the client and the AP-less bit from each
+# ---------------------------------------------------------------- 23. regressions from 1.0.13: recovered passphrases matched by network (#161)
+sec "23. regressions from 1.0.13: recovered passphrases matched by network (#161)"
+# 23.1: the installed package reads the client and the AP-less bit from each
 # hashline and matches a recovered passphrase by network, and the dashboard's
 # count and the map use that match. Code markers only; no capture is read.
 if pkg_has capture.py '_APLESS_BIT = 0x10' \
@@ -1071,55 +1155,55 @@ if pkg_has capture.py '_APLESS_BIT = 0x10' \
     && pkg_has recovered.py 'def capture_matches(self, capture):' \
     && pkg_has daemon.py 'recovered_bssids(self.capture)' \
     && grep -q 'recovered_bssids(self.context.capture)' "$LIBDIR/plugins/map.py" 2>/dev/null; then
-  check 22.1 PASS "recovered passphrases are matched by network (package, dashboard count, map)" ""
+  check 23.1 PASS "recovered passphrases are matched by network (package, dashboard count, map)" ""
 else
-  check 22.1 FAIL "recovered passphrases are matched by network (package, dashboard count, map)" "markers missing$pkg_note"
+  check 23.1 FAIL "recovered passphrases are matched by network (package, dashboard count, map)" "markers missing$pkg_note"
 fi
-# 22.2 comes from the dashboard section below.
-check 22.3 MANUAL "see the checklist" "by hand (a recovered result for a phone-answered capture)"
-check 22.4 MANUAL "see the checklist" "by hand (earlier imports, and a new import keeping the client)"
+# 23.2 comes from the dashboard section below.
+check 23.3 MANUAL "see the checklist" "by hand (a recovered result for a phone-answered capture)"
+check 23.4 MANUAL "see the checklist" "by hand (earlier imports, and a new import keeping the client)"
 
-# ---------------------------------------------------------------- 23. regressions from 1.0.13: rogue addresses aren't access points (#162)
-sec "23. regressions from 1.0.13: rogue addresses aren't access points (#162)"
-# 23.1: the installed package leaves rogue addresses out of the access-point
+# ---------------------------------------------------------------- 24. regressions from 1.0.13: rogue addresses aren't access points (#162)
+sec "24. regressions from 1.0.13: rogue addresses aren't access points (#162)"
+# 24.1: the installed package leaves rogue addresses out of the access-point
 # counts and locations, and the map doesn't draw them. Code markers only.
 if pkg_has capture.py 'def apless_addresses(self):' \
     && pkg_has capture.py 'bssids -= self.apless_addresses()' \
     && pkg_has web.py 'Not an access point' \
     && grep -q 'rogue = self.context.capture.apless_addresses()' "$LIBDIR/plugins/map.py" 2>/dev/null; then
-  check 23.1 PASS "rogue addresses are left out of the access-point counts, locations and the map" ""
+  check 24.1 PASS "rogue addresses are left out of the access-point counts, locations and the map" ""
 else
-  check 23.1 FAIL "rogue addresses are left out of the access-point counts, locations and the map" "markers missing$pkg_note"
+  check 24.1 FAIL "rogue addresses are left out of the access-point counts, locations and the map" "markers missing$pkg_note"
 fi
-# 23.2 comes from the dashboard section below.
-check 23.3 MANUAL "see the checklist" "by hand (rogue address rows, the map and the e-ink AP count)"
+# 24.2 comes from the dashboard section below.
+check 24.3 MANUAL "see the checklist" "by hand (rogue address rows, the map and the e-ink AP count)"
 
-# ---------------------------------------------------------------- 24. regressions from 1.0.13: wigle skips AP-less handshakes (#163)
-sec "24. regressions from 1.0.13: wigle skips AP-less handshakes (#163)"
+# ---------------------------------------------------------------- 25. regressions from 1.0.13: wigle skips AP-less handshakes (#163)
+sec "25. regressions from 1.0.13: wigle skips AP-less handshakes (#163)"
 if grep -q 'if getattr(event, "apless", False):' "$LIBDIR/plugins/wigle.py" 2>/dev/null; then
-  check 24.1 PASS "the installed wigle skips AP-less handshakes" ""
+  check 25.1 PASS "the installed wigle skips AP-less handshakes" ""
 else
-  check 24.1 FAIL "the installed wigle skips AP-less handshakes" "marker missing"
+  check 25.1 FAIL "the installed wigle skips AP-less handshakes" "marker missing"
 fi
 
-# ---------------------------------------------------------------- 25. regressions from 1.0.13: census: a fresh socket after the tether reconnects (#156)
-sec "25. regressions from 1.0.13: census: a fresh socket after the tether reconnects (#156)"
+# ---------------------------------------------------------------- 26. regressions from 1.0.13: census: a fresh socket after the tether reconnects (#156)
+sec "26. regressions from 1.0.13: census: a fresh socket after the tether reconnects (#156)"
 census_on=$(cfg plugins.census.enabled false)
 census_tether=$(cfg plugins.census.tether_only true)
 echo "census: enabled=$census_on tether_only=$census_tether"
-# 25.1: the installed census checks its socket's binding before every send, and
+# 26.1: the installed census checks its socket's binding before every send, and
 # opens a fresh socket at the start of a cycle when the tether has reconnected.
 if grep -q 'def bound(self):' "$LIBDIR/plugins/_census_dht.py" 2>/dev/null \
     && grep -q 'if not self.bound():' "$LIBDIR/plugins/_census_dht.py" 2>/dev/null \
     && grep -q 'the tether reconnected; opening a fresh socket' "$LIBDIR/plugins/census.py" 2>/dev/null; then
-  check 25.1 PASS "the census checks its socket's binding and reopens it after a reconnect" ""
+  check 26.1 PASS "the census checks its socket's binding and reopens it after a reconnect" ""
 else
-  check 25.1 FAIL "the census checks its socket's binding and reopens it after a reconnect" "the installed census is older"
+  check 26.1 FAIL "the census checks its socket's binding and reopens it after a reconnect" "the installed census is older"
 fi
 if [ "$census_on" != true ]; then
-  check 25.2 SKIP "the census socket is bound to the tether" "census not enabled"
+  check 26.2 SKIP "the census socket is bound to the tether" "census not enabled"
 else
-  # 25.2: with tether_only, the daemon's census socket is bound to the tether.
+  # 26.2: with tether_only, the daemon's census socket is bound to the tether.
   # Counts only: no socket address is printed.
   dpid=$(systemctl show -p MainPID --value kestrel-daemon.service 2>/dev/null)
   # A Bluetooth PAN link has no carrier state, so a working tether reads
@@ -1194,36 +1278,36 @@ except Exception:
     pass' "$DEV_HOME/.local/state/kestrel-census/status.json" 2>/dev/null)
   echo "  tether up since: ${tether_since:-unknown}  census last push or read: ${census_wrote:-unknown} (epoch seconds)"
   if [ "$census_tether" != true ]; then
-    check 25.2 SKIP "the census socket is bound to the tether" "tether_only is off"
+    check 26.2 SKIP "the census socket is bound to the tether" "tether_only is off"
   elif [ "$tether_up" != up ]; then
-    check 25.2 SKIP "the census socket is bound to the tether" "bnep0 is $tether_up"
+    check 26.2 SKIP "the census socket is bound to the tether" "bnep0 is $tether_up"
   elif [ "${socks#unknown}" != "$socks" ]; then
-    check 25.2 INFO "the census socket is bound to the tether" "can't read the daemon's sockets: $socks"
+    check 26.2 INFO "the census socket is bound to the tether" "can't read the daemon's sockets: $socks"
   elif [ "${bound:-0}" -ge 1 ]; then
-    check 25.2 PASS "the census socket is bound to the tether" "$bound daemon UDP socket(s) on bnep0"
+    check 26.2 PASS "the census socket is bound to the tether" "$bound daemon UDP socket(s) on bnep0"
   elif [ -n "$tether_since" ] && [ -n "$census_wrote" ] && [ "$tether_since" -gt "$census_wrote" ]; then
     # A socket from before the tether came back: the census sends nothing on
     # it and opens a fresh one at its next cycle, so judge it then.
-    check 25.2 INFO "the census socket is bound to the tether" "the tether came back $(( $(date +%s) - tether_since ))s ago, after the census's last push or read ($(( $(date +%s) - census_wrote ))s ago); rerun after its next cycle"
+    check 26.2 INFO "the census socket is bound to the tether" "the tether came back $(( $(date +%s) - tether_since ))s ago, after the census's last push or read ($(( $(date +%s) - census_wrote ))s ago); rerun after its next cycle"
   else
-    check 25.2 FAIL "the census socket is bound to the tether" "no daemon UDP socket on bnep0 (see the sockets and census lines above)"
+    check 26.2 FAIL "the census socket is bound to the tether" "no daemon UDP socket on bnep0 (see the sockets and census lines above)"
   fi
 fi
-check 25.3 MANUAL "see the checklist" "by hand (the tether off and on, then this check again)"
+check 26.3 MANUAL "see the checklist" "by hand (the tether off and on, then this check again)"
 
-# ---------------------------------------------------------------- 26. regressions from 1.0.13: map: Last 24 hours and Reset view (#154)
-sec "26. regressions from 1.0.13: map: Last 24 hours and Reset view (#154)"
-# 26.1 and 26.2 come from the dashboard section below.
-check 26.3 MANUAL "see the checklist" "by hand (the map's filters and Reset view on the phone)"
+# ---------------------------------------------------------------- 27. regressions from 1.0.13: map: Last 24 hours and Reset view (#154)
+sec "27. regressions from 1.0.13: map: Last 24 hours and Reset view (#154)"
+# 27.1 and 27.2 come from the dashboard section below.
+check 27.3 MANUAL "see the checklist" "by hand (the map's filters and Reset view on the phone)"
 
-# ---------------------------------------------------------------- 27. regressions from 1.0.13: plugins page: View buttons (#155)
-sec "27. regressions from 1.0.13: plugins page: View buttons (#155)"
-# 27.1 comes from the dashboard section below.
+# ---------------------------------------------------------------- 28. regressions from 1.0.13: plugins page: View buttons (#155)
+sec "28. regressions from 1.0.13: plugins page: View buttons (#155)"
+# 28.1 comes from the dashboard section below.
 
-# ---------------------------------------------------------------- 28. regressions from 1.0.13: privileged helpers (#145)
-sec "28. regressions from 1.0.13: privileged helpers (#145)"
-# 28.1 and 28.2 are in the config tests below; 28.3 comes from the dashboard.
-# 28.4: trigger files root drops for the device user's processes are made as
+# ---------------------------------------------------------------- 29. regressions from 1.0.13: privileged helpers (#145)
+sec "29. regressions from 1.0.13: privileged helpers (#145)"
+# 29.1 and 29.2 are in the config tests below; 29.3 comes from the dashboard.
+# 29.4: trigger files root drops for the device user's processes are made as
 # that user: regular files it owns, never links. Metadata only, read as the
 # device user, and the files are often already consumed (then nothing to see).
 rt_dir=$(cfg plugins.remote-train.agent_dir /var/lib/kestrel/agent)
@@ -1241,66 +1325,66 @@ for f in "$AGENT_DIR/train-request" "$rt_dir/.remote-train-now"; do
   fi
 done
 if [ -n "$trig_bad" ]; then
-  check 28.4 FAIL "trigger files are regular files owned by the device user" "$trig_bad"
+  check 29.4 FAIL "trigger files are regular files owned by the device user" "$trig_bad"
 elif [ -n "$trig" ]; then
-  check 28.4 PASS "trigger files are regular files owned by the device user" "$trig"
+  check 29.4 PASS "trigger files are regular files owned by the device user" "$trig"
 else
-  check 28.4 INFO "trigger files are regular files owned by the device user" "none present now (they go once picked up); see 27.6"
+  check 29.4 INFO "trigger files are regular files owned by the device user" "none present now (they go once picked up); see 28.6"
 fi
-# 28.5: the login helper's shared failure count lives in a root-only folder.
+# 29.5: the login helper's shared failure count lives in a root-only folder.
 if [ -e /run/kestrel-auth ] || [ -L /run/kestrel-auth ]; then
   ad=$(stat -c '%F %a %U' /run/kestrel-auth 2>/dev/null)
   af=$(stat -c '%F %a %U' /run/kestrel-auth/fails.json 2>/dev/null)
   if [ "$ad" = "directory 700 root" ] && { [ -z "$af" ] || [ "$af" = "regular file 600 root" ]; }; then
-    check 28.5 PASS "the login helper's state folder is root-only" "folder: $ad; fails.json: ${af:-none}"
+    check 29.5 PASS "the login helper's state folder is root-only" "folder: $ad; fails.json: ${af:-none}"
   else
-    check 28.5 FAIL "the login helper's state folder is root-only" "folder: $ad; fails.json: ${af:-none}"
+    check 29.5 FAIL "the login helper's state folder is root-only" "folder: $ad; fails.json: ${af:-none}"
   fi
 else
-  check 28.5 INFO "the login helper's state folder is root-only" "not made yet (no failed sign-in since boot)"
+  check 29.5 INFO "the login helper's state folder is root-only" "not made yet (no failed sign-in since boot)"
 fi
-check 28.6 MANUAL "see the checklist" "by hand (train-now and remote-train now still work)"
-check 28.7 MANUAL "see the checklist" "by hand (a root-only setting from the terminal)"
-check 28.8 MANUAL "see the checklist" "by hand (beta updates switched from the terminal)"
+check 29.6 MANUAL "see the checklist" "by hand (train-now and remote-train now still work)"
+check 29.7 MANUAL "see the checklist" "by hand (a root-only setting from the terminal)"
+check 29.8 MANUAL "see the checklist" "by hand (beta updates switched from the terminal)"
 
-# ---------------------------------------------------------------- 29. regressions from 1.0.13: the dashboard: sign-in and limits (#146)
-sec "29. regressions from 1.0.13: the dashboard: sign-in and limits (#146)"
-# 29.1: the daemon's unit and its running process.
+# ---------------------------------------------------------------- 30. regressions from 1.0.13: the dashboard: sign-in and limits (#146)
+sec "30. regressions from 1.0.13: the dashboard: sign-in and limits (#146)"
+# 30.1: the daemon's unit and its running process.
 d_pt=$(systemctl show -p PrivateTmp --value kestrel-daemon.service 2>/dev/null)
 d_nf=$(systemctl show -p LimitNOFILE --value kestrel-daemon.service 2>/dev/null)
 d_pid=$(systemctl show -p MainPID --value kestrel-daemon.service 2>/dev/null)
 d_run=$(awk '/^Max open files/ {print $4}' "/proc/${d_pid:-0}/limits" 2>/dev/null)
 if [ "$d_pt" = yes ] && [ "$d_nf" = 4096 ] && [ "$d_run" = 4096 ]; then
-  check 29.1 PASS "the daemon runs with PrivateTmp and LimitNOFILE=4096" "unit and running process"
+  check 30.1 PASS "the daemon runs with PrivateTmp and LimitNOFILE=4096" "unit and running process"
 else
-  check 29.1 FAIL "the daemon runs with PrivateTmp and LimitNOFILE=4096" "PrivateTmp=$d_pt LimitNOFILE=$d_nf running=${d_run:-?}"
+  check 30.1 FAIL "the daemon runs with PrivateTmp and LimitNOFILE=4096" "PrivateTmp=$d_pt LimitNOFILE=$d_nf running=${d_run:-?}"
 fi
-# 29.2-29.4 come from the dashboard section below (29.4 runs last).
-check 29.5 MANUAL "see the checklist" "by hand (the sign-in page's wait message)"
-check 29.6 MANUAL "see the checklist" "by hand (a potfile import and its limit)"
-check 29.7 MANUAL "see the checklist" "by hand (What's new reads normally)"
+# 30.2-30.4 come from the dashboard section below (30.4 runs last).
+check 30.5 MANUAL "see the checklist" "by hand (the sign-in page's wait message)"
+check 30.6 MANUAL "see the checklist" "by hand (a potfile import and its limit)"
+check 30.7 MANUAL "see the checklist" "by hand (What's new reads normally)"
 
-# ---------------------------------------------------------------- 30. regressions from 1.0.13: updates (#140, #148)
-sec "30. regressions from 1.0.13: updates (#140, #148)"
+# ---------------------------------------------------------------- 31. regressions from 1.0.13: updates (#140, #148)
+sec "31. regressions from 1.0.13: updates (#140, #148)"
 eng=$LIBDIR/update-apply
 if grep -q '^class _Redirects(urllib.request.HTTPRedirectHandler):' "$eng" 2>/dev/null \
     && grep -q '^MAX_REDIRECTS = 5$' "$eng" && grep -q 'raise Refused("the release server redirected to a non-https address")' "$eng" \
     && grep -q 'out.remove_header("Authorization")' "$eng" && grep -q '_OPENER.open(req, timeout=timeout)' "$eng"; then
-  check 30.1 PASS "the update engine follows https redirects only, at most five, token kept on the host" ""
+  check 31.1 PASS "the update engine follows https redirects only, at most five, token kept on the host" ""
 else
-  check 30.1 FAIL "the update engine follows https redirects only, at most five, token kept on the host" "markers missing in $eng"
+  check 31.1 FAIL "the update engine follows https redirects only, at most five, token kept on the host" "markers missing in $eng"
 fi
 if grep -qF 'GIT_CONFIG_KEY_1="http.followRedirects" GIT_CONFIG_VALUE_1="false"' "$CLI" 2>/dev/null \
     && grep -qF 'GIT_CONFIG_COUNT=2' "$CLI"; then
-  check 30.2 PASS "the CLI's token clone follows no redirect" ""
+  check 31.2 PASS "the CLI's token clone follows no redirect" ""
 else
-  check 30.2 FAIL "the CLI's token clone follows no redirect" "markers missing in $CLI"
+  check 31.2 FAIL "the CLI's token clone follows no redirect" "markers missing in $CLI"
 fi
-check 30.3 MANUAL "see the checklist" "by hand (a private-repo update, if you use one)"
+check 31.3 MANUAL "see the checklist" "by hand (a private-repo update, if you use one)"
 
-# ---------------------------------------------------------------- 31. regressions from 1.0.13: census (#141, #147)
-sec "31. regressions from 1.0.13: census (#141, #147)"
-# 31.1 comes from the dashboard section below.
+# ---------------------------------------------------------------- 32. regressions from 1.0.13: census (#141, #147)
+sec "32. regressions from 1.0.13: census (#141, #147)"
+# 32.1 comes from the dashboard section below.
 cp=$LIBDIR/plugins
 if grep -q '^DAY_ENTRIES = SLOTS \* MAX_ENTRIES \* (ALTERNATES + 1)$' "$cp/_census_proto.py" 2>/dev/null \
     && grep -q '^SLOTS = 64$' "$cp/_census_proto.py" && grep -q '^ALTERNATES = 3$' "$cp/_census_proto.py" \
@@ -1308,11 +1392,11 @@ if grep -q '^DAY_ENTRIES = SLOTS \* MAX_ENTRIES \* (ALTERNATES + 1)$' "$cp/_cens
     && grep -q '^def union(values, day, bits=POW_BITS, limit=MAX_ENTRIES):' "$cp/_census_proto.py" \
     && grep -q 'len(rows) >= proto.DAY_ENTRIES' "$cp/census.py" \
     && grep -q 'def _take(data, src, pending, results):' "$cp/_census_dht.py"; then
-  check 31.2 PASS "census reads keep at most a slot's worth per slot and 12,544 a day" "and malformed replies are set aside"
+  check 32.2 PASS "census reads keep at most a slot's worth per slot and 12,544 a day" "and malformed replies are set aside"
 else
-  check 31.2 FAIL "census reads keep at most a slot's worth per slot and 12,544 a day" "markers missing in the installed census files"
+  check 32.2 FAIL "census reads keep at most a slot's worth per slot and 12,544 a day" "markers missing in the installed census files"
 fi
-# 31.3: the saved census state holds no more than a full census for any day.
+# 32.3: the saved census state holds no more than a full census for any day.
 # Counts only, read as the device user.
 seen=$(as_dev /usr/bin/python3 -I - "$DEV_HOME/.local/state/kestrel-census/seen.json" <<'PY' 2>&1 | tail -1
 import json, sys
@@ -1329,40 +1413,40 @@ print("days %d, most in a day %d, not counted %d" % (len(counts), max(counts or 
 PY
 )
 case "$seen" in
-  missing) check 31.3 SKIP "no census day holds more than 12,544 entries" "no seen.json (census never read)" ;;
+  missing) check 32.3 SKIP "no census day holds more than 12,544 entries" "no seen.json (census never read)" ;;
   days\ *)
     most=$(printf '%s' "$seen" | sed -n 's/.*most in a day \([0-9]*\).*/\1/p')
     if [ "${most:-0}" -le 12544 ]; then
-      check 31.3 PASS "no census day holds more than 12,544 entries" "$seen"
+      check 32.3 PASS "no census day holds more than 12,544 entries" "$seen"
     else
-      check 31.3 FAIL "no census day holds more than 12,544 entries" "$seen"
+      check 32.3 FAIL "no census day holds more than 12,544 entries" "$seen"
     fi ;;
-  *) check 31.3 FAIL "no census day holds more than 12,544 entries" "$seen" ;;
+  *) check 32.3 FAIL "no census day holds more than 12,544 entries" "$seen" ;;
 esac
-check 31.4 MANUAL "see the checklist" "by hand (the Census page after a daemon restart)"
+check 32.4 MANUAL "see the checklist" "by hand (the Census page after a daemon restart)"
 
-# ---------------------------------------------------------------- 32. regressions from 1.0.13: plugin pages (#142-#144)
-sec "32. regressions from 1.0.13: plugin pages (#142-#144)"
-# 32.1 comes from the dashboard section below.
-check 32.2 MANUAL "see the checklist" "by hand (each plugin page's links on the phone)"
-check 33.1 MANUAL "see the checklist" "by hand, optional (a build with your own password hash)"
+# ---------------------------------------------------------------- 33. regressions from 1.0.13: plugin pages (#142-#144)
+sec "33. regressions from 1.0.13: plugin pages (#142-#144)"
+# 33.1 comes from the dashboard section below.
+check 33.2 MANUAL "see the checklist" "by hand (each plugin page's links on the phone)"
+check 34.1 MANUAL "see the checklist" "by hand, optional (a build with your own password hash)"
 
 since=""
 [ -f "$upd" ] && since="@$(stat -c %Y "$upd")"
-# ---------------------------------------------------------------- 34. regressions from 1.0.12: remote-train 0.2.0 (#129)
-sec "34. regressions from 1.0.12: remote-train 0.2.0: an unreachable host, and the remote-training service (#129)"
+# ---------------------------------------------------------------- 35. regressions from 1.0.12: remote-train 0.2.0 (#129)
+sec "35. regressions from 1.0.12: remote-train 0.2.0: an unreachable host, and the remote-training service (#129)"
 rt=$LIBDIR/plugins/remote-train.py
 rt_ver=$(sed -n 's/^ *__version__ = "\([0-9.]*\)".*/\1/p' "$rt" 2>/dev/null | head -1)
 if [ "$rt_ver" = "0.2.0" ] && grep -q '^ *__provides__ = ("remote-training",)' "$rt" \
     && grep -q 'def provide_remote_training' "$rt"; then
-  check 34.1 PASS "remote-train 0.2.0 is installed and provides remote-training" ""
+  check 35.1 PASS "remote-train 0.2.0 is installed and provides remote-training" ""
 else
-  check 34.1 FAIL "remote-train 0.2.0 is installed and provides remote-training" "version ${rt_ver:-?}"
+  check 35.1 FAIL "remote-train 0.2.0 is installed and provides remote-training" "version ${rt_ver:-?}"
 fi
-# 34.2: the last contact and last model survive a restart, in a status file in
+# 35.2: the last contact and last model survive a restart, in a status file in
 # the agent's own folder (read as the device user; ages only, no host).
 if [ "$(cfg plugins.remote-train.enabled false)" != true ]; then
-  check 34.2 SKIP "remote-train keeps its last contact and model in remote-status.json" "remote-train not enabled"
+  check 35.2 SKIP "remote-train keeps its last contact and model in remote-status.json" "remote-train not enabled"
 else
   rs=$(as_dev /usr/bin/python3 -I - "$AGENT_DIR/.remote-staging/remote-status.json" <<'PY' 2>&1
 import json, os, stat, sys, time
@@ -1382,32 +1466,32 @@ print("ok" if stat.S_ISREG(st.st_mode) and isinstance(data, dict) else "bad",
 PY
 )
   case "$rs" in
-    ok\ *) check 34.2 PASS "remote-train keeps its last contact and model in remote-status.json" "${rs#ok }" ;;
-    missing) check 34.2 INFO "remote-train keeps its last contact and model in remote-status.json" "not written yet (no SSH session since the update?)" ;;
-    *) check 34.2 FAIL "remote-train keeps its last contact and model in remote-status.json" "$rs" ;;
+    ok\ *) check 35.2 PASS "remote-train keeps its last contact and model in remote-status.json" "${rs#ok }" ;;
+    missing) check 35.2 INFO "remote-train keeps its last contact and model in remote-status.json" "not written yet (no SSH session since the update?)" ;;
+    *) check 35.2 FAIL "remote-train keeps its last contact and model in remote-status.json" "$rs" ;;
   esac
 fi
-check 34.3 MANUAL "see the checklist" "by hand (an unreachable host on the card)"
-check 34.4 MANUAL "see the checklist" "by hand (the card after a daemon restart)"
+check 35.3 MANUAL "see the checklist" "by hand (an unreachable host on the card)"
+check 35.4 MANUAL "see the checklist" "by hand (the card after a daemon restart)"
 
-# ---------------------------------------------------------------- 35. regressions from 1.0.12: the census plugin (#130, #131)
-sec "35. regressions from 1.0.12: the census plugin (#130, #131)"
+# ---------------------------------------------------------------- 36. regressions from 1.0.12: the census plugin (#130, #131)
+sec "36. regressions from 1.0.12: the census plugin (#130, #131)"
 bad=""
 for f in census.py _census_dht.py _census_proto.py; do
   st=$(stat -c '%U:%G %a' "$LIBDIR/plugins/$f" 2>/dev/null || echo missing)
   [ "$st" = "root:root 644" ] || bad="$bad $f=$st"
 done
-[ -z "$bad" ] && check 35.1 PASS "census and its two helper files are installed, root-owned 0644" "" \
-  || check 35.1 FAIL "census and its two helper files are installed, root-owned 0644" "$bad"
-# 35.2 and 35.3 are in the config tests below; 35.4 and 35.8 come from the dashboard.
+[ -z "$bad" ] && check 36.1 PASS "census and its two helper files are installed, root-owned 0644" "" \
+  || check 36.1 FAIL "census and its two helper files are installed, root-owned 0644" "$bad"
+# 36.2 and 36.3 are in the config tests below; 36.4 and 36.8 come from the dashboard.
 # census_on and census_tether are read in section 15.
 cstate=$DEV_HOME/.local/state/kestrel-census
 if [ "$census_on" != true ]; then
-  for id in 35.5 35.6 35.7; do
+  for id in 36.5 36.6 36.7; do
     check "$id" SKIP "census state and traffic" "census not enabled"
   done
 else
-  # 35.5-35.7: its state, read as the device user. Counts, hours and modes only:
+  # 36.5-36.7: its state, read as the device user. Counts, hours and modes only:
   # never a token, slot or node address.
   as_dev /usr/bin/python3 -I - "$cstate" "$(cfg plugins.census.daily_mb 5)" <<'PY' 2>&1
 import json, os, stat, sys, time
@@ -1417,13 +1501,13 @@ def chk(cid, result, what, detail=""):
 try:
     st = os.lstat(d)
 except FileNotFoundError:
-    for cid in ("35.5", "35.6", "35.7"):
+    for cid in ("36.5", "36.6", "36.7"):
         chk(cid, "INFO", "census state", "no state folder yet (paused since it was enabled?)")
     sys.exit(0)
 files = sorted(n for n in os.listdir(d) if not n.endswith(".tmp"))
 modes = {n: oct(os.lstat(os.path.join(d, n)).st_mode & 0o777) for n in files}
 ok = stat.S_IMODE(st.st_mode) == 0o700 and all(m == "0o600" for m in modes.values())
-chk("35.5", "PASS" if ok else "FAIL", "the census state folder is 0700 and its files 0600",
+chk("36.5", "PASS" if ok else "FAIL", "the census state folder is 0700 and its files 0600",
     "folder %s; %s" % (oct(stat.S_IMODE(st.st_mode)),
                        ", ".join("%s %s" % (n, m) for n, m in modes.items())))
 def load(name):
@@ -1442,50 +1526,50 @@ except ValueError:
     budget = 5 * 1024 * 1024
 use = "%d KB used today%s" % (used // 1024, " of %d MB" % (budget >> 20) if budget else "")
 if isinstance(wrote, int) and wrote in (hour, hour - 1):
-    chk("35.6", "PASS", "the census reported this hour or the last", "last report hour %02d UTC; %s" % (wrote, use))
+    chk("36.6", "PASS", "the census reported this hour or the last", "last report hour %02d UTC; %s" % (wrote, use))
 else:
-    chk("35.6", "INFO", "the census reported this hour or the last",
+    chk("36.6", "INFO", "the census reported this hour or the last",
         "last report hour %s; %s" % (wrote if wrote is not None else "none today", use))
 seen = ((load("seen.json") or {}).get("days") or {}).get(today) or {}
 read_at = seen.get("read_at")
 entries = seen.get("entries") or {}
 mine = day.get("token") in entries if day.get("day") == today else False
 if not isinstance(read_at, (int, float)):
-    chk("35.7", "INFO", "the census was read today and this device is in it", "not read yet today")
+    chk("36.7", "INFO", "the census was read today and this device is in it", "not read yet today")
 else:
-    chk("35.7", "PASS" if mine else "FAIL", "the census was read today and this device is in it",
+    chk("36.7", "PASS" if mine else "FAIL", "the census was read today and this device is in it",
         "read %d min ago: %d devices seen, %s online; this device %s"
         % ((time.time() - read_at) // 60, len(entries), seen.get("online"),
            "is in it" if mine else "is NOT in it"))
 PY
 fi
-check 35.9 MANUAL "see the checklist" "by hand (the tether off and on)"
-check 35.10 MANUAL "see the checklist" "by hand (the desktop census report)"
+check 36.9 MANUAL "see the checklist" "by hand (the tether off and on)"
+check 36.10 MANUAL "see the checklist" "by hand (the desktop census report)"
 
-# ---------------------------------------------------------------- 36. regressions from 1.0.11: AngryOxide stopped cleanly (#126)
-sec "36. regressions from 1.0.11: AngryOxide stopped cleanly (#126)"
+# ---------------------------------------------------------------- 37. regressions from 1.0.11: AngryOxide stopped cleanly (#126)
+sec "37. regressions from 1.0.11: AngryOxide stopped cleanly (#126)"
 # The unit: systemd signals only the launcher, with time for a clean stop.
 km=$(systemctl show -p KillMode --value kestrel-capture.service 2>/dev/null)
 ts=$(systemctl show -p TimeoutStopUSec --value kestrel-capture.service 2>/dev/null)
 echo "  kestrel-capture: KillMode=$km TimeoutStopUSec=$ts"
 if [ "$km" = mixed ] && [ -n "$ts" ] && [ "$ts" != infinity ]; then
-  check 36.1 PASS "the capture unit signals only the launcher, with a stop timeout" "KillMode=$km, TimeoutStopUSec=$ts"
+  check 37.1 PASS "the capture unit signals only the launcher, with a stop timeout" "KillMode=$km, TimeoutStopUSec=$ts"
 else
-  check 36.1 FAIL "the capture unit signals only the launcher, with a stop timeout" "KillMode=$km, TimeoutStopUSec=$ts"
+  check 37.1 FAIL "the capture unit signals only the launcher, with a stop timeout" "KillMode=$km, TimeoutStopUSec=$ts"
 fi
 # The running AngryOxide catches SIGINT (its handler is installed and SIGINT
 # isn't ignored): the signal masks from /proc only.
 ao=$(pgrep -x angryoxide | head -1)
 if [ -z "$ao" ]; then
-  check 36.2 SKIP "the running AngryOxide catches SIGINT" "AngryOxide is not running"
+  check 37.2 SKIP "the running AngryOxide catches SIGINT" "AngryOxide is not running"
 else
   cgt=$(awk '/^SigCgt:/ {print $2}' "/proc/$ao/status" 2>/dev/null)
   ign=$(awk '/^SigIgn:/ {print $2}' "/proc/$ao/status" 2>/dev/null)
   echo "  angryoxide signal masks: SigCgt=$cgt SigIgn=$ign"
   if [ -n "$cgt" ] && [ $(( 0x$cgt & 2 )) -ne 0 ] && [ $(( 0x${ign:-0} & 2 )) -eq 0 ]; then
-    check 36.2 PASS "the running AngryOxide catches SIGINT" "SIGINT caught, not ignored"
+    check 37.2 PASS "the running AngryOxide catches SIGINT" "SIGINT caught, not ignored"
   else
-    check 36.2 FAIL "the running AngryOxide catches SIGINT" "SigCgt=$cgt SigIgn=$ign"
+    check 37.2 FAIL "the running AngryOxide catches SIGINT" "SigCgt=$cgt SigIgn=$ign"
   fi
 fi
 # The capture unit's own lines since the update: how each AngryOxide run ended.
@@ -1503,28 +1587,28 @@ killed=$(grep -c "didn't stop within" "$clog" || true)
 echo "  since the update: stop exit codes: ${stops:-none}; relaunch/roll exit codes: ${relaunches:-none}; killed after the timeout: $killed"
 left=$(find "$RUNDIR" -maxdepth 1 -name '*.kismet-journal' 2>/dev/null | wc -l)
 if [ "$cap_on" = active ]; then
-  check 36.3 SKIP "the last stop was clean and left no kismet-journal" "capture is running (run once with it off)"
+  check 37.3 SKIP "the last stop was clean and left no kismet-journal" "capture is running (run once with it off)"
 elif [ -z "$stops" ]; then
-  check 36.3 SKIP "the last stop was clean and left no kismet-journal" "no stop since the update"
+  check 37.3 SKIP "the last stop was clean and left no kismet-journal" "no stop since the update"
 else
   last=${stops% }; last=${last##* }
   if [ "$last" = 0 ] && [ "$left" -eq 0 ]; then
-    check 36.3 PASS "the last stop was clean and left no kismet-journal" "rc=0, no journal left"
+    check 37.3 PASS "the last stop was clean and left no kismet-journal" "rc=0, no journal left"
   else
-    check 36.3 FAIL "the last stop was clean and left no kismet-journal" "rc=$last, $left journal file(s) left"
+    check 37.3 FAIL "the last stop was clean and left no kismet-journal" "rc=$last, $left journal file(s) left"
   fi
 fi
 if [ -z "$relaunches" ] && [ "${killed:-0}" -eq 0 ]; then
-  check 36.4 SKIP "every relaunch and roll since the update stopped AngryOxide cleanly" "none since the update"
+  check 37.4 SKIP "every relaunch and roll since the update stopped AngryOxide cleanly" "none since the update"
 elif [ "${killed:-0}" -eq 0 ] && [ -z "$(printf '%s\n' $relaunches | grep -vx 0 || true)" ]; then
-  check 36.4 PASS "every relaunch and roll since the update stopped AngryOxide cleanly" "exit codes: $relaunches"
+  check 37.4 PASS "every relaunch and roll since the update stopped AngryOxide cleanly" "exit codes: $relaunches"
 else
-  check 36.4 FAIL "every relaunch and roll since the update stopped AngryOxide cleanly" "exit codes: ${relaunches:-none}; killed: $killed"
+  check 37.4 FAIL "every relaunch and roll since the update stopped AngryOxide cleanly" "exit codes: ${relaunches:-none}; killed: $killed"
 fi
-check 36.5 MANUAL "see the checklist" "by hand (stop and start capture from the dashboard)"
+check 37.5 MANUAL "see the checklist" "by hand (stop and start capture from the dashboard)"
 
-# ---------------------------------------------------------------- 37. regressions from 1.0.11-beta.2: fair model contests (#120)
-sec "37. regressions from 1.0.11-beta.2: fair model contests (#120)"
+# ---------------------------------------------------------------- 38. regressions from 1.0.11-beta.2: fair model contests (#120)
+sec "38. regressions from 1.0.11-beta.2: fair model contests (#120)"
 # The contest code, imported as the device user (no torch: model loads are lazy).
 fair=$(as_dev "$VENV_PY" -I -c 'from kestrel_pi.agent import controller, metrics, train
 print(metrics.HOLDOUT_SCHEME, hasattr(metrics, "contest_decision"),
@@ -1532,9 +1616,9 @@ print(metrics.HOLDOUT_SCHEME, hasattr(metrics, "contest_decision"),
       hasattr(metrics, "promotion_decision"))' 2>&1 | tail -1)
 echo "  contest code: $fair"
 if [ "$fair" = "block-hash-v1 True True True False" ]; then
-  check 37.1 PASS "the fair-contest code is installed and the old promotion rule is gone" "$fair"
+  check 38.1 PASS "the fair-contest code is installed and the old promotion rule is gone" "$fair"
 else
-  check 37.1 FAIL "the fair-contest code is installed and the old promotion rule is gone" "$(printf '%s' "$fair" | cut -c1-120)"
+  check 38.1 FAIL "the fair-contest code is installed and the old promotion rule is gone" "$(printf '%s' "$fair" | cut -c1-120)"
 fi
 # The agent's status (pi-owned, read as the device user): the tally's shape and
 # counts, and whether a last decision is published. No model or row is read.
@@ -1557,9 +1641,9 @@ PY
 )
 echo "  agent status: $tally"
 case "$tally" in
-  none|unreadable*) check 37.2 SKIP "the agent publishes the contest tally and last decision" "no agent status" ;;
-  shape=contests*) check 37.2 PASS "the agent publishes the contest tally and last decision" "$tally" ;;
-  *) check 37.2 FAIL "the agent publishes the contest tally and last decision" "$tally" ;;
+  none|unreadable*) check 38.2 SKIP "the agent publishes the contest tally and last decision" "no agent status" ;;
+  shape=contests*) check 38.2 PASS "the agent publishes the contest tally and last decision" "$tally" ;;
+  *) check 38.2 FAIL "the agent publishes the contest tally and last decision" "$tally" ;;
 esac
 # Since the update: on-device runs that finished, and the contests that followed.
 alog=$work/agent-since.log
@@ -1575,16 +1659,16 @@ promoted=$(grep -c 'promoted the .* candidate' "$alog" || true)
 echo "  since the update: $runs on-device run(s), $contests contest line(s) ($deferred deferred, $promoted promotion(s))"
 grep -E 'contest \(' "$alog" | tail -4 | jscrub
 if [ "${runs:-0}" -eq 0 ] && [ "${contests:-0}" -eq 0 ]; then
-  check 37.3 SKIP "each on-device run since the update was followed by a contest" "no run or contest yet"
+  check 38.3 SKIP "each on-device run since the update was followed by a contest" "no run or contest yet"
 elif [ "${contests:-0}" -ge "${runs:-0}" ] && [ "${contests:-0}" -ge 1 ]; then
-  check 37.3 PASS "each on-device run since the update was followed by a contest" "$runs run(s), $contests contest line(s)"
+  check 38.3 PASS "each on-device run since the update was followed by a contest" "$runs run(s), $contests contest line(s)"
 else
-  check 37.3 FAIL "each on-device run since the update was followed by a contest" "$runs run(s), $contests contest line(s)"
+  check 38.3 FAIL "each on-device run since the update was followed by a contest" "$runs run(s), $contests contest line(s)"
 fi
 # remote-train: the host trains the agent's own algorithm. Algorithm names and
 # counts only; the host is never named.
 if [ "$(cfg plugins.remote-train.enabled false)" != true ]; then
-  check 37.4 SKIP "the training host trains the agent's own algorithm" "remote-train not enabled"
+  check 38.4 SKIP "the training host trains the agent's own algorithm" "remote-train not enabled"
 else
   algo=$(cfg agent.algorithm RecurrentPPO)
   launched=$(journalctl -q --no-pager -u kestrel-daemon ${since:+--since "$since"} 2>/dev/null \
@@ -1597,40 +1681,40 @@ except Exception:
   echo "  remote: $launched launch(es) of $algo since the update; host models seen: ${slugs:-none}"
   slug=$(printf '%s' "$algo" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-\n' '-')
   if [ "${launched:-0}" -ge 1 ] || printf ' %s ' "$slugs" | grep -q " $slug "; then
-    check 37.4 PASS "the training host trains the agent's own algorithm" "$algo: $launched launch(es); host models: ${slugs:-none}"
+    check 38.4 PASS "the training host trains the agent's own algorithm" "$algo: $launched launch(es); host models: ${slugs:-none}"
   else
-    check 37.4 INFO "the training host trains the agent's own algorithm" "not yet ($algo launches once enough new rows have been logged)"
+    check 38.4 INFO "the training host trains the agent's own algorithm" "not yet ($algo launches once enough new rows have been logged)"
   fi
 fi
-# 37.5 comes from the dashboard section below.
-check 37.6 MANUAL "see the checklist" "by hand (a day of capture, then the diagnostics script)"
+# 38.5 comes from the dashboard section below.
+check 38.6 MANUAL "see the checklist" "by hand (a day of capture, then the diagnostics script)"
 
-# ---------------------------------------------------------------- 37. regressions from 1.0.11-beta.2: every desktop script in the image (#121)
-sec "37. regressions from 1.0.11-beta.2: every desktop script in the image (#121)"
+# ---------------------------------------------------------------- 38. regressions from 1.0.11-beta.2: every desktop script in the image (#121)
+sec "38. regressions from 1.0.11-beta.2: every desktop script in the image (#121)"
 want="README.md:root:644 gps-check.sh:root:755 pull-agent-diagnostics.sh:root:755 pull-connectivity-diagnostics.sh:root:755 pull-eink-diagnostics.sh:root:755 pull-health.sh:root:755 pull-web-diagnostics.sh:root:755"
 have=$(cd "$SCRIPTS_DIR" 2>/dev/null && for f in *; do [ -f "$f" ] && printf '%s:%s ' "$f" "$(stat -c '%U:%a' "$f")"; done)
 echo "  installed: ${have:-none}"
 if [ "$(printf '%s\n' $have | sort | tr '\n' ' ')" = "$(printf '%s\n' $want | sort | tr '\n' ' ')" ]; then
-  check 37.7 PASS "every desktop script is installed, .sh 0755 and the README 0644" "7 files"
+  check 38.7 PASS "every desktop script is installed, .sh 0755 and the README 0644" "7 files"
 else
-  check 37.7 FAIL "every desktop script is installed, .sh 0755 and the README 0644" "see the list above"
+  check 38.7 FAIL "every desktop script is installed, .sh 0755 and the README 0644" "see the list above"
 fi
-check 37.8 MANUAL "see the checklist" "by hand (runs on a computer)"
+check 38.8 MANUAL "see the checklist" "by hand (runs on a computer)"
 
-# ---------------------------------------------------------------- 37. regressions from 1.0.11-beta.2: the release version on the dashboard (#123)
-sec "37. regressions from 1.0.11-beta.2: the release version on the dashboard (#123)"
-# 37.9 and 37.10 come from the dashboard section below.
+# ---------------------------------------------------------------- 38. regressions from 1.0.11-beta.2: the release version on the dashboard (#123)
+sec "38. regressions from 1.0.11-beta.2: the release version on the dashboard (#123)"
+# 38.9 and 38.10 come from the dashboard section below.
 
-# ---------------------------------------------------------------- 38. regressions from 1.0.11-beta.1: AngryOxide v0.9.4 (#111)
-sec "38. regressions from 1.0.11-beta.1: AngryOxide v0.9.4 (#111)"
+# ---------------------------------------------------------------- 39. regressions from 1.0.11-beta.1: AngryOxide v0.9.4 (#111)
+sec "39. regressions from 1.0.11-beta.1: AngryOxide v0.9.4 (#111)"
 # --version only: it opens no interface. A test build set through ANGRYOXIDE in
 # the capture service (a systemd drop-in) is noted; the stock binary is checked.
 aov=$(timeout 10 /usr/bin/angryoxide --version 2>/dev/null | head -1)
 ao_env=$(systemctl show kestrel-capture -p Environment --value 2>/dev/null | tr ' ' '\n' | grep -c '^ANGRYOXIDE=' || true)
 echo "  /usr/bin/angryoxide: ${aov:-no answer}   ANGRYOXIDE set in the capture service: $ao_env"
 case "$aov" in
-  *" 0.9.4"|*" 0.9.4 "*) check 38.1 PASS "AngryOxide is v0.9.4" "$aov" ;;
-  *) check 38.1 FAIL "AngryOxide is v0.9.4" "${aov:-no answer}" ;;
+  *" 0.9.4"|*" 0.9.4 "*) check 39.1 PASS "AngryOxide is v0.9.4" "$aov" ;;
+  *) check 39.1 FAIL "AngryOxide is v0.9.4" "${aov:-no answer}" ;;
 esac
 # How far the kismet database's newest row trails AngryOxide's capture file (its
 # last write), as pull-health.sh measures it, so a quiet spot isn't read as lag.
@@ -1656,31 +1740,31 @@ PY
   echo "  kismet database (lag = seconds behind the capture file): $lag"
   lag_s=$(printf '%s' "$lag" | sed -nE 's/.*lag=(-?[0-9]+).*/\1/p')
   if [ -n "$lag_s" ] && [ "$lag_s" -ge 0 ] && [ "$lag_s" -le 60 ]; then
-    check 38.2 PASS "the kismet database keeps up with capture" "$lag"
+    check 39.2 PASS "the kismet database keeps up with capture" "$lag"
   elif [ -n "$lag_s" ] && [ "$lag_s" -gt 60 ]; then
-    check 38.2 FAIL "the kismet database keeps up with capture" "$lag"
+    check 39.2 FAIL "the kismet database keeps up with capture" "$lag"
   else
-    check 38.2 INFO "the kismet database keeps up with capture" "$lag"
+    check 39.2 INFO "the kismet database keeps up with capture" "$lag"
   fi
   rss=$(ps -o rss= -C angryoxide 2>/dev/null | awk '{s+=$1} END {print s+0}')
   total=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
   pct=$(( rss * 100 / (total > 0 ? total : 1) ))
   echo "  AngryOxide memory: $((rss / 1024)) MB of $((total / 1024)) MB ($pct%)"
   if [ "$rss" -eq 0 ]; then
-    check 38.3 INFO "AngryOxide uses under 30% of RAM" "not running right now"
+    check 39.3 INFO "AngryOxide uses under 30% of RAM" "not running right now"
   elif [ "$pct" -lt 30 ]; then
-    check 38.3 PASS "AngryOxide uses under 30% of RAM" "$((rss / 1024)) MB, $pct%"
+    check 39.3 PASS "AngryOxide uses under 30% of RAM" "$((rss / 1024)) MB, $pct%"
   else
-    check 38.3 FAIL "AngryOxide uses under 30% of RAM" "$((rss / 1024)) MB, $pct%"
+    check 39.3 FAIL "AngryOxide uses under 30% of RAM" "$((rss / 1024)) MB, $pct%"
   fi
 else
-  check 38.2 SKIP "the kismet database keeps up with capture" "capture is off"
-  check 38.3 SKIP "AngryOxide uses under 30% of RAM" "capture is off"
+  check 39.2 SKIP "the kismet database keeps up with capture" "capture is off"
+  check 39.3 SKIP "AngryOxide uses under 30% of RAM" "capture is off"
 fi
-check 38.4 MANUAL "see the checklist" "by hand (an hour somewhere busy, if not done on beta 1)"
+check 39.4 MANUAL "see the checklist" "by hand (an hour somewhere busy, if not done on beta 1)"
 
-# ---------------------------------------------------------------- 38. regressions from 1.0.11-beta.1: Environment from the capture file (#108)
-sec "38. regressions from 1.0.11-beta.1: Environment from the capture file (#108)"
+# ---------------------------------------------------------------- 39. regressions from 1.0.11-beta.1: Environment from the capture file (#108)
+sec "39. regressions from 1.0.11-beta.1: Environment from the capture file (#108)"
 envst=$(as_dev /usr/bin/python3 -I - "$STORE" <<'PY' 2>&1 | tail -1
 import json, os, sys, time
 try:
@@ -1698,16 +1782,16 @@ PY
 echo "  capture-status.json: $envst"
 age=$(printf '%s' "$envst" | sed -nE 's/.*data_age=([0-9]+).*/\1/p')
 if [ "$cap_on" != active ]; then
-  check 38.5 SKIP "capture-status.json has a fresh radio count" "capture is off"
+  check 39.5 SKIP "capture-status.json has a fresh radio count" "capture is off"
 elif [ -n "$age" ] && [ "$age" -le 120 ] && printf '%s' "$envst" | grep -q 'radios=[0-9]'; then
-  check 38.5 PASS "capture-status.json has a fresh radio count" "$envst"
+  check 39.5 PASS "capture-status.json has a fresh radio count" "$envst"
 else
-  check 38.5 FAIL "capture-status.json has a fresh radio count" "$envst"
+  check 39.5 FAIL "capture-status.json has a fresh radio count" "$envst"
 fi
-# 38.6 comes from the dashboard section below.
+# 39.6 comes from the dashboard section below.
 
-# ---------------------------------------------------------------- 38. regressions from 1.0.11-beta.1: eink removed (#112)
-sec "38. regressions from 1.0.11-beta.1: eink removed (#112)"
+# ---------------------------------------------------------------- 39. regressions from 1.0.11-beta.1: eink removed (#112)
+sec "39. regressions from 1.0.11-beta.1: eink removed (#112)"
 left=""
 for f in eink.py _eink_epdconfig.py _eink_epd2in7.py _eink_epd2in7_V2.py; do
   [ -e "$LIBDIR/plugins/$f" ] && left="$left $f"
@@ -1717,30 +1801,30 @@ for f in eink-ws27.py _eink-ws27_epdconfig.py _eink-ws27_epd2in7.py _eink-ws27_e
   [ -f "$LIBDIR/plugins/$f" ] || miss="$miss $f"
 done
 if [ -z "$left$miss" ]; then
-  check 38.7 PASS "eink and its helpers are gone; eink-ws27 and its helpers are installed" ""
+  check 39.7 PASS "eink and its helpers are gone; eink-ws27 and its helpers are installed" ""
 else
-  check 38.7 FAIL "eink and its helpers are gone; eink-ws27 and its helpers are installed" \
+  check 39.7 FAIL "eink and its helpers are gone; eink-ws27 and its helpers are installed" \
     "${left:+still there:$left }${miss:+missing:$miss}"
 fi
-# 38.8, 38.9 and 38.12 read config.toml's table names and the declarations in the
-# config tests below; 38.10 and 38.13 come from the dashboard section.
+# 39.8, 39.9 and 39.12 read config.toml's table names and the declarations in the
+# config tests below; 39.10 and 39.13 come from the dashboard section.
 
-# ---------------------------------------------------------------- 38. regressions from 1.0.11-beta.1: ups-hat removed (#113)
-sec "38. regressions from 1.0.11-beta.1: ups-hat removed (#113)"
+# ---------------------------------------------------------------- 39. regressions from 1.0.11-beta.1: ups-hat removed (#113)
+sec "39. regressions from 1.0.11-beta.1: ups-hat removed (#113)"
 if [ ! -e "$LIBDIR/plugins/ups-hat.py" ] && [ -f "$LIBDIR/plugins/ups-ws.py" ]; then
-  check 38.11 PASS "ups-hat is gone; ups-ws is installed" ""
+  check 39.11 PASS "ups-hat is gone; ups-ws is installed" ""
 else
-  check 38.11 FAIL "ups-hat is gone; ups-ws is installed" \
+  check 39.11 FAIL "ups-hat is gone; ups-ws is installed" \
     "ups-hat.py $( [ -e "$LIBDIR/plugins/ups-hat.py" ] && echo present || echo gone), ups-ws.py $( [ -f "$LIBDIR/plugins/ups-ws.py" ] && echo present || echo missing)"
 fi
 
-# ---------------------------------------------------------------- 38. regressions from 1.0.11-beta.1: per-ap by default (#116)
-sec "38. regressions from 1.0.11-beta.1: per-ap by default (#116)"
+# ---------------------------------------------------------------- 39. regressions from 1.0.11-beta.1: per-ap by default (#116)
+sec "39. regressions from 1.0.11-beta.1: per-ap by default (#116)"
 mode=$(cfg capture.output.mode per-ap)
 if [ "$mode" = per-ap ]; then
-  check 38.14 PASS "[capture.output] mode is per-ap" ""
+  check 39.14 PASS "[capture.output] mode is per-ap" ""
 else
-  check 38.14 INFO "[capture.output] mode is per-ap" "it is $mode (changed after the flash?)"
+  check 39.14 INFO "[capture.output] mode is per-ap" "it is $mode (changed after the flash?)"
 fi
 # File names hold network names, so only how many follow each layout is
 # reported, never a name.
@@ -1767,18 +1851,18 @@ echo "  store files: $layout"
 n_ap=$(printf '%s' "$layout" | sed -nE 's/.*per_ap=([0-9]+).*/\1/p')
 n_other=$(printf '%s' "$layout" | sed -nE 's/.*other=([0-9]+).*/\1/p')
 if [ "$mode" != per-ap ]; then
-  check 38.16 SKIP "the store's files are named per access point" "mode is $mode"
+  check 39.16 SKIP "the store's files are named per access point" "mode is $mode"
 elif [ "${n_ap:-0}" -eq 0 ] && [ "${n_other:-0}" -eq 0 ]; then
-  check 38.16 SKIP "the store's files are named per access point" "no handshakes captured yet"
+  check 39.16 SKIP "the store's files are named per access point" "no handshakes captured yet"
 elif [ "${n_other:-0}" -eq 0 ]; then
-  check 38.16 PASS "the store's files are named per access point" "$layout"
+  check 39.16 PASS "the store's files are named per access point" "$layout"
 else
-  check 38.16 INFO "the store's files are named per access point" "$layout (other names: a restored store?)"
+  check 39.16 INFO "the store's files are named per access point" "$layout (other names: a restored store?)"
 fi
-# 38.15 is in the config tests below; 38.17 comes from the dashboard section.
+# 39.15 is in the config tests below; 39.17 comes from the dashboard section.
 
-# ---------------------------------------------------------------- 38. regressions from 1.0.11-beta.1: pinned Python packages (#115)
-sec "38. regressions from 1.0.11-beta.1: pinned Python packages (#115)"
+# ---------------------------------------------------------------- 39. regressions from 1.0.11-beta.1: pinned Python packages (#115)
+sec "39. regressions from 1.0.11-beta.1: pinned Python packages (#115)"
 pins=$(as_dev "$VENV_PY" -I - "$DEV_HOME/.venv/kestrel-constraints.txt" <<'PY' 2>&1 | tail -1
 import importlib.metadata as md, importlib.util, sys
 try:
@@ -1802,25 +1886,25 @@ PY
 echo "  venv: $pins"
 case "$pins" in
   "pins="*" mismatched=0 "*)
-    check 38.18 PASS "the venv's packages match kestrel-constraints.txt" "$(printf '%s' "$pins" | cut -d' ' -f1-2)" ;;
-  noconstraints) check 38.18 FAIL "the venv's packages match kestrel-constraints.txt" "no constraints file in the venv" ;;
-  *) check 38.18 FAIL "the venv's packages match kestrel-constraints.txt" "$(printf '%s' "$pins" | cut -c1-200)" ;;
+    check 39.18 PASS "the venv's packages match kestrel-constraints.txt" "$(printf '%s' "$pins" | cut -d' ' -f1-2)" ;;
+  noconstraints) check 39.18 FAIL "the venv's packages match kestrel-constraints.txt" "no constraints file in the venv" ;;
+  *) check 39.18 FAIL "the venv's packages match kestrel-constraints.txt" "$(printf '%s' "$pins" | cut -c1-200)" ;;
 esac
 case "$pins" in
-  *"pytest=False"*) check 38.19 PASS "pytest is not installed on the device" "" ;;
-  *"pytest=True"*) check 38.19 FAIL "pytest is not installed on the device" "pytest found" ;;
-  *) check 38.19 INFO "pytest is not installed on the device" "$(printf '%s' "$pins" | cut -c1-80)" ;;
+  *"pytest=False"*) check 39.19 PASS "pytest is not installed on the device" "" ;;
+  *"pytest=True"*) check 39.19 FAIL "pytest is not installed on the device" "pytest found" ;;
+  *) check 39.19 INFO "pytest is not installed on the device" "$(printf '%s' "$pins" | cut -c1-80)" ;;
 esac
 
-# ---------------------------------------------------------------- 39. regressions from 1.0.10
-sec "39. regressions from 1.0.10"
+# ---------------------------------------------------------------- 40. regressions from 1.0.10
+sec "40. regressions from 1.0.10"
 gone=$(as_dev "$VENV_PY" -I -c 'import importlib.util
 names = ("kestrel_pi.hatkeys", "kestrel_pi.alerts", "kestrel_pi.vendor")
 print(" ".join(n for n in names if importlib.util.find_spec(n) is not None) or "none")' 2>&1 | tail -1)
 if [ "$gone" = none ]; then
-  check 39.1 PASS "plugin-only modules are gone from the installed package" "no hatkeys, alerts or vendor"
+  check 40.1 PASS "plugin-only modules are gone from the installed package" "no hatkeys, alerts or vendor"
 else
-  check 39.1 FAIL "plugin-only modules are gone from the installed package" "still there: $(printf '%s' "$gone" | cut -c1-120)"
+  check 40.1 FAIL "plugin-only modules are gone from the installed package" "still there: $(printf '%s' "$gone" | cut -c1-120)"
 fi
 bad=""
 for f in _lib_alerts.py _lib_eink_face.py _lib_hat_keys.py _lib_ups.py _lib_ina219.py; do
@@ -1829,9 +1913,9 @@ for f in _lib_alerts.py _lib_eink_face.py _lib_hat_keys.py _lib_ups.py _lib_ina2
   [ "$st" = "root 644" ] || bad="$bad $f($st)"
 done
 if [ -z "$bad" ]; then
-  check 39.2 PASS "the five plugin libraries are installed, root-owned 0644" "alerts, eink_face, hat_keys, ups, ina219"
+  check 40.2 PASS "the five plugin libraries are installed, root-owned 0644" "alerts, eink_face, hat_keys, ups, ina219"
 else
-  check 39.2 FAIL "the five plugin libraries are installed, root-owned 0644" "$bad"
+  check 40.2 FAIL "the five plugin libraries are installed, root-owned 0644" "$bad"
 fi
 # Load each library the way a plugin does, as the device user in the venv.
 # Loading runs no plugin and touches no hardware (drawing, GPIO and I2C are lazy).
@@ -1853,17 +1937,17 @@ PY
 echo "  libraries: $apis"
 case "$apis" in
   "alerts=1."*" eink_face=1."[1-9]*" hat_keys=0."*" ups=0."[3-9]*" ina219=1."[1-9]*)
-    check 39.3 PASS "each library loads with the API its plugins ask for" "$apis" ;;
-  *) check 39.3 FAIL "each library loads with the API its plugins ask for" "$(printf '%s' "$apis" | cut -c1-160)" ;;
+    check 40.3 PASS "each library loads with the API its plugins ask for" "$apis" ;;
+  *) check 40.3 FAIL "each library loads with the API its plugins ask for" "$(printf '%s' "$apis" | cut -c1-160)" ;;
 esac
 liberr=$(journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null \
   | grep -cE 'library API|plugin library .* not found|has no LIB_API' || true)
 if [ "${liberr:-0}" -eq 0 ]; then
-  check 39.4 PASS "no plugin-library load errors in this boot's daemon journal" ""
+  check 40.4 PASS "no plugin-library load errors in this boot's daemon journal" ""
 else
-  check 39.4 FAIL "no plugin-library load errors in this boot's daemon journal" "$liberr line(s)"
+  check 40.4 FAIL "no plugin-library load errors in this boot's daemon journal" "$liberr line(s)"
 fi
-# 39.5-39.9 are in the config tests below; 39.10 and 39.12 come from the dashboard.
+# 40.5-40.9 are in the config tests below; 40.10 and 40.12 come from the dashboard.
 # This daemon run only: which e-ink plugin stood down and for whom, and whether
 # they still fought over the pins. Counts and plugin names only.
 inv=$(systemctl show -p InvocationID --value kestrel-daemon 2>/dev/null)
@@ -1883,33 +1967,33 @@ n_standing=$(printf '%s\n' "$standing" | grep -c 'standing down' || true)
 in_use=$(grep -c 'already in use' "$run_log" || true)
 echo "  enabled e-ink:${eon:- none}   standing down: $n_standing   'already in use': $in_use"
 if [ "$n_on" -eq 0 ]; then
-  check 39.11 SKIP "one e-ink plugin drives the panel, the other stands down" "no e-ink plugin enabled"
+  check 40.11 SKIP "one e-ink plugin drives the panel, the other stands down" "no e-ink plugin enabled"
 elif [ -z "$inv" ]; then
-  check 39.11 INFO "one e-ink plugin drives the panel, the other stands down" "no daemon run to read"
+  check 40.11 INFO "one e-ink plugin drives the panel, the other stands down" "no daemon run to read"
 elif [ "$in_use" -eq 0 ] && [ "$n_standing" -eq $((n_on - 1)) ]; then
-  check 39.11 PASS "one e-ink plugin drives the panel, the other stands down" "$n_on enabled, $n_standing standing down"
+  check 40.11 PASS "one e-ink plugin drives the panel, the other stands down" "$n_on enabled, $n_standing standing down"
 else
-  check 39.11 FAIL "one e-ink plugin drives the panel, the other stands down" \
+  check 40.11 FAIL "one e-ink plugin drives the panel, the other stands down" \
     "$n_on enabled, $n_standing standing down, $in_use 'already in use' line(s)"
 fi
 nopanel=$(journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null | grep -c 'no panel (' || true)
 plain=$(journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null | grep -c 'BUSY line never driven (no panel wired)' || true)
 if [ -z "$eon" ]; then
-  check 39.13 SKIP "with no HAT, the journal says no panel is wired" "no e-ink plugin enabled"
+  check 40.13 SKIP "with no HAT, the journal says no panel is wired" "no e-ink plugin enabled"
 elif [ "${nopanel:-0}" -eq 0 ]; then
-  check 39.13 INFO "with no HAT, the journal says no panel is wired" "no 'no panel' line: a panel answered"
+  check 40.13 INFO "with no HAT, the journal says no panel is wired" "no 'no panel' line: a panel answered"
 elif [ "${plain:-0}" -ge 1 ]; then
-  check 39.13 PASS "with no HAT, the journal says no panel is wired" "$plain line(s)"
+  check 40.13 PASS "with no HAT, the journal says no panel is wired" "$plain line(s)"
 else
-  check 39.13 FAIL "with no HAT, the journal says no panel is wired" "'no panel' without the plain reason"
+  check 40.13 FAIL "with no HAT, the journal says no panel is wired" "'no panel' without the plain reason"
 fi
 topic=$DEV_HOME/.local/state/kestrel-ntfy/topic
 if as_dev test -f "$topic"; then
   [ "$(as_dev stat -c '%a' "$topic" 2>/dev/null)" = 600 ] \
-    && check 39.14 PASS "generated ntfy topic file is private" "0600 (contents not read)" \
-    || check 39.14 FAIL "generated ntfy topic file is private" "mode $(as_dev stat -c '%a' "$topic" 2>/dev/null)"
+    && check 40.14 PASS "generated ntfy topic file is private" "0600 (contents not read)" \
+    || check 40.14 FAIL "generated ntfy topic file is private" "mode $(as_dev stat -c '%a' "$topic" 2>/dev/null)"
 else
-  check 39.14 SKIP "generated ntfy topic file is private" "no generated topic"
+  check 40.14 SKIP "generated ntfy topic file is private" "no generated topic"
 fi
 # Only the number of queued alerts is read, never their text.
 queues=$(as_dev /usr/bin/python3 -I - "$DEV_HOME/.local/state" <<'PY' 2>&1
@@ -1928,9 +2012,9 @@ print(" ".join(out) or "none")
 PY
 )
 case "$queues" in
-  none) check 39.15 SKIP "the alert queues read back" "no queue file yet" ;;
-  *BAD*) check 39.15 FAIL "the alert queues read back" "$queues" ;;
-  *) check 39.15 PASS "the alert queues read back" "queued: $queues" ;;
+  none) check 40.15 SKIP "the alert queues read back" "no queue file yet" ;;
+  *BAD*) check 40.15 FAIL "the alert queues read back" "$queues" ;;
+  *) check 40.15 PASS "the alert queues read back" "queued: $queues" ;;
 esac
 tls=$(cfg web.tls on)
 port=$(cfg web.port 8080)
@@ -1943,22 +2027,22 @@ done
 if [ "$(as_dev stat -c '%a' "$WEBSTATE" 2>/dev/null)" = 700 ] \
     && [ "$(as_dev stat -c '%a' "$WEBSTATE/cert.pem" 2>/dev/null)" = 600 ] \
     && [ "$(as_dev stat -c '%a' "$WEBSTATE/key.pem" 2>/dev/null)" = 600 ]; then
-  check 39.16 PASS "certificate made and private" "dir 700, cert.pem and key.pem 600"
+  check 40.16 PASS "certificate made and private" "dir 700, cert.pem and key.pem 600"
 elif [ "$tls" = off ]; then
-  check 39.16 SKIP "certificate made and private" "[web] tls is off"
+  check 40.16 SKIP "certificate made and private" "[web] tls is off"
 else
-  check 39.16 FAIL "certificate made and private" "see the modes above"
+  check 40.16 FAIL "certificate made and private" "see the modes above"
 fi
 # The fingerprint itself never goes in the report: only whether they match.
 fp_cli=$(timeout 20 "$CLI" web fingerprint 2>/dev/null | tail -1)
 fp_log=$(journalctl -b -q --no-pager -u kestrel-daemon 2>/dev/null \
   | grep -oE 'HTTPS certificate SHA-256 [0-9A-F:]+' | tail -1 | awk '{print $NF}')
 if [ -n "$fp_cli" ] && [ "$fp_cli" = "$fp_log" ]; then
-  check 39.17 PASS "kestrel web fingerprint matches the daemon's journal" "values not shown"
+  check 40.17 PASS "kestrel web fingerprint matches the daemon's journal" "values not shown"
 elif [ -z "$fp_log" ]; then
-  check 39.17 INFO "kestrel web fingerprint matches the daemon's journal" "no HTTPS line in this boot's daemon journal"
+  check 40.17 INFO "kestrel web fingerprint matches the daemon's journal" "no HTTPS line in this boot's daemon journal"
 else
-  check 39.17 FAIL "kestrel web fingerprint matches the daemon's journal" "they differ (values not shown)"
+  check 40.17 FAIL "kestrel web fingerprint matches the daemon's journal" "they differ (values not shown)"
 fi
 # Listening sockets only (read-only, no request): HTTPS and the forwarder on each
 # management address, plain HTTP on loopback. Addresses are counted, not shown.
@@ -1968,30 +2052,30 @@ http_ext=$(printf '%s\n' "$lst" | grep -E ":$port\$" | grep -vcE '^(127\.|\[::1\
 http_lo=$(printf '%s\n' "$lst" | grep -cE "^127\.[0-9.]+:$port\$" || true)
 echo "  listeners: $tport off-loopback=$https_ext  $port off-loopback=$http_ext  $port loopback=$http_lo"
 if [ "$tls" = off ]; then
-  check 39.18 SKIP "HTTPS and the forwarder listen on each management address" "[web] tls is off"
+  check 40.18 SKIP "HTTPS and the forwarder listen on each management address" "[web] tls is off"
 elif [ "${https_ext:-0}" -ge 1 ] && [ "$https_ext" = "$http_ext" ] && [ "${http_lo:-0}" -ge 1 ]; then
-  check 39.18 PASS "HTTPS and the forwarder listen on each management address" "$https_ext address(es); loopback plain HTTP too"
+  check 40.18 PASS "HTTPS and the forwarder listen on each management address" "$https_ext address(es); loopback plain HTTP too"
 else
-  check 39.18 FAIL "HTTPS and the forwarder listen on each management address" "see the listener counts above"
+  check 40.18 FAIL "HTTPS and the forwarder listen on each management address" "see the listener counts above"
 fi
-# 39.19 (loopback Basic) and 39.20 (nosniff) come from the dashboard section below.
+# 40.19 (loopback Basic) and 40.20 (nosniff) come from the dashboard section below.
 cat_ok=$(as_dev "$VENV_PY" -I -c 'from kestrel_pi import config_catalog as c
 a, b = c.find("web", "tls"), c.find("web", "tls_port")
 print(bool(a) and bool(b) and a.get("editable") is False and b.get("editable") is False)' 2>&1)
 if [ "$cat_ok" = True ]; then
-  check 39.21 PASS "Advanced settings lists web.tls and web.tls_port read-only" ""
+  check 40.21 PASS "Advanced settings lists web.tls and web.tls_port read-only" ""
 else
-  check 39.21 FAIL "Advanced settings lists web.tls and web.tls_port read-only" "$(printf '%s' "$cat_ok" | tr '\n' ' ' | cut -c1-120)"
+  check 40.21 FAIL "Advanced settings lists web.tls and web.tls_port read-only" "$(printf '%s' "$cat_ok" | tr '\n' ' ' | cut -c1-120)"
 fi
-# 39.22 (web.tls refused through the settings channel) is in the config tests below.
+# 40.22 (web.tls refused through the settings channel) is in the config tests below.
 # The helper run directly with a malformed request: it answers without reading
 # any password (a bad request never reaches the check) and writes nothing, and
 # exits 0 once it has answered, so a refused request leaves no failed unit.
 auth_out=$(printf '{}' | timeout 10 /usr/bin/python3 -I "$CTL" checkauth 2>/dev/null); auth_rc=$?
 if [ "$auth_rc" -eq 0 ] && printf '%s' "$auth_out" | grep -q '"ok": false'; then
-  check 39.23 PASS "the login helper exits 0 after answering a refused request" "rc=0, refused"
+  check 40.23 PASS "the login helper exits 0 after answering a refused request" "rc=0, refused"
 else
-  check 39.23 FAIL "the login helper exits 0 after answering a refused request" \
+  check 40.23 FAIL "the login helper exits 0 after answering a refused request" \
     "rc=$auth_rc reply=$(printf '%s' "$auth_out" | tr -cd '[:alnum:] :{}",_' | cut -c1-80)"
 fi
 gone_old=""
@@ -1999,12 +2083,12 @@ for old in notify hat-buttons; do
   [ -e "$LIBDIR/plugins/$old.py" ] && gone_old="$gone_old $old"
 done
 if [ -z "$gone_old" ]; then
-  check 39.24 PASS "the replaced notify and hat-buttons plugins are gone" ""
+  check 40.24 PASS "the replaced notify and hat-buttons plugins are gone" ""
 else
-  check 39.24 FAIL "the replaced notify and hat-buttons plugins are gone" "still installed:$gone_old"
+  check 40.24 FAIL "the replaced notify and hat-buttons plugins are gone" "still installed:$gone_old"
 fi
-# 39.25-39.27 come from the dashboard section below.
-check 40.1 MANUAL "see the checklist" "the closing step"
+# 40.25-40.27 come from the dashboard section below.
+check 41.1 MANUAL "see the checklist" "the closing step"
 
 # ---------------------------------------------------------------- config tests (throwaway copy)
 sec "config tests (throwaway copy of config.toml; commands blocked)"
@@ -2044,21 +2128,21 @@ def defaults(name): return {k: (v or {}).get("default") for k, v in opts(name).i
 def provides(name): return tuple(decl(name).get("provides") or ())
 def state(name): return "enabled" if read("plugins.%s.enabled" % name) is True else "disabled"
 tables = set((read("plugins") or {}).keys())
-# 38.8 and 38.11's config half: the shipped tables carry the new names.
-check("38.8", "eink-ws27" in tables and "eink" not in tables and "eink" not in plugs,
+# 39.8 and 39.11's config half: the shipped tables carry the new names.
+check("39.8", "eink-ws27" in tables and "eink" not in tables and "eink" not in plugs,
       "config.toml has [plugins.eink-ws27] and no [plugins.eink]; no eink plugin is listed", "")
-check("38.12", "ups-ws" in tables and "ups-hat" not in tables and "ups-hat" not in plugs
+check("39.12", "ups-ws" in tables and "ups-hat" not in tables and "ups-hat" not in plugs
       and caps("ups-ws") == {"ui"} and provides("ups-ws") == ("battery",)
       and defaults("ups-ws").get("address") == 0x42
       and not str(decl("ups-ws").get("description") or "").startswith("Deprecated"),
       "config.toml has [plugins.ups-ws] and no [plugins.ups-hat]; ups-ws is local only, "
       "provides battery at 0x42, and isn't marked deprecated", "ups-ws %s" % state("ups-ws"))
-# 38.9: eink-ws27 is no longer marked deprecated and keeps its choices.
-check("38.9", not str(decl("eink-ws27").get("description") or "").startswith("Deprecated")
+# 39.9: eink-ws27 is no longer marked deprecated and keeps its choices.
+check("39.9", not str(decl("eink-ws27").get("description") or "").startswith("Deprecated")
       and (opts("eink-ws27").get("variant") or {}).get("choices") == ["auto", "v2", "v1"],
       "eink-ws27 isn't marked deprecated and declares its variant choices",
       "eink-ws27 %s" % state("eink-ws27"))
-# 39.5: every shipped plugin is there and readable; no library or helper file,
+# 40.5: every shipped plugin is there and readable; no library or helper file,
 # and nothing named lib, is listed as a plugin.
 expected = {"memtemp", "session-stats", "gps", "wpa-sec", "wigle", "backup", "eink-ws213",
             "eink-ws27", "updates", "remote-train", "downloads", "map", "ntfy", "telegram",
@@ -2066,31 +2150,31 @@ expected = {"memtemp", "session-stats", "gps", "wpa-sec", "wigle", "backup", "ei
 invalid = sorted(n for n, v in plugs.items() if v[0] is None)
 missing = sorted(expected - set(plugs))
 extra = sorted(set(plugs) - expected)
-check("39.5", not invalid and not missing and not any(n.startswith("_") for n in plugs)
+check("40.5", not invalid and not missing and not any(n.startswith("_") for n in plugs)
       and "lib" not in plugs,
       "all nineteen shipped plugins present and readable; no _ file or lib listed",
       "missing=%s invalid=%s other=%s" % (missing, invalid, extra))
-# 39.6: choices where a plugin declares a fixed set, and a value outside them is
+# 40.6: choices where a plugin declares a fixed set, and a value outside them is
 # refused through the settings channel with the (throwaway) config unchanged.
 c213 = (opts("eink-ws213").get("variant") or {}).get("choices")
 c27r = (opts("eink-ws27").get("rotation") or {}).get("choices")
 table_before = read("plugins.eink-ws213")
 r = apply({"plugin": "eink-ws213", "set": {"variant": "V4"}})
-check("39.6", c213 == ["v4", "v3", "v2"] and c27r == [0, 90, 180, 270]
+check("40.6", c213 == ["v4", "v3", "v2"] and c27r == [0, 90, 180, 270]
       and not r.get("ok") and read("plugins.eink-ws213") == table_before
       and "one of" in str(r.get("error", "")),
       "e-ink choices declared; a value outside them is refused through the settings channel",
       "error=%s" % str(r.get("error", ""))[:80])
-# 39.7: one plugin per alert service, each with only its own secret options.
+# 40.7: one plugin per alert service, each with only its own secret options.
 def secrets(name):
     return {k for k, v in opts(name).items() if (v or {}).get("secret")}
-check("39.7", "network" in caps("ntfy") and "network" in caps("telegram")
+check("40.7", "network" in caps("ntfy") and "network" in caps("telegram")
       and secrets("ntfy") == {"topic", "token"} and secrets("telegram") == {"bot_token", "chat_id"},
       "ntfy and telegram declare network and only their own secrets",
       "ntfy %s, telegram %s" % (state("ntfy"), state("telegram")))
-# 39.8: eink-ws27's HAT key options, local only.
+# 40.8: eink-ws27's HAT key options, local only.
 o = opts("eink-ws27")
-check("39.8", (o.get("buttons") or {}).get("default") is True
+check("40.8", (o.get("buttons") or {}).get("default") is True
       and (o.get("pins") or {}).get("default") == "5,6,13,19"
       and (o.get("hold_seconds") or {}).get("default") == 3
       and (o.get("allow_capture") or {}).get("default") is True
@@ -2098,36 +2182,36 @@ check("39.8", (o.get("buttons") or {}).get("default") is True
       and "network" not in caps("eink-ws27"),
       "eink-ws27 declares the HAT key options, local only",
       "buttons %s" % ("off" if read("plugins.eink-ws27.buttons") is False else "on"))
-# 39.9: the one-cell and four-cell UPS plugins: local only, the battery service,
+# 40.9: the one-cell and four-cell UPS plugins: local only, the battery service,
 # untested, and their defaults (0x43, 0x43, 0x2D, power_on_when_charged off).
 new_ups = ("ups-wsc", "ups-wsd", "ups-wse")
 d_c, d_d, d_e = defaults("ups-wsc"), defaults("ups-wsd"), defaults("ups-wse")
-check("39.9", all(caps(n) == {"ui"} and provides(n) == ("battery",)
+check("40.9", all(caps(n) == {"ui"} and provides(n) == ("battery",)
                  and "Not yet tested on hardware" in str(decl(n).get("description") or "")
                  for n in new_ups)
       and d_c.get("address") == 0x43 and d_d.get("address") == 0x43
       and d_e.get("address") == 0x2D and d_e.get("power_on_when_charged") is False,
       "ups-wsc, ups-wsd and ups-wse: local only, battery, untested, their defaults",
       ", ".join("%s %s" % (n, state(n)) for n in new_ups))
-# 35.2: census's declarations: network/ui/web, the census service, the two
+# 36.2: census's declarations: network/ui/web, the census service, the two
 # services it reads, and its defaults (every 90 minutes, tether only).
 dc = defaults("census")
-check("35.2", caps("census") == {"network", "ui", "web"} and provides("census") == ("census",)
+check("36.2", caps("census") == {"network", "ui", "web"} and provides("census") == ("census",)
       and tuple(decl("census").get("optional_requires") or ()) == ("agent", "remote-training")
       and dc.get("report") is True and dc.get("read") is True and dc.get("poll_minutes") == 90
       and dc.get("tether_only") is True and dc.get("daily_mb") == 5 and "poll_hours" not in dc,
       "census declares network, ui and web, provides census, and keeps its defaults",
       "census %s" % state("census"))
-# 35.3: enabling census through the settings channel needs the authorized-use
+# 36.3: enabling census through the settings channel needs the authorized-use
 # acknowledgment (the throwaway config, and an ack file in the work folder).
 before = read("plugins.census")
 r1 = apply({"plugin": "census", "enabled": True})
 refused = not r1.get("ok") and r1.get("need_ack") is True and read("plugins.census") == before
 r2 = apply({"plugin": "census", "enabled": True, "ack": True})
-check("35.3", refused and r2.get("ok") is True and read("plugins.census.enabled") is True,
+check("36.3", refused and r2.get("ok") is True and read("plugins.census.enabled") is True,
       "enabling census through the settings channel needs the acknowledgment",
       "without: %s" % str(r1.get("error", ""))[:70])
-# 28.1 and 28.2: the settings root acts on are root-only, and the settings channel
+# 29.1 and 29.2: the settings root acts on are root-only, and the settings channel
 # refuses them with the (throwaway) config unchanged.
 ROOT_ONLY = {"updates": ("beta", "timeout", "backup_timeout_seconds"),
              "remote-train": ("agent_dir",)}
@@ -2135,7 +2219,7 @@ TRIAL = {"beta": True, "timeout": 25, "backup_timeout_seconds": 600,
          "agent_dir": "/var/lib/kestrel/agent-kbc"}
 undeclared = ["%s.%s" % (p, o) for p, names in ROOT_ONLY.items() for o in names
               if (opts(p).get(o) or {}).get("root_only") is not True]
-check("28.1", not undeclared, "updates' beta/timeout/backup_timeout_seconds and "
+check("29.1", not undeclared, "updates' beta/timeout/backup_timeout_seconds and "
       "remote-train's agent_dir are root-only", "not root-only: %s" % (undeclared or "none"))
 tried = []
 for plugin, names in ROOT_ONLY.items():
@@ -2144,11 +2228,11 @@ for plugin, names in ROOT_ONLY.items():
         r = apply({"plugin": plugin, "set": {o: TRIAL[o]}})
         tried.append((o, not r.get("ok") and read("plugins.%s" % plugin) == before,
                       str(r.get("error", ""))[:60]))
-check("28.2", all(ok for _o, ok, _e in tried),
+check("29.2", all(ok for _o, ok, _e in tried),
       "each is refused through the settings channel (nothing written)",
       "; ".join("%s: %s" % (o, "refused" if ok else "ACCEPTED") for o, ok, _e in tried)
       + " (%s)" % tried[0][2])
-# 7.2: face_pack is terminal-only on both e-ink plugins, and the settings channel
+# 8.2: face_pack is terminal-only on both e-ink plugins, and the settings channel
 # refuses it with the (throwaway) config unchanged.
 fp_decl = {p: opts(p).get("face_pack") or {} for p in ("eink-ws27", "eink-ws213")}
 declared = all(d.get("root_only") is True and d.get("type") == "str" and d.get("default") == ""
@@ -2159,24 +2243,24 @@ for plugin in ("eink-ws27", "eink-ws213"):
     r = apply({"plugin": plugin, "set": {"face_pack": "kestrel"}})
     fp_tried.append((plugin, not r.get("ok") and read("plugins.%s" % plugin) == before,
                      str(r.get("error", ""))[:50]))
-check("7.2", declared and all(ok for _p, ok, _e in fp_tried),
+check("8.2", declared and all(ok for _p, ok, _e in fp_tried),
       "face_pack is terminal-only on both e-ink plugins; the settings channel refuses it (nothing written)",
       "declared root_only: %s; " % declared
       + "; ".join("%s: %s" % (p, ("refused (%s)" % e) if ok else "ACCEPTED") for p, ok, e in fp_tried))
-# 39.22: HTTPS can only be switched from a terminal, never through the settings socket.
+# 40.22: HTTPS can only be switched from a terminal, never through the settings socket.
 before = read("web.tls")
 r = apply({"target": "config-set", "table": "web", "key": "tls", "value": "off"})
-check("39.22", not r.get("ok") and read("web.tls") == before,
+check("40.22", not r.get("ok") and read("web.tls") == before,
       "web.tls is refused through the settings channel (CLI only)", "error=%s" % r.get("error"))
 PY
-# 38.15: the Advanced page's default for the mode, from the installed package.
+# 39.15: the Advanced page's default for the mode, from the installed package.
 cat_mode=$(as_dev "$VENV_PY" -I -c 'from kestrel_pi import config_catalog as c
 e = c.find("capture.output", "mode") or {}
 print(e.get("default"), (e.get("choices") or [None])[0])' 2>&1 | tail -1)
 if [ "$cat_mode" = "per-ap per-ap" ]; then
-  check 38.15 PASS "Advanced settings shows per-ap as the mode's default" ""
+  check 39.15 PASS "Advanced settings shows per-ap as the mode's default" ""
 else
-  check 38.15 FAIL "Advanced settings shows per-ap as the mode's default" "$(printf '%s' "$cat_mode" | cut -c1-120)"
+  check 39.15 FAIL "Advanced settings shows per-ap as the mode's default" "$(printf '%s' "$cat_mode" | cut -c1-120)"
 fi
 [ "$(sha256sum "$CONFIG" | awk '{print $1}')" = "$cfg_sum_before" ] \
   && check 0.1 PASS "real config.toml untouched by the tests" "checksum identical" \
@@ -2200,22 +2284,22 @@ mode = str(web.get("auth", "system")).lower()
 port = int(web.get("port", 8080))
 def chk(cid, result, what, detail=""):
     print("CHECK %-5s %-6s %s :: %s" % (cid, result, what, detail))
-# 39.20: every response carries nosniff, the sign-in refusal included (no password needed).
+# 40.20: every response carries nosniff, the sign-in refusal included (no password needed).
 try:
     hdrs = urllib.request.urlopen("http://127.0.0.1:%d/status.json" % port, timeout=15).headers
 except urllib.error.HTTPError as exc:
     hdrs = exc.headers
 except Exception as exc:
     hdrs = None
-    chk("39.20", "INFO", "responses carry X-Content-Type-Options: nosniff", "no answer: %s" % type(exc).__name__)
+    chk("40.20", "INFO", "responses carry X-Content-Type-Options: nosniff", "no answer: %s" % type(exc).__name__)
 if hdrs is not None:
-    chk("39.20", "PASS" if hdrs.get("X-Content-Type-Options") == "nosniff" else "FAIL",
+    chk("40.20", "PASS" if hdrs.get("X-Content-Type-Options") == "nosniff" else "FAIL",
         "responses carry X-Content-Type-Options: nosniff", "")
-# 29.2: a request body over 64 KB is refused (413) before it's read. Sent to the
+# 30.2: a request body over 64 KB is refused (413) before it's read. Sent to the
 # sign-in form over loopback with no credentials, so nothing is checked.
 BODY_WHAT = "a request body over 64 KB to the loopback dashboard gets 413"
 if mode not in ("basic", "system"):
-    chk("29.2", "SKIP", BODY_WHAT, "no sign-in form (web auth %s)" % mode)
+    chk("30.2", "SKIP", BODY_WHAT, "no sign-in form (web auth %s)" % mode)
 else:
     import http.client
     try:
@@ -2224,48 +2308,49 @@ else:
                      headers={"Content-Type": "application/x-www-form-urlencoded"})
         got = conn.getresponse().status
         conn.close()
-        chk("29.2", "PASS" if got == 413 else "FAIL", BODY_WHAT, "HTTP %s" % got)
+        chk("30.2", "PASS" if got == 413 else "FAIL", BODY_WHAT, "HTTP %s" % got)
     except Exception as exc:
-        chk("29.2", "INFO", BODY_WHAT, "no answer: %s" % type(exc).__name__)
+        chk("30.2", "INFO", BODY_WHAT, "no answer: %s" % type(exc).__name__)
 # The checks below need the dashboard's answer; without it each says why.
-DASH = {"2.2": "the dashboard, Plugins and guide pages carry the working indicator; the refresh checks it",
-        "6.2": "/guide renders with its links and no <img> tag",
-        "7.4": "an e-ink plugin with face_pack set shows a Face pack row naming the pack in use",
-        "8.2": "on battery, the UPS card's current is in a Pi's range (under 3,000 mA)",
-        "11.2": "/guide opens with the pwnagotchi credit, before its first section",
-        "12.5": "the Census page has the Boards card, and its Board line names this board's family",
-        "12.6": "/guide's census section says the board family is sent, never the exact model",
-        "14.5": "under a learned policy, the agent page shows the Exploring row",
-        "15.5": "the agent page counts from-scratch wins once one has been judged",
-        "19.1": "/guide has the Exploring and training from scratch section",
-        "20.2": "a by-AP search for a name matches no BSSID by its hex letters",
-        "22.2": "the dashboard's recovered count is no more than its access points",
-        "23.2": "the by-AP page's access-point count matches the dashboard's",
-        "26.1": "the map's filters include Last 24 hours",
-        "26.2": "on a zoomed map, Reset view is on the map, not in the filter row",
-        "27.1": "the census and wpa-sec rows offer a View button",
-        "28.3": "the Plugins page shows the root-only settings read-only",
-        "29.3": "/guide renders, with its headings",
-        "29.4": "repeated wrong Basic credentials get 429; the right ones still get in",
-        "31.1": "the Census page's Status shows the tether, reach, and dated push and read",
-        "32.1": "every plugin page the script can open starts with the links back",
-        "35.4": "an enabled census is loaded, with no error",
-        "35.8": "the Census page shows what this device reports",
-        "37.5": "the agent page shows the contest tally",
-        "37.9": "/status.json reports the release version, with the package version beside it",
-        "37.10": "the dashboard header shows the release version",
-        "38.6": "the Environment card shows a count while capturing",
-        "38.10": "an enabled eink-ws27 loads with its Motion card and no deprecation note",
-        "38.13": "an enabled ups-ws loads, its card shows a status, and no deprecation note",
-        "38.17": "Captured networks opens on the by-access-point view",
-        "39.10": "each enabled ups-wsc/ups-wsd/ups-wse is loaded and its card shows a status",
-        "39.12": "one e-ink card shows the panel, the other 'used by' it",
-        "39.25": "the running daemon offers the row buttons",
-        "39.26": "the map page: background, recovered colours, drag and zoom",
-        "39.27": "Captured networks has its controls at the top"}
+DASH = {"2.5": "/guide's whitelist section advises names and explains AP-less handshakes with a whitelist",
+        "3.2": "the dashboard, Plugins and guide pages carry the working indicator; the refresh checks it",
+        "7.2": "/guide renders with its links and no <img> tag",
+        "8.4": "an e-ink plugin with face_pack set shows a Face pack row naming the pack in use",
+        "9.2": "on battery, the UPS card's current is in a Pi's range (under 3,000 mA)",
+        "12.2": "/guide opens with the pwnagotchi credit, before its first section",
+        "13.5": "the Census page has the Boards card, and its Board line names this board's family",
+        "13.6": "/guide's census section says the board family is sent, never the exact model",
+        "15.5": "under a learned policy, the agent page shows the Exploring row",
+        "16.5": "the agent page counts from-scratch wins once one has been judged",
+        "20.1": "/guide has the Exploring and training from scratch section",
+        "21.2": "a by-AP search for a name matches no BSSID by its hex letters",
+        "23.2": "the dashboard's recovered count is no more than its access points",
+        "24.2": "the by-AP page's access-point count matches the dashboard's",
+        "27.1": "the map's filters include Last 24 hours",
+        "27.2": "on a zoomed map, Reset view is on the map, not in the filter row",
+        "28.1": "the census and wpa-sec rows offer a View button",
+        "29.3": "the Plugins page shows the root-only settings read-only",
+        "30.3": "/guide renders, with its headings",
+        "30.4": "repeated wrong Basic credentials get 429; the right ones still get in",
+        "32.1": "the Census page's Status shows the tether, reach, and dated push and read",
+        "33.1": "every plugin page the script can open starts with the links back",
+        "36.4": "an enabled census is loaded, with no error",
+        "36.8": "the Census page shows what this device reports",
+        "38.5": "the agent page shows the contest tally",
+        "38.9": "/status.json reports the release version, with the package version beside it",
+        "38.10": "the dashboard header shows the release version",
+        "39.6": "the Environment card shows a count while capturing",
+        "39.10": "an enabled eink-ws27 loads with its Motion card and no deprecation note",
+        "39.13": "an enabled ups-ws loads, its card shows a status, and no deprecation note",
+        "39.17": "Captured networks opens on the by-access-point view",
+        "40.10": "each enabled ups-wsc/ups-wsd/ups-wse is loaded and its card shows a status",
+        "40.12": "one e-ink card shows the panel, the other 'used by' it",
+        "40.25": "the running daemon offers the row buttons",
+        "40.26": "the map page: background, recovered colours, drag and zoom",
+        "40.27": "Captured networks has its controls at the top"}
 def skip_all(why, basic=True):
     if basic:
-        chk("39.19", "SKIP", "loopback /status.json with Basic credentials", why)
+        chk("40.19", "SKIP", "loopback /status.json with Basic credentials", why)
     for cid, what in DASH.items():
         chk(cid, "SKIP", what, why)
 req = urllib.request.Request("http://127.0.0.1:%d/status.json" % port)
@@ -2290,12 +2375,12 @@ try:
 except Exception as exc:
     why = type(exc).__name__ + (" %s" % exc.code if isinstance(exc, urllib.error.HTTPError) else "")
     print("(not available: %s)" % why)
-    chk("39.19", "FAIL" if mode in ("basic", "system") else "INFO",
+    chk("40.19", "FAIL" if mode in ("basic", "system") else "INFO",
         "loopback /status.json with Basic credentials", why)
     skip_all("no /status.json", basic=False)
     sys.exit(0)
 if mode in ("basic", "system"):
-    chk("39.19", "PASS", "loopback /status.json with Basic credentials", "plain HTTP on 127.0.0.1")
+    chk("40.19", "PASS", "loopback /status.json with Basic credentials", "plain HTTP on 127.0.0.1")
 print("version:", s.get("version"))
 cap = s.get("capture", {}) or {}
 print("capture:", {k: cap.get(k) for k in ("state", "enabled", "hashline_files", "access_points",
@@ -2318,33 +2403,33 @@ def widget(name):
     return {e.get("name"): e.get("value") for e in els if isinstance(e, dict)}
 def enabled(name):
     return (plugins.get(name) or {}).get("state") not in (None, "disabled")
-# 38.6: while capturing, the Environment card has a count, not "Unknown".
+# 39.6: while capturing, the Environment card has a count, not "Unknown".
 env = s.get("environment")
 if not isinstance(env, dict):
-    chk("38.6", "SKIP", DASH["38.6"], "capture is off")
+    chk("39.6", "SKIP", DASH["39.6"], "capture is off")
 elif env.get("available"):
-    chk("38.6", "PASS", DASH["38.6"], "available, data age %s s" % env.get("data_age_s"))
+    chk("39.6", "PASS", DASH["39.6"], "available, data age %s s" % env.get("data_age_s"))
 else:
-    chk("38.6", "FAIL", DASH["38.6"], "not available while capturing")
-# 38.10: eink-ws27 loads with its Motion card, and nothing calls it deprecated.
+    chk("39.6", "FAIL", DASH["39.6"], "not available while capturing")
+# 39.10: eink-ws27 loads with its Motion card, and nothing calls it deprecated.
 if not enabled("eink-ws27"):
-    chk("38.10", "SKIP", DASH["38.10"], "eink-ws27 not enabled")
+    chk("39.10", "SKIP", DASH["39.10"], "eink-ws27 not enabled")
 else:
     p = plugins["eink-ws27"]
     ok = (p.get("state") == "loaded" and "mobility" in widget("eink-ws27")
           and "deprecated" not in str(p.get("note") or "").lower())
-    chk("38.10", "PASS" if ok else "FAIL", DASH["38.10"],
+    chk("39.10", "PASS" if ok else "FAIL", DASH["39.10"],
         "state %s, note starts %r" % (p.get("state"), str(p.get("note") or "")[:40]))
-# 38.13: ups-ws loads, its card shows a status, and nothing calls it deprecated.
+# 39.13: ups-ws loads, its card shows a status, and nothing calls it deprecated.
 if not enabled("ups-ws"):
-    chk("38.13", "SKIP", DASH["38.13"], "ups-ws not enabled")
+    chk("39.13", "SKIP", DASH["39.13"], "ups-ws not enabled")
 else:
     p = plugins["ups-ws"]
     status = str(widget("ups-ws").get("status") or "")
     ok = (p.get("state") == "loaded" and status not in ("", "checking")
           and "deprecated" not in str(p.get("note") or "").lower())
-    chk("38.13", "PASS" if ok else "FAIL", DASH["38.13"], "status %r" % status[:50])
-# 7.4: an enabled e-ink plugin with face_pack set shows its Face pack row, with
+    chk("39.13", "PASS" if ok else "FAIL", DASH["39.13"], "status %r" % status[:50])
+# 8.4: an enabled e-ink plugin with face_pack set shows its Face pack row, with
 # the pack in use (not "using text faces"). A folder pack's name isn't shown.
 inks = [n for n in ("eink-ws27", "eink-ws213") if enabled(n)]
 packs = {n: str(widget(n).get("face_pack") or "") for n in inks}
@@ -2353,64 +2438,64 @@ def _kind(v):
     return "built in" if v.endswith("(built in)") else (
         "not in use" if "using text faces" in v else "a folder pack")
 if not inks:
-    chk("7.4", "SKIP", DASH["7.4"], "no e-ink plugin enabled")
+    chk("8.4", "SKIP", DASH["8.4"], "no e-ink plugin enabled")
 elif not packs:
-    chk("7.4", "SKIP", DASH["7.4"], "face_pack not set on %s" % ", ".join(inks))
+    chk("8.4", "SKIP", DASH["8.4"], "face_pack not set on %s" % ", ".join(inks))
 else:
     detail = "; ".join("%s: %s" % (n, _kind(v)) for n, v in packs.items())
-    chk("7.4", "PASS" if all(_kind(v) != "not in use" for v in packs.values()) else "INFO",
-        DASH["7.4"], detail)
-# 8.2: on battery, ups-ws's current is in a Pi's range. The old calibration read
+    chk("8.4", "PASS" if all(_kind(v) != "not in use" for v in packs.values()) else "INFO",
+        DASH["8.4"], detail)
+# 9.2: on battery, ups-ws's current is in a Pi's range. The old calibration read
 # about ten times the real current (an idle Pi 5 showed ~4,000 mA).
 if not enabled("ups-ws"):
-    chk("8.2", "SKIP", DASH["8.2"], "ups-ws not enabled")
+    chk("9.2", "SKIP", DASH["9.2"], "ups-ws not enabled")
 else:
     u = widget("ups-ws")
     m = re.match(r"\s*([+-]?\d+(?:\.\d+)?)\s*mA", str(u.get("current") or ""))
     status = str(u.get("status") or "").lower()
     if not m:
-        chk("8.2", "SKIP", DASH["8.2"], "no current reading (status %r)" % status[:30])
+        chk("9.2", "SKIP", DASH["9.2"], "no current reading (status %r)" % status[:30])
     elif status != "discharging":
-        chk("8.2", "INFO", DASH["8.2"], "status %r; rerun on battery" % status[:30])
+        chk("9.2", "INFO", DASH["9.2"], "status %r; rerun on battery" % status[:30])
     else:
         ma = abs(float(m.group(1)))
-        chk("8.2", "PASS" if ma < 3000 else "FAIL", DASH["8.2"],
+        chk("9.2", "PASS" if ma < 3000 else "FAIL", DASH["9.2"],
             "%.0f mA, %s" % (ma, str(u.get("power") or "no power reading")[:20]))
-# 39.10: each enabled one-cell/four-cell UPS plugin loads and shows a status (with
+# 40.10: each enabled one-cell/four-cell UPS plugin loads and shows a status (with
 # no board: "no UPS HAT (C) detected" and the like).
 new_on = [n for n in ("ups-wsc", "ups-wsd", "ups-wse") if enabled(n)]
 if not new_on:
-    chk("39.10", "SKIP", DASH["39.10"], "none of ups-wsc, ups-wsd, ups-wse enabled")
+    chk("40.10", "SKIP", DASH["40.10"], "none of ups-wsc, ups-wsd, ups-wse enabled")
 else:
     bad = [n for n in new_on if plugins[n].get("state") != "loaded"
            or str(widget(n).get("status") or "") in ("", "checking")]
-    chk("39.10", "FAIL" if bad else "PASS", DASH["39.10"],
+    chk("40.10", "FAIL" if bad else "PASS", DASH["40.10"],
         ("not loaded or no status: %s" % ", ".join(bad)) if bad else
         "; ".join("%s: %s" % (n, str(widget(n).get("status"))[:50]) for n in new_on))
-# 39.12: one enabled e-ink plugin's card shows the panel's state, the other reads
+# 40.12: one enabled e-ink plugin's card shows the panel's state, the other reads
 # "used by <that plugin>".
 eon = [n for n in ("eink-ws27", "eink-ws213") if enabled(n)]
 if len(eon) < 2:
-    chk("39.12", "SKIP", DASH["39.12"], "needs both eink-ws27 and eink-ws213 enabled")
+    chk("40.12", "SKIP", DASH["40.12"], "needs both eink-ws27 and eink-ws213 enabled")
 else:
     shown = {n: str(widget(n).get("panel") or "") for n in eon}
     drivers = [n for n, v in shown.items() if not v.startswith("used by ")]
     ok = len(drivers) == 1 and all(v == "used by " + drivers[0]
                                    for n, v in shown.items() if n != drivers[0])
-    chk("39.12", "PASS" if ok else "FAIL", DASH["39.12"],
+    chk("40.12", "PASS" if ok else "FAIL", DASH["40.12"],
         "; ".join("%s: %s" % (n, v[:40]) for n, v in shown.items()))
-# 39.25: an enabled, loaded downloads/map/ntfy/telegram offers its main-page button.
+# 40.25: an enabled, loaded downloads/map/ntfy/telegram offers its main-page button.
 offered = {p.get("name"): [a.get("label") for a in (p.get("actions") or []) if isinstance(a, dict)]
            for p in s.get("plugins", []) if p.get("state") == "loaded"}
 want = {"downloads": "Download", "map": "Map", "ntfy": "Status", "telegram": "Status"}
 on = sorted(n for n in want if n in offered)
 if not on:
-    chk("39.25", "SKIP", DASH["39.25"], "none of downloads, map, ntfy, telegram loaded")
+    chk("40.25", "SKIP", DASH["40.25"], "none of downloads, map, ntfy, telegram loaded")
 else:
     bad = [n for n in on if want[n] not in offered[n]]
-    chk("39.25", "FAIL" if bad else "PASS", DASH["39.25"],
+    chk("40.25", "FAIL" if bad else "PASS", DASH["40.25"],
         ("missing: %s" % ", ".join(bad)) if bad else "checked: %s" % ", ".join(on))
-# 38.17, 39.26 and 39.27: pages read over loopback with the same credentials. Only
+# 39.17, 40.26 and 40.27: pages read over loopback with the same credentials. Only
 # markers are checked; nothing from a page (locations, network names) is printed.
 def page(path):
     r = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path))
@@ -2424,14 +2509,14 @@ def page(path):
     except Exception as exc:
         return None, None, type(exc).__name__
 if "map" not in offered:
-    chk("39.26", "SKIP", DASH["39.26"], "map not loaded")
+    chk("40.26", "SKIP", DASH["40.26"], "map not loaded")
 else:
     code, hdrs, body = page("/plugins/map/")
     policy = (hdrs or {}).get("Referrer-Policy") if hdrs else None
     if code != 200:
-        chk("39.26", "FAIL", DASH["39.26"], "HTTP %s" % code)
+        chk("40.26", "FAIL", DASH["40.26"], "HTTP %s" % code)
     elif "No captured network matching" in body:
-        chk("39.26", "SKIP", DASH["39.26"], "no located networks")
+        chk("40.26", "SKIP", DASH["40.26"], "no located networks")
     else:
         background = ("OpenStreetMap</a> contributors" not in body
                       or ('referrerpolicy="origin"' in body and policy == "no-referrer"))
@@ -2440,133 +2525,133 @@ else:
                     and body.count("data-scale=") == 2 and "bboxFor" in body
                     and "touch-action:none" in body)
         ok = background and legend and gestures
-        chk("39.26", "PASS" if ok else "FAIL", DASH["39.26"],
+        chk("40.26", "PASS" if ok else "FAIL", DASH["40.26"],
             "background %s, legend %s, gestures %s" % (background, legend, gestures))
-# 26.1 and 26.2: the map's filter row, and Reset view on a zoomed map (a box over the
+# 27.1 and 27.2: the map's filter row, and Reset view on a zoomed map (a box over the
 # whole world, so every location is in it): an overlay on each of the two
-# renderings, not in the filter row. Markers only, as for 39.26.
+# renderings, not in the filter row. Markers only, as for 40.26.
 def filter_row(body):
     m = re.search(r'<p class="smeta">Show: .*?</p>', body, re.S)
     return m.group(0) if m else ""
 if "map" not in offered:
-    chk("26.1", "SKIP", DASH["26.1"], "map not loaded")
-    chk("26.2", "SKIP", DASH["26.2"], "map not loaded")
+    chk("27.1", "SKIP", DASH["27.1"], "map not loaded")
+    chk("27.2", "SKIP", DASH["27.2"], "map not loaded")
 else:
     code, _h, body = page("/plugins/map/")
     row = filter_row(body)
     if code != 200 or not row:
-        chk("26.1", "FAIL" if code != 200 else "SKIP", DASH["26.1"],
+        chk("27.1", "FAIL" if code != 200 else "SKIP", DASH["27.1"],
             "HTTP %s" % code if code != 200 else "no filter row (locations hidden?)")
     else:
         ok = "Last 24 hours" in row and "f=day" in row and "Last 7 days" in row
-        chk("26.1", "PASS" if ok else "FAIL", DASH["26.1"], "" if ok else "option missing")
+        chk("27.1", "PASS" if ok else "FAIL", DASH["27.1"], "" if ok else "option missing")
     code, _h, body = page("/plugins/map/?bbox=-80,-170,80,170")
     row = filter_row(body)
     corner = body.count('<a href="./" style="position:absolute;left:8px;top:8px')
     if code != 200:
-        chk("26.2", "FAIL", DASH["26.2"], "HTTP %s" % code)
+        chk("27.2", "FAIL", DASH["27.2"], "HTTP %s" % code)
     elif "No captured network matching" in body or not row:
-        chk("26.2", "SKIP", DASH["26.2"], "no located networks")
+        chk("27.2", "SKIP", DASH["27.2"], "no located networks")
     else:
         ok = corner == 2 and "Reset view" not in row
-        chk("26.2", "PASS" if ok else "FAIL", DASH["26.2"],
+        chk("27.2", "PASS" if ok else "FAIL", DASH["27.2"],
             "on the map %d of 2, in the filter row %s" % (corner, "Reset view" in row))
-# 27.1: the census and wpa-sec row buttons read View (they were Census and Show).
+# 28.1: the census and wpa-sec row buttons read View (they were Census and Show).
 views = [n for n in ("census", "wpa-sec") if n in offered]
 if not views:
-    chk("27.1", "SKIP", DASH["27.1"], "neither census nor wpa-sec loaded")
+    chk("28.1", "SKIP", DASH["28.1"], "neither census nor wpa-sec loaded")
 else:
     bad = [n for n in views if "View" not in offered[n]
            or {"Census", "Show"} & set(offered[n])]
-    chk("27.1", "FAIL" if bad else "PASS", DASH["27.1"],
+    chk("28.1", "FAIL" if bad else "PASS", DASH["28.1"],
         ("not View: %s" % ", ".join(bad)) if bad else "checked: %s" % ", ".join(views))
-# 20.2: a by-AP search for a name no network has, whose only hex letter is "e":
+# 21.2: a by-AP search for a name no network has, whose only hex letter is "e":
 # the old search reduced it to "e" and matched every BSSID with one. Counts
 # only: the page's "no match" line is checked, no row is read.
 code, _h, body = page("/networks?view=ap&q=zzqzz-e")
 if code != 200:
-    chk("20.2", "FAIL", DASH["20.2"], "HTTP %s" % code)
+    chk("21.2", "FAIL", DASH["21.2"], "HTTP %s" % code)
 elif "nothing captured yet" in body:
-    chk("20.2", "SKIP", DASH["20.2"], "no access points captured yet")
+    chk("21.2", "SKIP", DASH["21.2"], "no access points captured yet")
 else:
     m = re.search(r"(\d+) of (\d+) access points match", body)
-    chk("20.2", "PASS" if "no match in" in body else "FAIL", DASH["20.2"],
+    chk("21.2", "PASS" if "no match in" in body else "FAIL", DASH["21.2"],
         "no match" if "no match in" in body
         else "%s of %s matched" % (m.group(1), m.group(2)) if m else "unexpected page")
-# 22.2: "recovered N of M": the count is there (the store read worked) and N <= M.
+# 23.2: "recovered N of M": the count is there (the store read worked) and N <= M.
 aps, rec = cap.get("access_points"), cap.get("recovered_aps")
 if not isinstance(aps, int):
-    chk("22.2", "FAIL", DASH["22.2"], "no access-point count")
+    chk("23.2", "FAIL", DASH["23.2"], "no access-point count")
 elif rec is None:
-    chk("22.2", "FAIL", DASH["22.2"], "no recovered count (the recovered store couldn't be read)")
+    chk("23.2", "FAIL", DASH["23.2"], "no recovered count (the recovered store couldn't be read)")
 else:
-    chk("22.2", "PASS" if rec <= aps else "FAIL", DASH["22.2"], "%s of %s" % (rec, aps))
-# 23.2: the by-AP page's "N access point(s) captured" leaves rogue addresses out,
+    chk("23.2", "PASS" if rec <= aps else "FAIL", DASH["23.2"], "%s of %s" % (rec, aps))
+# 24.2: the by-AP page's "N access point(s) captured" leaves rogue addresses out,
 # like the dashboard's total. Counts only: rows marked "rogue address" are
 # counted on the first page, nothing from a row is printed.
 code, _h, body = page("/networks?view=ap")
 m = re.search(r"(\d+) access point\(s\) captured", body)
 rogue_rows = body.count('data-label="rogue address"')
 if code != 200:
-    chk("23.2", "FAIL", DASH["23.2"], "HTTP %s" % code)
+    chk("24.2", "FAIL", DASH["24.2"], "HTTP %s" % code)
 elif not m or not isinstance(aps, int):
-    chk("23.2", "SKIP", DASH["23.2"], "no access points captured yet")
+    chk("24.2", "SKIP", DASH["24.2"], "no access points captured yet")
 else:
     shown = int(m.group(1))
-    chk("23.2", "PASS" if shown == aps else "FAIL", DASH["23.2"],
+    chk("24.2", "PASS" if shown == aps else "FAIL", DASH["24.2"],
         "page %d, dashboard %d; rogue-address rows on the first page: %d"
         % (shown, aps, rogue_rows))
 code, hdrs, body = page("/networks")
 if code != 200:
-    chk("38.17", "FAIL", DASH["38.17"], "HTTP %s" % code)
-    chk("39.27", "FAIL", DASH["39.27"], "HTTP %s" % code)
+    chk("39.17", "FAIL", DASH["39.17"], "HTTP %s" % code)
+    chk("40.27", "FAIL", DASH["40.27"], "HTTP %s" % code)
 else:
     out_mode = str(((cfg.get("capture") or {}).get("output") or {}).get("mode", "per-ap"))
     if out_mode != "per-ap":
-        chk("38.17", "SKIP", DASH["38.17"], "mode is %s" % out_mode)
+        chk("39.17", "SKIP", DASH["39.17"], "mode is %s" % out_mode)
     else:
-        chk("38.17", "PASS" if "Captured access points" in body else "FAIL", DASH["38.17"], "")
+        chk("39.17", "PASS" if "Captured access points" in body else "FAIL", DASH["39.17"], "")
     top = body.split("<h1>", 1)[0]
     # With the web login off the import control is hidden on purpose.
     ok = ('class="nethead"' in top and 'class="countbar"' in body
           and ("Import results" in top or mode == "none"))
-    chk("39.27", "PASS" if ok else "FAIL", DASH["39.27"],
+    chk("40.27", "PASS" if ok else "FAIL", DASH["40.27"],
         ("Import results above the heading" if mode != "none" else "web login off: no import")
         if ok else "markers missing")
-# 37.9 and 37.10: the device's release version (/etc/kestrel/version) in the status
+# 38.9 and 38.10: the device's release version (/etc/kestrel/version) in the status
 # and on the dashboard header.
 try:
     release = open("/etc/kestrel/version", encoding="utf-8").read().strip()
 except OSError:
     release = ""
 ok = bool(release) and s.get("version") == release and bool(s.get("package_version"))
-chk("37.9", "PASS" if ok else "FAIL", DASH["37.9"],
+chk("38.9", "PASS" if ok else "FAIL", DASH["38.9"],
     "version %r, package %r" % (s.get("version"), s.get("package_version")))
 code, _hdrs, body = page("/")
 want_hdr = ("v" + release) if release[:1].isdigit() else "dev build (%s)" % release
-chk("37.10", "PASS" if code == 200 and ("plugin host &middot; " + want_hdr) in body else "FAIL",
-    DASH["37.10"], "HTTP %s, expecting %r" % (code, want_hdr))
-# 37.5: the agent card (on /agent) shows the contest tally, or the earlier
+chk("38.10", "PASS" if code == 200 and ("plugin host &middot; " + want_hdr) in body else "FAIL",
+    DASH["38.10"], "HTTP %s, expecting %r" % (code, want_hdr))
+# 38.5: the agent card (on /agent) shows the contest tally, or the earlier
 # adoptions before the first contest.
 code, _hdrs, body = page("/agent")
 if code != 200:
-    chk("37.5", "FAIL", DASH["37.5"], "HTTP %s" % code)
+    chk("38.5", "FAIL", DASH["38.5"], "HTTP %s" % code)
 elif "Model contests" in body or "Earlier adoptions" in body:
-    chk("37.5", "PASS", DASH["37.5"], "Model contests" if "Model contests" in body
+    chk("38.5", "PASS", DASH["38.5"], "Model contests" if "Model contests" in body
         else "Earlier adoptions (no contest yet)")
 elif "Promotions" in body:
-    chk("37.5", "FAIL", DASH["37.5"], "still the old Promotions line")
+    chk("38.5", "FAIL", DASH["38.5"], "still the old Promotions line")
 else:
-    chk("37.5", "SKIP", DASH["37.5"], "no tally on the agent card yet")
-# 14.5 and 15.5: the agent page's Exploring row and the from-scratch tally on its
+    chk("38.5", "SKIP", DASH["38.5"], "no tally on the agent card yet")
+# 15.5 and 16.5: the agent page's Exploring row and the from-scratch tally on its
 # Model contests row. Markers and counts only.
 ast = st if isinstance(st, dict) else {}
 if code != 200:
-    chk("14.5", "FAIL", DASH["14.5"], "HTTP %s" % code)
     chk("15.5", "FAIL", DASH["15.5"], "HTTP %s" % code)
+    chk("16.5", "FAIL", DASH["16.5"], "HTTP %s" % code)
 else:
     if ast.get("policy") != "learned":
-        chk("14.5", "SKIP", DASH["14.5"], "policy is %s" % ast.get("policy"))
+        chk("15.5", "SKIP", DASH["15.5"], "policy is %s" % ast.get("policy"))
     else:
         dot = r" (?:\u00b7|&middot;|&#183;) "
         row = re.search(r"Exploring.{0,400}?(\d+(?:\.\d+)?% of windows" + dot + r"\d+ of \d+ "
@@ -2574,31 +2659,31 @@ else:
         has_metrics = isinstance((ast.get("metrics") or {}).get("exploring"), dict)
         table = "exploring h/hr" in body
         ok = row is not None and (table or not has_metrics)
-        chk("14.5", "PASS" if ok else "FAIL", DASH["14.5"],
+        chk("15.5", "PASS" if ok else "FAIL", DASH["15.5"],
             "row %s; exploring line %s" % ("found" if row else "missing",
                                            "shown" if table else ("missing" if has_metrics
                                                                   else "not yet (no exploring window)")))
     local = ((ast.get("promotion_tally") or {}).get("local") or {})
     if "fresh_won" not in local and "fresh_lost" not in local:
-        chk("15.5", "SKIP", DASH["15.5"], "no from-scratch candidate judged yet")
+        chk("16.5", "SKIP", DASH["16.5"], "no from-scratch candidate judged yet")
     else:
         won, lost = int(local.get("fresh_won") or 0), int(local.get("fresh_lost") or 0)
         want = "from scratch %d of %d won" % (won, won + lost)
-        chk("15.5", "PASS" if want in body else "FAIL", DASH["15.5"],
+        chk("16.5", "PASS" if want in body else "FAIL", DASH["16.5"],
             "%s on the page" % want if want in body else "%r missing" % want)
-# 35.4: an enabled census loads with no error; its note is empty, or a pause
+# 36.4: an enabled census loads with no error; its note is empty, or a pause
 # reason in words.
 if not enabled("census"):
-    chk("35.4", "SKIP", DASH["35.4"], "census not enabled")
+    chk("36.4", "SKIP", DASH["36.4"], "census not enabled")
 else:
     p = plugins["census"]
     ok = p.get("state") == "loaded" and not p.get("last_error")
-    chk("35.4", "PASS" if ok else "FAIL", DASH["35.4"],
+    chk("36.4", "PASS" if ok else "FAIL", DASH["36.4"],
         "state %s, note %r" % (p.get("state"), str(p.get("note") or "")[:70]))
-# 35.8: the Census page says what this device reports: its release, and (with
+# 36.8: the Census page says what this device reports: its release, and (with
 # tether_only) that it goes over the tether. Markers only.
 if "census" not in offered:
-    chk("35.8", "SKIP", DASH["35.8"], "census not loaded")
+    chk("36.8", "SKIP", DASH["36.8"], "census not loaded")
 else:
     code, _hdrs, body = page("/plugins/census/index")
     tether = ((cfg.get("plugins") or {}).get("census") or {}).get("tether_only", True)
@@ -2606,13 +2691,13 @@ else:
     if tether:
         want.append("Sent over: the phone's Bluetooth tether only")
     missing = [m for m in want if m not in body]
-    chk("35.8", "PASS" if code == 200 and not missing else "FAIL", DASH["35.8"],
+    chk("36.8", "PASS" if code == 200 and not missing else "FAIL", DASH["36.8"],
         "HTTP %s%s" % (code, (", missing %s" % missing) if missing else ""))
-# 12.5: the Census page's Boards card, and the Board line of what this device
+# 13.5: the Census page's Boards card, and the Board line of what this device
 # reports: this board's family, or "not sent today" on the update's UTC day.
 # The card, like Releases, appears once the census has today's totals.
 if "census" not in offered:
-    chk("12.5", "SKIP", DASH["12.5"], "census not loaded")
+    chk("13.5", "SKIP", DASH["13.5"], "census not loaded")
 else:
     code, _hdrs, body = page("/plugins/census/index")
     text = html.unescape(body)
@@ -2627,15 +2712,15 @@ else:
         "shown" if card else "missing" if totals else "not yet (no totals today)",
         want_board if line else "not sent today" if not_sent else "missing")
     if code != 200 or (totals and not card) or not (line or not_sent):
-        chk("12.5", "FAIL", DASH["12.5"], "HTTP %s, %s" % (code, seen))
+        chk("13.5", "FAIL", DASH["13.5"], "HTTP %s, %s" % (code, seen))
     elif not_sent and not updated_today:
-        chk("12.5", "FAIL", DASH["12.5"], seen + ", though the update wasn't this UTC day")
+        chk("13.5", "FAIL", DASH["13.5"], seen + ", though the update wasn't this UTC day")
     elif line and card:
-        chk("12.5", "PASS", DASH["12.5"], seen)
+        chk("13.5", "PASS", DASH["13.5"], seen)
     else:
-        chk("12.5", "INFO", DASH["12.5"], seen + "; rerun after %s" % (
+        chk("13.5", "INFO", DASH["13.5"], seen + "; rerun after %s" % (
             "00:00 UTC" if not_sent else "the census's next read"))
-# 28.3: each plugin's settings page shows its root-only options read-only, with
+# 29.3: each plugin's settings page shows its root-only options read-only, with
 # the terminal command, and no form field for them.
 missing = []
 for name, names in (("updates", ("beta", "timeout", "backup_timeout_seconds")),
@@ -2647,33 +2732,35 @@ for name, names in (("updates", ("beta", "timeout", "backup_timeout_seconds")),
     for o in names:
         if ('<div class="ro-option"><b>%s</b>' % o) not in body or ('name="opt-%s"' % o) in body:
             missing.append("%s.%s" % (name, o))
-chk("28.3", "FAIL" if missing else "PASS", DASH["28.3"],
+chk("29.3", "FAIL" if missing else "PASS", DASH["29.3"],
     "; ".join(missing) or "read-only, with the terminal command")
-# 29.3: the on-device guide renders (the whole guide on one page).
+# 30.3: the on-device guide renders (the whole guide on one page).
 code, _hdrs, body = page("/guide/all")
 heads = body.count("<h2")
-chk("29.3", "PASS" if code == 200 and heads >= 5 else "FAIL", DASH["29.3"],
+chk("30.3", "PASS" if code == 200 and heads >= 5 else "FAIL", DASH["30.3"],
     "HTTP %s, %d section headings" % (code, heads))
-# 19.1: the guide's new section, on the same page.
-chk("19.1", "PASS" if code == 200 and "Exploring and training from scratch" in body else "FAIL",
-    DASH["19.1"], "HTTP %s" % code)
-# 11.2: the rendered guide opens with the pwnagotchi credit and its three links,
+# 20.1: the guide's new section, on the same page.
+chk("20.1", "PASS" if code == 200 and "Exploring and training from scratch" in body else "FAIL",
+    DASH["20.1"], "HTTP %s" % code)
+# 12.2: the rendered guide opens with the pwnagotchi credit and its three links,
 # before the first section heading. Only yes/no facts are printed.
 at, h2 = body.find("Kestrel exists because of"), body.find("<h2")
 para = body[at:].split("</p>")[0] if at >= 0 else ""
 nlinks = para.count('<a href="https://')
-chk("11.2", "PASS" if code == 200 and at >= 0 and (h2 < 0 or at < h2) and nlinks == 3 else "FAIL",
-    DASH["11.2"], "HTTP %s, credit %s, %d link(s)" % (code, "found" if at >= 0 else "missing", nlinks))
-# 12.6: the guide's census section, on the same page: the board family is sent,
+chk("12.2", "PASS" if code == 200 and at >= 0 and (h2 < 0 or at < h2) and nlinks == 3 else "FAIL",
+    DASH["12.2"], "HTTP %s, credit %s, %d link(s)" % (code, "found" if at >= 0 else "missing", nlinks))
+# 13.6: the guide's census section, on the same page: the board family is sent,
 # never the exact model.
 text = html.unescape(body)
-chk("12.6", "PASS" if code == 200 and "random apart from the board family it carries" in text
+chk("2.5", "PASS" if code == 200 and "Prefer names." in text
+    and "AP-less handshakes and the whitelist." in text else "FAIL", DASH["2.5"], "HTTP %s" % code)
+chk("13.6", "PASS" if code == 200 and "random apart from the board family it carries" in text
     and "never the exact model, revision or serial number" in text else "FAIL",
-    DASH["12.6"], "HTTP %s" % code)
-# 6.2: the same guide page shows links and never loads a picture.
-chk("6.2", "PASS" if code == 200 and "<img" not in body and body.count("<a href=") >= 3 else "FAIL",
-    DASH["6.2"], "HTTP %s, %d link(s), img %s" % (code, body.count("<a href="), "<img" in body))
-# 2.2: the working indicator, once on each of three pages, and the dashboard's
+    DASH["13.6"], "HTTP %s" % code)
+# 7.2: the same guide page shows links and never loads a picture.
+chk("7.2", "PASS" if code == 200 and "<img" not in body and body.count("<a href=") >= 3 else "FAIL",
+    DASH["7.2"], "HTTP %s, %d link(s), img %s" % (code, body.count("<a href="), "<img" in body))
+# 3.2: the working indicator, once on each of three pages, and the dashboard's
 # auto-refresh checks it before reloading. Markers only.
 busy = {"/guide/all": (code, body)}
 for path in ("/", "/plugins"):
@@ -2685,13 +2772,13 @@ lacking = [p for p, (c2, b2) in sorted(busy.items())
 dash_body = busy["/"][1]
 guarded = ("location.reload()" not in dash_body
            or "!document.documentElement.hasAttribute('data-kbusy')){location.reload();}" in dash_body)
-chk("2.2", "PASS" if not lacking and guarded else "FAIL", DASH["2.2"],
+chk("3.2", "PASS" if not lacking and guarded else "FAIL", DASH["3.2"],
     "lacking: %s; refresh %s" % (", ".join(lacking) or "none",
                                  "guarded" if guarded else "unguarded"))
-# 31.1: the Census page's Status card. Only which lines are there, the state
+# 32.1: the Census page's Status card. Only which lines are there, the state
 # words and how many dated times; nothing else from the page is printed.
 if "census" not in offered:
-    chk("31.1", "SKIP", DASH["31.1"], "census not loaded")
+    chk("32.1", "SKIP", DASH["32.1"], "census not loaded")
 else:
     code, _hdrs, body = page("/plugins/census/index")
     text = html.unescape(body)
@@ -2704,11 +2791,11 @@ else:
     dated = len(re.findall(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC", text))
     ok = (code == 200 and (tether or "Connection: any (tether_only is off)." in text)
           and reach and pushed and read_)
-    chk("31.1", "PASS" if ok else "FAIL", DASH["31.1"],
+    chk("32.1", "PASS" if ok else "FAIL", DASH["32.1"],
         "tether %s, reach %s, push line %s, read line %s, %d dated" % (
             tether.group(1) if tether else "-", reach.group(1) if reach else "-",
             pushed, read_, dated))
-# 32.1: every plugin page the row buttons open starts with the links back. Not
+# 33.1: every plugin page the row buttons open starts with the links back. Not
 # downloads (it serves capture files) or wpa-sec (it shows passphrases).
 BACK = re.compile(r'<p><a href="/plugins[^"]*">&larr; Plugins</a> &middot; '
                   r'<a href="/[^"]*">Dashboard</a></p>')
@@ -2730,20 +2817,20 @@ for name, path in targets:
     if not BACK.search(body):
         lacking.append(name)
 if not seen_pages:
-    chk("32.1", "SKIP", DASH["32.1"], "no plugin page to open")
+    chk("33.1", "SKIP", DASH["33.1"], "no plugin page to open")
 else:
-    chk("32.1", "FAIL" if lacking else "PASS", DASH["32.1"],
+    chk("33.1", "FAIL" if lacking else "PASS", DASH["33.1"],
         ("no links: %s" % ", ".join(lacking)) if lacking else "checked: %s" % ", ".join(seen_pages))
 for name in ("wpa-sec", "wigle", "backup", "remote-train", "census", "updates", "ntfy", "telegram",
              "eink-ws27", "eink-ws213", "ups-ws", "ups-wsc", "ups-wsd", "ups-wse"):
     if name in w:
         vals = ["%s=%s" % (k, v) for k, v in widget(name).items()]
         print("widget %-13s %s" % (name, ", ".join(vals)))
-# 29.4 (last, since it leaves a few failed sign-ins from 127.0.0.1): wrong Basic
+# 30.4 (last, since it leaves a few failed sign-ins from 127.0.0.1): wrong Basic
 # credentials until the dashboard backs off, then the right ones, which it
 # verified at the start of this run, still get in. The journal is only counted.
 if mode not in ("basic", "system"):
-    chk("29.4", "SKIP", DASH["29.4"], "web auth is %s" % mode)
+    chk("30.4", "SKIP", DASH["30.4"], "web auth is %s" % mode)
 else:
     import os, subprocess, time
     started = int(time.time()) - 1
@@ -2769,7 +2856,7 @@ else:
     logged = journal.count("web: failed Basic sign-in from")
     ok = (codes[-1:] == [429] and all(c == 401 for c in codes[:-1])
           and str(retry or "").isdigit() and int(retry) > 0 and right == 200 and logged >= 1)
-    chk("29.4", "PASS" if ok else "FAIL", DASH["29.4"],
+    chk("30.4", "PASS" if ok else "FAIL", DASH["30.4"],
         "answers %s, Retry-After %s, right credentials HTTP %s, failures logged %d"
         % (codes, retry, right, logged))
 PY
@@ -2780,157 +2867,161 @@ web_pw=""
 cat >>"$raw" <<'EOF'
 
 ===== by hand (the script can't see these) =====
-2.3   on the phone, tap a control that takes a moment, such as the capture
+2.6   on the phone, /guide's whitelist section reads normally: "Prefer names"
+      and "AP-less handshakes and the whitelist"
+2.7   optional, with a whitelist: after the update, no new AP-less handshakes
+      come in (expected until a release ships AngryOxide 0.9.5)
+3.3   on the phone, tap a control that takes a moment, such as the capture
       switch: a bar slides across the top with Working... until the page comes
       back, and a second tap on the same button while it shows doesn't send
       the change twice
-2.4   on the dashboard, tap a link just before its 30-second refresh, or open
+3.4   on the dashboard, tap a link just before its 30-second refresh, or open
       a slow page across one: the page you tapped opens, and the dashboard
       doesn't reload over it
-2.5   a zip from the downloads page, and a link that opens elsewhere (the
+3.5   a zip from the downloads page, and a link that opens elsewhere (the
       guide's links off the device), leave no bar showing; going back to a
       page clears it
-3.5   set transmit_modes = ["passive"] under [agent.action] and restart the
+4.5   set transmit_modes = ["passive"] under [agent.action] and restart the
       agent (sudo systemctl restart kestrel-agent); over an hour of capture,
       ps -o args= -C angryoxide shows --notransmit every time, and the Agent
       page shows passive windows only; remove the line, restart, and active
       windows come back
-3.6   optional: transmit_modes = ["actve"] (a typo): at start the agent's
+4.6   optional: transmit_modes = ["actve"] (a typo): at start the agent's
       journal warns that it isn't a value Kestrel knows, and the windows stay
       passive
-4.4   with backup set up, Back up now still mirrors the store to the remote,
+5.4   with backup set up, Back up now still mirrors the store to the remote,
       and its card reads the run as done
-4.5   with remote-train set up, a remote training run still finishes, and its
+5.5   with remote-train set up, a remote training run still finishes, and its
       model is pulled and staged as a candidate (the card's last model
       updates)
-5.3   optional: drop a model (kestrel-model.zip and its kestrel-
+6.3   optional: drop a model (kestrel-model.zip and its kestrel-
       model.meta.json, and if you have it kestrel-model-episodes.tar.gz) onto
       the boot partition and reboot: the files are gone from the card, the
       Agent page uses the model, and journalctl -b -u kestrel-agent-provision
       reports the import
-6.3   on the phone, /guide and the dashboard's "What's new" for this beta read
+7.3   on the phone, /guide and the dashboard's "What's new" for this beta read
       normally, and their links open
-7.6   sudo kestrel plugins enable eink-ws27 --set face_pack=kestrel (or eink-
+8.6   sudo kestrel plugins enable eink-ws27 --set face_pack=kestrel (or eink-
       ws213): the panel and the View mirror show the bird's face in place of
       the text face, with the voice beside it and the rows below unchanged;
       the eyes change as the mood does; the Plugins page shows face_pack read-
       only with the terminal command; --set face_pack= brings the text face
       back
-7.7   optional: a pack of your own: sudo install -d /etc/kestrel/faces/mypack,
+8.7   optional: a pack of your own: sudo install -d /etc/kestrel/faces/mypack,
       two or three PNGs named after moods (happy.png, cool.png), --set
       face_pack=mypack and sudo systemctl restart kestrel-daemon: those moods
       show your pictures and the rest the text face; a name with no folder
       shows the reason on the card
-8.3   on battery with the device idle, the UPS card reads roughly 0.3-0.6 A
+9.3   on battery with the device idle, the UPS card reads roughly 0.3-0.6 A
       and 2-5 W; under training it rises to about 1-2 A, never several amps;
       the percent and time to shutdown read as before, and on the charger the
       card says *Charging*
-9.2   optional: with no capture adapter plugged in, sudo kestrel capture
+10.2   optional: with no capture adapter plugged in, sudo kestrel capture
       enable stops before the acknowledgment with that message
-10.5  with a USB Wi-Fi adapter plugged in (ideally a tri-band one, such as an
+11.5  with a USB Wi-Fi adapter plugged in (ideally a tri-band one, such as an
       MT7921U), sudo kestrel capture status names it under *adapter*, and
       capture turns on from the dashboard
-11.3  on the phone, /guide's opening paragraph reads normally, and its links
+12.3  on the phone, /guide's opening paragraph reads normally, and its links
       open the pwnagotchi project, the aluminum-ice fork and the comparison
       article
-12.7  on the phone, the Boards card reads normally, and once this device has
+13.7  on the phone, the Boards card reads normally, and once this device has
       run an on-device contest that week it adds "On-device training on the
       ... family won X of Y (Z%) this week"
-12.8  from a computer, python3 tools/census-report/census_report.py shows a
+13.8  from a computer, python3 tools/census-report/census_report.py shows a
       Board table that counts this device's family, and an *On-device contests
       by board* table
-13.2  after a from-scratch training run, pull-agent-diagnostics.sh from a
+14.2  after a from-scratch training run, pull-agent-diagnostics.sh from a
       computer lists its contest on a "local (from scratch)" row, and the
       local contests add up to the local training runs
-14.6  on the phone, the Agent page's Exploring row reads normally, its tried
+15.6  on the phone, the Agent page's Exploring row reads normally, its tried
       count climbs over a day or two, and during an exploring window the
       agent's note says "trying ..."
-14.7  optional: add explore_rate = 0 to [agent] and restart the agent (sudo
+15.7  optional: add explore_rate = 0 to [agent] and restart the agent (sudo
       systemctl restart kestrel-agent); the Exploring row reads "off" and no
       new "explore: trying" lines appear; then remove the line and restart
       again
-15.6  sudo kestrel agent train-now --fresh starts a run the journal calls
+16.6  sudo kestrel agent train-now --fresh starts a run the journal calls
       "manual training from scratch (asked for, N steps)", and a plain sudo
       kestrel agent train-now still fine-tunes the current model
-15.7  after a day or two, the Agent page's Last contest says how often the new
+16.7  after a day or two, the Agent page's Last contest says how often the new
       model chose like the active one, and a from-scratch candidate's figure
       is well under 100%
-17.4  optional: set transmit_modes = ["passive"] in [agent.action] and restart
+18.4  optional: set transmit_modes = ["passive"] in [agent.action] and restart
       the agent; the Exploring row reads "of 16", and every new "explore:
       trying" line says passive; then put the line back and restart again
-18.2  with a GPS fix, capture until a handshake gets a location; then unplug
+19.2  with a GPS fix, capture until a handshake gets a location; then unplug
       the receiver (or lose the fix indoors); after about half a minute the
       GPS card shows no fix, and handshakes captured meanwhile get no location
       (no .gps.json beside them, nothing new on the map); plug it back in, and
       tagging resumes with the next fix
-19.2  the dashboard's "What's new" for this beta reads normally
-20.3  on the phone, search the by-access-point view for one of your network
+20.2  the dashboard's "What's new" for this beta reads normally
+21.3  on the phone, search the by-access-point view for one of your network
       names; only rows with that name are listed; paste part of a BSSID (like
       AA:BB:CC) and it still finds the radio
-22.3  with a recovered result for an AP-less capture, Captured networks shows
+23.3  with a recovered result for an AP-less capture, Captured networks shows
       it only under its own network name, labelled "· client ...", and the
       other names under that rogue address show no recovered badge
-22.4  results imported before this beta still show for ordinary access points;
+23.4  results imported before this beta still show for ordinary access points;
       import a wpa-sec file again and kestrel recovered list counts it
-23.3  in the by-access-point view, a rogue address's row says "Not an access
+24.3  in the by-access-point view, a rogue address's row says "Not an access
       point" and shows no location; it isn't on the map; the e-ink AP counter
       matches the dashboard
-25.3  with the census on and the tether up, turn the tether off and on again;
+26.3  with the census on and the tether up, turn the tether off and on again;
       at the census's next cycle (within the hour) the journal shows "census:
       the tether reconnected; opening a fresh socket" (or "the link went down
       mid-cycle"), the census reports again, and a rerun of the check passes
-      17.2
-26.3  on the phone, the filters fit the screen; zoom in, and Reset view sits
+      18.2
+27.3  on the phone, the filters fit the screen; zoom in, and Reset view sits
       in the map's top-left corner, keeps the filter you chose, and brings
       back the whole map
-28.6  sudo kestrel agent train-now still starts a training run, and sudo
+29.6  sudo kestrel agent train-now still starts a training run, and sudo
       kestrel remote-train now still asks for a pull (the agent's and remote-
       train's logs show them)
-28.7  sudo kestrel plugins set updates timeout=30 works from the terminal, and
+29.7  sudo kestrel plugins set updates timeout=30 works from the terminal, and
       the dashboard can't change it
-28.8  beta updates are now switched from the terminal: sudo kestrel plugins
+29.8  beta updates are now switched from the terminal: sudo kestrel plugins
       set updates beta=false stops offering betas, and beta=true offers this
       one again
-29.5  on the phone, sign in with a wrong password several times; the page says
+30.5  on the phone, sign in with a wrong password several times; the page says
       "Too many attempts. Try again in N seconds.", and the right password
       works once you wait
-29.6  import a potfile from Captured networks; it still imports, and a file
+30.6  import a potfile from Captured networks; it still imports, and a file
       over its limit ([recovered] max_import_mb) gets "That file is too large
       to import."
-29.7  the dashboard's "What's new" for this beta reads normally
-30.3  only if you update from a private repository with a token: the stable
+30.7  the dashboard's "What's new" for this beta reads normally
+31.3  only if you update from a private repository with a token: the stable
       release (or next beta) still clones and applies
-31.4  restart the daemon; the Census page still shows the last push and read
+32.4  restart the daemon; the Census page still shows the last push and read
       times
-32.2  on the phone, open each plugin's page from its row on the Plugins page
+33.2  on the phone, open each plugin's page from its row on the Plugins page
       and come back with the links
-33.1  optional: build with sudo make image MY_PI_PASSWORD_HASH='<your hash>';
+34.1  optional: build with sudo make image MY_PI_PASSWORD_HASH='<your hash>';
       the build log says "login: custom hash" and never shows the hash, and
       the image's pi line in /etc/shadow carries it
-34.3  make the training host unreachable (shut it down or stop its SSH
+35.3  make the training host unreachable (shut it down or stop its SSH
       server); the remote-train card reads "can't reach or log in to the host
       (last reached ...)", and recovers when the host is back
-34.4  restart the daemon; the remote-train card still shows the last model
+35.4  restart the daemon; the remote-train card still shows the last model
       pulled
-35.9  turn the tether off; the Census page reads "Paused: waiting for the
+36.9  turn the tether off; the Census page reads "Paused: waiting for the
       phone's Bluetooth tether."; turn it on and it says "Running." again
       within a few minutes
-35.10 from a computer, python3 tools/census-report/census_report.py lists this
+36.10 from a computer, python3 tools/census-report/census_report.py lists this
       device's release, and the card's numbers ("Kestrels online", "Active
       today", "desktop won X of Y training contests this week") match it after
       the device's next read
-36.5  stop capture from the dashboard and start it again; it comes back
+37.5  stop capture from the dashboard and start it again; it comes back
       running
-37.6  after a day of capture, the /agent card's Last contest shows a result,
+38.6  after a day of capture, the /agent card's Last contest shows a result,
       and pull-agent-diagnostics.sh --score (from a computer) shows contests
       from both sources with their reasons
-37.8  copy pull-health.sh off the device and run it from a computer: one
+38.8  copy pull-health.sh off the device and run it from a computer: one
       report with a verdict, AngryOxide's version, uptime and database lag,
       and no addresses, MAC addresses or names in it
-38.4  if not done on 1.0.11-beta.1: after an hour somewhere busy, pull-
+39.4  if not done on 1.0.11-beta.1: after an hour somewhere busy, pull-
       health.sh shows the database lag still small and AngryOxide's memory
       roughly flat, and the Environment card keeps its count
-40.1  cut 1.0.14 stable (or the next beta); this device is offered it and
+41.1  cut 1.0.14 stable (or the next beta); this device is offered it and
       applies it in place
 EOF
 
