@@ -287,17 +287,38 @@ build_args() {
         log "headless=false ignored: no terminal (running as a service), so capture runs headless. Run $0 in a terminal to use the TUI."
         args+=(--headless)
     fi
-    [ -s "$PWN_WHITELIST_FILE" ] && args+=(--whitelist "$PWN_WHITELIST_FILE")
+    if [ -s "$PWN_WHITELIST_FILE" ]; then
+        args+=(--whitelist "$PWN_WHITELIST_FILE")
+        # Rogue M2 answers only where AngryOxide checks each one against the
+        # whitelist by name (see ao_checks_whitelist_by_name).
+        [ "${ao_whitelist_by_name:-no}" = yes ] || args+=(--disable-roguem2)
+    fi
 
-    # Extra pass-through flags, one per line.
-    # (--notransmit only once: the agent's passive plan may have added it.)
+    # Extra pass-through flags, one per line. A switch the launcher may already
+    # have added is not added again (AngryOxide refuses a repeated one).
     while IFS= read -r extra; do
         [ -n "$extra" ] || continue
-        if [ "$extra" = --notransmit ] && [[ " ${args[*]} " == *" --notransmit "* ]]; then
-            continue
-        fi
+        case "$extra" in
+            --notransmit | --disable-roguem2)
+                [[ " ${args[*]} " == *" $extra "* ]] && continue ;;
+        esac
         args+=("$extra")
     done < <("$PWN_CONFIG_GET" capture.angryoxide.extra_args "")
+}
+
+# AngryOxide 0.9.5 and later check every rogue M2 answer (a reply to a client
+# that asks for a network by name) against the whitelist's names themselves.
+# With an older build, the launcher keeps rogue M2 off while the whitelist has
+# entries. Succeeds only for a version it can read that is at least that one.
+AO_WHITELIST_BY_NAME=0.9.5
+ao_checks_whitelist_by_name() {
+    local out ver
+    out=$("$ANGRYOXIDE" --version 2>/dev/null) || return 1
+    out=${out%%$'\n'*}
+    ver=${out##* }
+    ver=${ver#v}
+    [[ $ver =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    [ "$(printf '%s\n%s\n' "$AO_WHITELIST_BY_NAME" "$ver" | sort -V | head -n 1)" = "$AO_WHITELIST_BY_NAME" ]
 }
 
 # On stop, ask AngryOxide to shut down cleanly (SIGINT, see stop_ao), break
@@ -314,6 +335,12 @@ trap 'stopping=yes; if [ -n "${ao_pid:-}" ]; then kill -INT "$ao_pid" 2>/dev/nul
 mkdir -p "$PWN_CAPTURE_DIR"
 install -d -o root -g pi -m 0750 "$PWN_CAPTURE_RUN_DIR"
 "$PWN_CONFIG_GET" capture.whitelist "" | sed '/^$/d' > "$PWN_WHITELIST_FILE"
+ao_whitelist_by_name=no
+if ao_checks_whitelist_by_name; then
+    ao_whitelist_by_name=yes
+elif [ -s "$PWN_WHITELIST_FILE" ]; then
+    log "the whitelist has entries, so rogue M2 stays off: this AngryOxide is older than $AO_WHITELIST_BY_NAME, which checks rogue M2 answers against the whitelist by name"
+fi
 
 # An older release ran the collector as root, so files it left in the store are
 # root's and the pi collector below can't append to them. Hand them to pi first

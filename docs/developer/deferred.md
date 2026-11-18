@@ -61,6 +61,25 @@ How to use this file:
   script), have both sides use it, and drop the duplicate.
 - **Pick up when:** either side's decision logic next changes.
 
+## Capture (`capture-launch`, AngryOxide)
+
+### Ship AngryOxide 0.9.5
+
+- **What:** pin the aluminum-ice fork's AngryOxide 0.9.5, which checks every
+  rogue M2 answer against the whitelist's names. Until a device runs it, the
+  launcher adds `--disable-roguem2` whenever the whitelist has entries
+  (`ao_checks_whitelist_by_name` in `builder/extra/files/capture-launch.sh`),
+  so a device with a whitelist collects no AP-less handshakes.
+- **Why deferred:** the AngryOxide pin (`packages.angryoxide` in
+  `builder/config.yml`) makes a release reflash-class, and 1.0.14 stays an
+  in-place release.
+- **What to do:** tag the fork's v0.9.5 (its CI builds the aarch64-musl
+  tarball), then bump `version` and `checksum` together. The launcher's check
+  reads `angryoxide --version` and turns rogue M2 back on by itself, so it
+  needs no change. Add a beta-check item: with a whitelist, AngryOxide runs
+  without `--disable-roguem2`.
+- **Pick up when:** the next reflash-class release (1.0.15).
+
 ## Dashboard (`kestrel_pi.web`)
 
 ### Answer the capture switch at once

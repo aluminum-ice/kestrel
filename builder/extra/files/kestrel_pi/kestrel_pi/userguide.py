@@ -267,6 +267,10 @@ whitelist = ["YOUR-WIFI", "AA:BB:CC:DD:EE:FF"]
 
 Restart capture after a change (`sudo systemctl restart kestrel-capture.service`); it takes effect the next time capture starts. You can also pre-load it before first boot by dropping a `kestrel-whitelist.txt` file (one SSID or MAC per line) on the boot partition, which the device merges in and then removes.
 
+**Prefer names.** A phone asks for a network by name, and a name entry covers that network whether or not the device has heard its AP yet, so whitelist your own networks by name. In a name, `*`, `?` and `[...]` work as wildcards: `Cafe*` covers every network whose name starts with "Cafe".
+
+**AP-less handshakes and the whitelist.** AngryOxide also answers phones that ask for a network they remember, which is how AP-less handshakes are captured. AngryOxide 0.9.5 and later check each of those answers against the whitelist's names. With an older AngryOxide, the device turns those answers off whenever the whitelist has entries (the capture log says so when capture starts), so it captures no AP-less handshakes until it is flashed with a release that ships 0.9.5. `angryoxide --version` shows which one a device has.
+
 ### Where captures go, and housekeeping
 
 The persistent store is `/var/lib/kestrel/capture/`, with one `<ssid>_<bssid>.hc22000` file per access point (or one `<ssid>.hc22000` file per network in `per-ssid` mode, or one combined file in `single` mode). It is append-and-dedup, never truncated: reboots and attack restarts add new unique handshakes to the existing files rather than replacing them. AngryOxide's raw working files live in a size-capped scratch directory, `/var/lib/kestrel/capture-run/` (`max_run_mb`, default 512 MB) so they cannot fill the card; only that scratch is pruned, never your handshakes.
