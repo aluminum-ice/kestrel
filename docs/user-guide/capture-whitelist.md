@@ -19,6 +19,22 @@ Each entry is either:
 You can mix both. An SSID entry protects every AP broadcasting that name; a BSSID
 entry protects one specific radio.
 
+**Prefer names.** A phone asks for a network by name, and a name entry covers
+that network whether or not the device has heard its AP yet, so whitelist your
+own networks by name. In a name, `*`, `?` and `[...]` work as wildcards:
+`Cafe*` covers every network whose name starts with "Cafe".
+
+## AP-less handshakes and the whitelist
+
+AngryOxide also answers phones that ask for a network they remember, which is
+how AP-less handshakes are captured. AngryOxide 0.9.5 and later check each of
+those answers against the whitelist's names. With an older AngryOxide, the
+capture launcher turns those answers off (`--disable-roguem2`) whenever the
+whitelist has entries, and says so in the capture log when capture starts. A
+device with a whitelist then captures no AP-less handshakes until it is flashed
+with a release that ships 0.9.5. `angryoxide --version` shows which one a
+device has.
+
 ## Setting it on the device
 
 The easiest way is the **web dashboard**. With the dashboard login on (`[web]

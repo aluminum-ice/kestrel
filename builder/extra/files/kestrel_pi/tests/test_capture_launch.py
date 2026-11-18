@@ -239,3 +239,72 @@ def test_every_field_of_the_plan_keeps_its_place(tmp_path, plan, want_args, want
                          "PWN_AGENT_OVERRIDE": str(override)})
     assert out.returncode == 0, out.stderr
     assert out.stdout.splitlines() == want_args + ["dwell=" + want_dwell]
+
+
+def _stub(path, text):
+    path.write_text("#!/bin/bash\n" + text)
+    path.chmod(0o755)
+    return str(path)
+
+
+@pytest.mark.parametrize("version,checks", [
+    ("AngryOxide 0.9.4", False),
+    ("AngryOxide 0.9.5", True),
+    ("AngryOxide 0.10.0", True),
+    ("AngryOxide 1.0.0", True),
+    ("AngryOxide v0.9.5", True),
+    ("AngryOxide 0.9.5-rc1", False),
+    ("AngryOxide", False),
+    ("", False),
+])
+def test_rogue_m2_with_a_whitelist_needs_angryoxide_0_9_5(tmp_path, version, checks):
+    binary = _stub(tmp_path / "angryoxide", 'echo "%s"\n' % version)
+    script = (_function("ao_checks_whitelist_by_name")
+              + "AO_WHITELIST_BY_NAME=0.9.5\n"
+              + "ao_checks_whitelist_by_name && echo yes || echo no\n")
+    out = _bash(script, {"ANGRYOXIDE": binary})
+    assert out.stdout.strip() == ("yes" if checks else "no"), out.stderr
+
+
+def test_a_missing_or_failing_angryoxide_counts_as_old(tmp_path):
+    script = (_function("ao_checks_whitelist_by_name")
+              + "AO_WHITELIST_BY_NAME=0.9.5\n"
+              + "ao_checks_whitelist_by_name && echo yes || echo no\n")
+    failing = _stub(tmp_path / "angryoxide", 'echo "AngryOxide 0.9.5"; exit 1\n')
+    for binary in (str(tmp_path / "missing"), failing):
+        assert _bash(script, {"ANGRYOXIDE": binary}).stdout.strip() == "no"
+
+
+def _build_args(tmp_path, whitelist, by_name, extra=""):
+    wl = tmp_path / "whitelist"
+    wl.write_text(whitelist)
+    config_get = _stub(tmp_path / "config-get", "printf '%s' \"$EXTRA\"\n")
+    script = ("log() { :; }\ncfg() { printf '%s\\n' \"$2\"; }\n"
+              "agent_active() { return 1; }\ncapture_auto_channels() { return 1; }\n"
+              + _function("build_args")
+              + "iface=wlan1; ao_base=run; ao_whitelist_by_name=%s\n" % by_name
+              + 'build_args\nprintf "%s\\n" "${args[@]}"\n')
+    out = _bash(script, {"PWN_WHITELIST_FILE": str(wl), "PWN_CONFIG_GET": config_get,
+                         "PWN_CAPTURE_RUN_DIR": str(tmp_path), "EXTRA": extra})
+    assert out.returncode == 0, out.stderr
+    return out.stdout.splitlines()
+
+
+@pytest.mark.parametrize("whitelist,by_name,off", [
+    ("My Network\n", "no", True),
+    ("00:00:5E:00:53:01\n", "no", True),
+    ("My Network\n", "yes", False),
+    ("", "no", False),
+])
+def test_rogue_m2_stays_off_with_a_whitelist_on_an_older_angryoxide(
+        tmp_path, whitelist, by_name, off):
+    args = _build_args(tmp_path, whitelist, by_name)
+    assert ("--whitelist" in args) is bool(whitelist)
+    assert ("--disable-roguem2" in args) is off
+
+
+def test_extra_args_never_repeat_disable_roguem2(tmp_path):
+    args = _build_args(tmp_path, "My Network\n", "no", "--disable-roguem2\n--notransmit\n")
+    assert args.count("--disable-roguem2") == 1 and args.count("--notransmit") == 1
+    args = _build_args(tmp_path, "My Network\n", "yes", "--disable-roguem2\n")
+    assert args.count("--disable-roguem2") == 1
