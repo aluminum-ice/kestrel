@@ -87,9 +87,12 @@ screen first and let it widen.
   a page needs (Cancel, the JSON view) go below the heading.
 - **Every page shows when it's working.** `_page()` adds the shared "working"
   indicator (`_BUSY_HTML`, `_BUSY_JS`): a tap on a link to another dashboard
-  page, or a form sent, marks the page busy at once, and if the answer takes
-  longer than a moment a bar slides across the top with a "Working…" label
-  (announced to screen readers, still under reduced motion). While busy, a
+  page, or a form sent, marks the page busy at once, which shows a bar sliding
+  across the top with a "Working…" label (announced to screen readers if the
+  answer takes longer than a moment, still under reduced motion). Both show at
+  the tap, from CSS, with no delay: while the next page loads, WebKit freezes
+  the old page's animations at their first frame and Safari may stop its
+  timers, so a delayed indicator may never appear. While busy, a
   second send of a form is dropped, so a double tap can't apply a change twice;
   buttons aren't disabled, because that would drop their value from the form.
   Downloads (`<a download>`), new tabs, links off the device and jumps within

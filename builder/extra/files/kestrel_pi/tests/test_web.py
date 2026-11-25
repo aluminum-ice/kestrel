@@ -3788,10 +3788,23 @@ def test_every_page_carries_the_working_indicator():
     assert html.index(web._BUSY_HTML) < html.index("<h1>Body</h1>")
     assert html.rindex(web._BUSY_JS) > html.index("<h1>Body</h1>")
     assert "role='status'" in web._BUSY_HTML and "Working…" in web._BUSY_HTML
-    # the bar and label stay hidden until a tap has waited
+    # the bar shows as soon as a tap marks the page busy, from CSS alone
     assert ".kbusy{display:none;" in web._STATUS_CSS
-    assert "html[data-kbusy-show] .kbusy{display:block;}" in web._STATUS_CSS
+    assert "html[data-kbusy] .kbusy{display:block;}" in web._STATUS_CSS
     assert "prefers-reduced-motion:reduce" in web._STATUS_CSS
+
+
+def test_the_working_label_shows_at_the_tap_with_no_delay():
+    # WebKit freezes the old page's animations while the next one loads, and
+    # Safari may stop its timers, so nothing about the indicator may wait for
+    # either: the bar and the label show with data-kbusy, set at the tap.
+    css = web._STATUS_CSS
+    label = css[css.index(".kbusy-label{"):]
+    label = label[:label.index("}") + 1]
+    assert "opacity" not in label and "animation" not in label
+    assert "kbusy-show] .kbusy" not in css
+    # the sliding bar's first frame is on screen
+    assert "@keyframes kbusy{from{left:0;}" in css
 
 
 def test_the_working_indicator_never_disables_a_button():
@@ -3857,7 +3870,7 @@ function reset() { win.pageshow({}); }
     return json.loads(out.stdout)
 
 
-def test_the_working_indicator_shows_only_for_a_slow_page_load():
+def test_the_working_indicator_announces_only_a_slow_page_load():
     got = _run_busy_js(r"""
 const r = {};
 click(link('/networks'));
