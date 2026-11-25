@@ -520,10 +520,10 @@ def test_status_omits_located_aps_when_the_store_read_fails(tmp_path, monkeypatc
     monkeypatch.setattr(d, "_capture_state", lambda: "stopped")
     monkeypatch.setattr(d, "_bt_paired", lambda: False)
 
-    def _boom(_bssid):
+    def _boom(_bssids):
         raise RuntimeError("geo store unreadable")
 
-    monkeypatch.setattr(d.geo, "lookup_bssid", _boom)
+    monkeypatch.setattr(d.geo, "lookup_many", _boom)
     cap = d.status()["capture"]
     assert "located_aps" not in cap
     assert cap["access_points"] == 1     # the rest of the capture card is intact

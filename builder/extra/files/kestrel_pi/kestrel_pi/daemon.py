@@ -677,11 +677,11 @@ class Daemon:
             # Captured APs with a known location (recorded or estimated), the
             # "located N of M" figure, joined the same cached way (a rogue
             # address isn't an access point). A location is not a secret, so
-            # this is always safe to include.
-            located_aps = sum(
-                1 for ap in aps
-                if ap.get("bssid") and not ap.get("apless")
-                and self.geo.lookup_bssid(ap["bssid"]))
+            # this is always safe to include. One batch lookup: per AP, each
+            # lookup would re-check every location file.
+            located_aps = len(self.geo.lookup_many(
+                ap["bssid"] for ap in aps
+                if ap.get("bssid") and not ap.get("apless")))
         except Exception:  # noqa: BLE001 - a store read must never break status()
             pass
         return {
