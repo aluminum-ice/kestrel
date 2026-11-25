@@ -3315,21 +3315,20 @@ def _location_maps(daemon, view, data):
     if geo is None:
         return by_bssid, by_essid
     try:
+        # One batch lookup per page (GeoStore.lookup_many): per row, each
+        # lookup would re-check every location file.
         if view == "ap":
-            for row in data:
-                bssid = row.get("bssid")
-                if not bssid or row.get("apless"):
-                    continue
-                loc = geo.lookup_bssid(bssid)
-                if loc:
-                    by_bssid[bssid] = loc
+            by_bssid = geo.lookup_many(
+                row["bssid"] for row in data
+                if row.get("bssid") and not row.get("apless"))
         else:
             # essid -> list of (last_seen, Location) across its located radios.
             located = {}
-            for ap in daemon.capture.captured_access_points():
-                bssid = ap.get("bssid")
-                loc = (geo.lookup_bssid(bssid)
-                       if bssid and not ap.get("apless") else None)
+            aps = daemon.capture.captured_access_points()
+            found = geo.lookup_many(
+                ap["bssid"] for ap in aps if ap.get("bssid") and not ap.get("apless"))
+            for ap in aps:
+                loc = found.get(ap.get("bssid"))
                 if not loc:
                     continue
                 for essid in ap.get("essids") or []:

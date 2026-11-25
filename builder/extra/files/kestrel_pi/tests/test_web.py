@@ -855,6 +855,9 @@ class _FakeGeo:
     def lookup_bssid(self, bssid):
         return self._by_bssid.get(bssid)
 
+    def lookup_many(self, bssids):
+        return {b: self._by_bssid[b] for b in bssids if b in self._by_bssid}
+
 
 class _FakeServices:
     def __init__(self, recovered=None, geo=None):

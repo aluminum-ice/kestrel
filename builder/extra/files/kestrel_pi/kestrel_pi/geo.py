@@ -293,6 +293,21 @@ class GeoStore:
             return None
         return self._parse().get(key)
 
+    def lookup_many(self, bssids):
+        """``{bssid: Location}`` for each of ``bssids`` that has one, keyed by
+        the BSSID as given, with :meth:`lookup_bssid`'s normalizing. Reads the
+        files' signature once for the whole batch: a page joining every captured
+        access point calls this, not :meth:`lookup_bssid` per row, which would
+        list and stat every location file once per row."""
+        table = self._parse()
+        out = {}
+        for bssid in bssids:
+            key = _format_mac(_normalize_mac(bssid)) if bssid else None
+            loc = table.get(key) if key else None
+            if loc is not None:
+                out[bssid] = loc
+        return out
+
     def counts(self):
         """``{"located_aps": int}`` -- distinct BSSIDs with any known location. A
         diagnostic total (it counts radios with no matching captured handshake

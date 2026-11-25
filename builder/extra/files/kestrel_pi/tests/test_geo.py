@@ -279,3 +279,29 @@ def test_locations_lists_every_radio_with_the_same_choice_as_lookup(tmp_path):
     assert not found[BSSID_B].recorded
     found.clear()                                   # a copy: the cache is untouched
     assert len(store.locations()) == 2
+
+
+def test_lookup_many_matches_lookup_bssid_and_keys_by_the_input(tmp_path):
+    _write_sidecar(str(tmp_path), "cap-1",
+                   {BSSID_A: _recorded(LAT, LON, "2026-01-01T00:00:00Z")})
+    store = GeoStore(str(tmp_path))
+    asked = [BSSID_A, BSSID_A_BARE, "00:00:5e:00:53:aa", BSSID_B, "", "not-a-mac"]
+    found = store.lookup_many(asked)
+    assert set(found) == {BSSID_A, BSSID_A_BARE, "00:00:5e:00:53:aa"}
+    assert all(loc == store.lookup_bssid(BSSID_A) for loc in found.values())
+    assert store.lookup_many([]) == {}
+    assert store.lookup_many(iter([BSSID_A])) == {BSSID_A: found[BSSID_A]}
+
+
+def test_lookup_many_checks_the_files_once_per_batch(tmp_path, monkeypatch):
+    for i in range(5):
+        _write_sidecar(str(tmp_path), "cap-%d" % i,
+                       {"00:00:5E:00:53:0%d" % i: _recorded(LAT, LON, "2026-01-01T00:00:00Z")})
+    store = GeoStore(str(tmp_path))
+    store.counts()                                   # primes the cache
+    calls = []
+    real = store._sidecar_files
+    monkeypatch.setattr(store, "_sidecar_files", lambda: calls.append(1) or real())
+    found = store.lookup_many("00:00:5E:00:53:0%d" % i for i in range(9))
+    assert len(found) == 5
+    assert len(calls) == 1                           # one listing for the batch
