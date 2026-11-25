@@ -4663,7 +4663,13 @@ class WebServer:
 
     A bound host is released only after ``unbind_after`` consecutive reconciles
     without it: one missed address lookup (``ip`` timing out under load reads as
-    "no address") must not drop the page off the interface the operator is on."""
+    "no address") must not drop the page off the interface the operator is on.
+
+    A management host has two listeners while HTTPS is on (HTTPS and the
+    redirect). Each reconcile opens whichever of a wanted host's listeners isn't
+    open yet, so one that failed to bind (the address went away between the two
+    binds, or the port was briefly taken) is retried, not left missing until a
+    restart."""
 
     def __init__(self, app, hosts, port, logger, server_factory=None,
                  unbind_after=2, tls=None):
@@ -4680,6 +4686,7 @@ class WebServer:
         self._redirect = https_redirect_app(tls[0]) if tls else None
         self._bound = {}        # host -> [(server, thread, port), ...]
         self._missing = {}      # bound host -> consecutive reconciles without it
+        self._bind_failed = set()   # (host, port) whose last bind failed (warned once)
         self._lock = threading.Lock()
 
     def start(self):
@@ -4688,15 +4695,14 @@ class WebServer:
         return self.reconcile(self.hosts)
 
     def reconcile(self, hosts):
-        """Bind every wanted host not already served, and release any served
-        host no longer wanted. Idempotent for an unchanged set; returns True if
-        any address is bound now."""
+        """Open every listener of each wanted host that isn't open yet, and
+        release any served host no longer wanted. Idempotent for an unchanged,
+        fully served set; returns True if any address is bound now."""
         wanted = list(dict.fromkeys(hosts))
         with self._lock:
             for host in wanted:
                 self._missing.pop(host, None)
-                if host not in self._bound:
-                    self._bind_locked(host)
+                self._bind_locked(host)
             for host in [h for h in self._bound if h not in wanted]:
                 misses = self._missing.get(host, 0) + 1
                 if misses >= self._unbind_after:
@@ -4723,16 +4729,25 @@ class WebServer:
         return [(https_port, self.app, ctx), (self.port, self._redirect, None)]
 
     def _bind_locked(self, host):
-        served = []
+        """Open the listeners of ``host`` that aren't open yet. A bind that
+        fails is logged once (a warning) and retried on the next reconcile."""
+        served = self._bound.get(host, [])
+        open_ports = {port for _server, _thread, port in served}
         for port, app, ctx in self._listeners(host):
+            if port in open_ports:
+                continue
             try:
                 if ctx is None:
                     server = self._make_server(host, port, app)
                 else:
                     server = self._make_server(host, port, app, ssl_context=ctx)
             except OSError as exc:
-                self.log.warning("web: cannot bind %s:%s (%s)", host, port, exc)
+                if (host, port) not in self._bind_failed:
+                    self._bind_failed.add((host, port))
+                    self.log.warning("web: cannot bind %s:%s (%s); retrying",
+                                     host, port, exc)
                 continue
+            self._bind_failed.discard((host, port))
             thread = threading.Thread(
                 target=server.serve_forever,
                 name="pwn-web-%s-%s" % (host, port), daemon=True,
@@ -4747,9 +4762,14 @@ class WebServer:
 
     def _unbind_locked(self, host):
         self._missing.pop(host, None)
+        self._bind_failed = {k for k in self._bind_failed if k[0] != host}
         for server, _thread, port in self._bound.pop(host):
-            try:
-                server.shutdown()
-            except Exception:  # noqa: BLE001
-                pass
+            # Stop the accept loop, then close the listening socket now rather
+            # than whenever the server object is collected, so the address and
+            # port are free for the next bind.
+            for step in ("shutdown", "server_close"):
+                try:
+                    getattr(server, step, lambda: None)()
+                except Exception:  # noqa: BLE001
+                    pass
             self.log.info("web: stopped serving on %s:%s", host, port)
