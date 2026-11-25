@@ -3452,6 +3452,85 @@ def test_management_hosts_get_https_and_a_redirect():
     assert all(s.shut for s in made)
 
 
+def _tls_factory(made, fail):
+    """A factory for HTTPS-on servers; ``fail`` holds (host, port) pairs whose
+    next bind raises, each once."""
+    def factory(host, port, app, ssl_context=None):
+        if (host, port) in fail:
+            fail.discard((host, port))
+            raise OSError(99, "Cannot assign requested address")
+        srv = _FakeServer(host, port, app)
+        made.append(srv)
+        return srv
+    return factory
+
+
+def test_a_listener_that_failed_to_bind_is_retried(caplog):
+    made, fail = [], {("192.0.2.50", 8080)}
+    ws = web.WebServer(app=object(), hosts=["127.0.0.1", "192.0.2.50"], port=8080,
+                       logger=LOG, server_factory=_tls_factory(made, fail),
+                       tls=(8443, object()))
+    with caplog.at_level(logging.WARNING):
+        ws.start()
+    # HTTPS opened, the redirect didn't: the host is served, the redirect missing.
+    assert sorted((s.host, s.port) for s in made) == [
+        ("127.0.0.1", 8080), ("192.0.2.50", 8443)]
+    assert sum("cannot bind" in r.getMessage() for r in caplog.records) == 1
+    # The next reconcile opens the missing redirect, and only that.
+    ws.reconcile(["127.0.0.1", "192.0.2.50"])
+    assert sorted((s.host, s.port) for s in made) == [
+        ("127.0.0.1", 8080), ("192.0.2.50", 8080), ("192.0.2.50", 8443)]
+    # A fully served set opens nothing more.
+    ws.reconcile(["127.0.0.1", "192.0.2.50"])
+    assert len(made) == 3
+    ws.stop()
+
+
+def test_a_bind_that_keeps_failing_warns_once():
+    made = []
+
+    class AlwaysFail(set):
+        def __contains__(self, key):
+            return key == ("192.0.2.50", 8080)
+
+        def discard(self, key):
+            pass
+
+    records = []
+
+    class Log:
+        def warning(self, msg, *args):
+            records.append(msg % args)
+
+        def info(self, *a):
+            pass
+
+    ws = web.WebServer(app=object(), hosts=["127.0.0.1", "192.0.2.50"], port=8080,
+                       logger=Log(), server_factory=_tls_factory(made, AlwaysFail()),
+                       tls=(8443, object()))
+    ws.start()
+    for _ in range(5):
+        ws.reconcile(["127.0.0.1", "192.0.2.50"])
+    assert len(records) == 1 and "retrying" in records[0]
+    assert len(made) == 2          # loopback and HTTPS, each opened once
+
+
+def test_unbind_closes_each_server():
+    made = []
+    ws = web.WebServer(app=object(), hosts=["127.0.0.1", "192.0.2.50"], port=8080,
+                       logger=LOG, server_factory=_tls_factory(made, set()),
+                       tls=(8443, object()))
+    ws.start()
+    closed = []
+    for s in made:
+        s.server_close = (lambda s=s: closed.append((s.host, s.port)))
+    ws.reconcile(["127.0.0.1"])
+    ws.reconcile(["127.0.0.1"])          # second miss: released
+    assert sorted(closed) == [("192.0.2.50", 8080), ("192.0.2.50", 8443)]
+    assert all(s.shut for s in made if s.host == "192.0.2.50")
+    ws.stop()
+
+
 def test_https_redirect_keeps_host_path_and_query():
     app = web.https_redirect_app(8443)
     seen = {}
