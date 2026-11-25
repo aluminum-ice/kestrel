@@ -1782,17 +1782,21 @@ _STATUS_CSS = (
     # decorative glyph still carries its meaning without relying on the title tip.
     ".vh{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;"
     "overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}"
-    # The "working" indicator (_BUSY_JS): hidden until a tap has waited a moment,
-    # then a sliding bar across the top and a "Working..." label, so it never
-    # relies on the colour or the motion alone.
+    # The "working" indicator (_BUSY_JS): a sliding bar across the top and a
+    # "Working..." label as soon as a tap marks the page busy, so it never
+    # relies on the colour or the motion alone. Both come from CSS at the tap,
+    # with no delay: while the next page loads, WebKit freezes the old page's
+    # CSS animations at their first frame (and Safari may stop its timers), so
+    # anything shown later, by a timer or an animation delay, may never appear.
+    # For the same reason the bar's first frame is on screen.
     ".kbusy{display:none;position:fixed;top:0;left:0;right:0;z-index:1000;"
     "pointer-events:none;}"
-    "html[data-kbusy-show] .kbusy{display:block;}"
+    "html[data-kbusy] .kbusy{display:block;}"
     "html[data-kbusy-show]{cursor:progress;}"
     ".kbusy-bar{position:relative;overflow:hidden;height:4px;background:var(--border);}"
-    ".kbusy-bar::before{content:'';position:absolute;top:0;bottom:0;left:-40%;"
+    ".kbusy-bar::before{content:'';position:absolute;top:0;bottom:0;left:0;"
     "width:40%;background:var(--link);animation:kbusy 1.2s ease-in-out infinite;}"
-    "@keyframes kbusy{from{left:-40%;}to{left:100%;}}"
+    "@keyframes kbusy{from{left:0;}to{left:100%;}}"
     ".kbusy-label{position:absolute;top:10px;right:12px;font-size:.85rem;"
     "padding:.25em .75em;border-radius:999px;background:var(--card);color:var(--fg);"
     "border:1px solid var(--border);box-shadow:var(--shadow);}"
@@ -1863,8 +1867,10 @@ def _render_logout(control):
 
 # Every page's "working" indicator. A tap on a link to another dashboard page,
 # or a form sent, marks the page busy at once (html[data-kbusy], which the
-# auto-refresh scripts check, so a reload never cancels the tap), and shows the
-# bar and the label only if the answer takes longer than a moment. While busy,
+# auto-refresh scripts check, so a reload never cancels the tap, and which shows
+# the bar and the label at once; see _STATUS_CSS for why there's no delay). If
+# the answer takes longer than a moment, a timer also tells screen readers and
+# shows the progress cursor (data-kbusy-show). While busy,
 # a second send of a form is dropped, so a double tap can't apply a change
 # twice; the buttons aren't disabled, because a disabled button's value would
 # drop out of the form being sent. A download, a new tab, a link off the
