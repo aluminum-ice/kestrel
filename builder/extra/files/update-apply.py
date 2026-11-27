@@ -141,7 +141,9 @@ MAX_MANIFEST_BYTES = 256 * 1024
 # (source under builder/extra/files, destination basename under LIB_DIR, mode).
 # Mirrors "install kestrel library scripts" + capture scripts + the
 # plugins-ctl / agent-provision tasks in builder/config.yml. The .sh/.py suffix
-# is dropped on install.
+# is dropped on install. config.default.toml is a read-only reference copy of
+# the shipped config.toml (what `kestrel settings export` compares against),
+# never the operator's config, which stays untouched.
 LIB_SCRIPTS = [
     ("common.sh", "common", 0o644),
     ("bt-agent.py", "bt-agent", 0o755),
@@ -156,6 +158,7 @@ LIB_SCRIPTS = [
     ("plugins-ctl.py", "plugins-ctl", 0o755),
     ("agent-provision.sh", "agent-provision", 0o755),
     ("update-apply.py", "update-apply", 0o755),
+    ("config.toml", "config.default.toml", 0o644),
 ]
 
 

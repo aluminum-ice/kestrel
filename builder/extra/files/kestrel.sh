@@ -114,6 +114,10 @@ Usage: $PROG <command>
                      first). The release is re-verified with the server first;
                      a reflash-only, older or skipped-reflash release is
                      refused unless --force
+  settings export [-o FILE] [--with-secrets [--yes]]
+                     Write the settings changed from the defaults to a file
+                     (mode 0600) to carry to a new image; secrets are left out
+                     unless --with-secrets, which asks first
   help               Show this help
 USAGE
 }
@@ -2294,6 +2298,81 @@ cmd_update() {
     esac
 }
 
+## settings ################################################################
+# `settings export` writes the settings changed from the shipped defaults to a
+# file a new image can import (plugins-ctl export-settings does the work). Root
+# reads config.toml, which holds secrets; the file itself is written as the
+# person who ran sudo, with mode 0600 and never over an existing file, so it
+# lands in their own folder under their ownership and root never follows a
+# link while writing it. The export runs to completion before the file is
+# opened, so a failed export leaves no partial file behind.
+SETTINGS_SECRETS_WARNING="This file will hold your API keys and passwords in\
+ plain text. Keep it private, and delete it once the new image is set up."
+
+settings_not_carried() {
+    cat >&2 <<'EOF'
+A settings file doesn't carry:
+  - Wi-Fi networks: put kestrel-wifi.txt on the boot partition, or run 'kestrel network wifi'
+  - captures, recovered results and agent models: 'kestrel backup restore' brings them back
+  - the authorized-use acknowledgment: it's given again on the new image
+  - SSH keys for backup and remote-train: run their 'setup' again
+  - the dashboard's HTTPS certificate: browsers ask you to trust the new one
+  - /etc/default/kestrel, face packs and your own plugins: copy those by hand
+EOF
+}
+
+settings_export() {
+    need_root
+    local out="" secrets=no yes=no a owner ans text
+    local -a flags=()
+    while [ $# -gt 0 ]; do
+        a=$1; shift
+        case "$a" in
+            -o|--output) [ $# -gt 0 ] || die "-o needs a file name"; out=$1; shift ;;
+            --with-secrets) secrets=yes; flags+=(--with-secrets) ;;
+            --yes|-y) yes=yes ;;
+            *) die "unknown option for 'settings export': $a" ;;
+        esac
+    done
+    if [ "$secrets" = yes ]; then
+        if [ -z "$out" ] && [ -t 1 ]; then
+            die "--with-secrets needs -o FILE, so the secrets don't land in the terminal"
+        fi
+        if [ "$yes" != yes ]; then
+            [ -t 0 ] || die "--with-secrets asks first; add --yes to skip the question"
+            printf '%s\nContinue? [y/N] ' "$SETTINGS_SECRETS_WARNING" >&2
+            read -r ans || ans=
+            case "$ans" in y|Y|yes|YES) ;; *) die "aborted" ;; esac
+        fi
+    fi
+    if [ -n "$out" ]; then
+        [ -e "$out" ] && die "$out already exists; remove it or pick another name"
+        owner=${SUDO_USER:-root}
+        id -u "$owner" >/dev/null 2>&1 || owner=root
+    fi
+    text=$(plugins_ctl export-settings "${flags[@]}") \
+        || die "the export failed; nothing was written"
+    if [ -z "$out" ]; then
+        printf '%s\n' "$text"
+    else
+        # noclobber makes the write refuse a file that appeared meanwhile.
+        printf '%s\n' "$text" \
+            | runuser -u "$owner" -- sh -c 'umask 077 && set -C && cat > "$1"' sh "$out" \
+            || die "could not write $out"
+        log "wrote $out (readable only by $owner)"
+    fi
+    settings_not_carried
+}
+
+cmd_settings() {
+    local sub=${1:-}
+    [ $# -gt 0 ] && shift || true
+    case "$sub" in
+        export) settings_export "$@" ;;
+        *) die "usage: sudo $PROG settings export [-o FILE] [--with-secrets [--yes]]" ;;
+    esac
+}
+
 ## dispatch ################################################################
 cmd_network() {
     [ $# -gt 0 ] || { cmd_network_menu; return; }
@@ -2445,6 +2524,7 @@ main() {
         agent) cmd_agent "$@" ;;
         remote-train) cmd_remote_train "$@" ;;
         update) cmd_update "$@" ;;
+        settings) cmd_settings "$@" ;;
         status) cmd_status_all ;;
         help|-h|--help) usage ;;
         *) usage; exit 1 ;;

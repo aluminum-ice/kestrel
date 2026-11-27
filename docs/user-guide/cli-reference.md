@@ -161,3 +161,12 @@ See [The learning capture agent](agent-setup.md) for turning training on.
 | `sudo kestrel update apply [--ref TAG] [--yes]` | Download and apply the latest in-place release (needs the `updates` plugin's check first). `--ref` applies a specific tag; `--yes` skips the confirmation. A release that changed the base OS is flagged reflash-only and is refused. |
 
 See [Keeping the device updated](updates.md).
+
+## Settings
+
+| Command | What it is for |
+| --- | --- |
+| `sudo kestrel settings export [-o FILE]` | Write the settings you changed from the shipped defaults to a file, to carry to a new image. With `-o` the file is written as you, mode `0600`, and never over an existing file; without it the settings go to the terminal. Secrets (API keys, the web password or token) are left out and named. |
+| `sudo kestrel settings export --with-secrets -o FILE [--yes]` | The same with the secrets in the file, in plain text. It asks first; `--yes` skips the question. |
+
+See [Moving your settings to a new image](updates.md#moving-your-settings-to-a-new-image).

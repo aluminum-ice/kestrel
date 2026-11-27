@@ -324,7 +324,9 @@ The key design point: `update apply` clones the release and `exec`s the clone's
 overwriting the installed CLI, `plugins-ctl` and package safe. The engine
 reinstalls everything the playbook installs from under `builder/extra/files` (the
 venv package, plugins, systemd units, the journald drop-in, the fixed
-`LIB_SCRIPTS` list, the CLI) and deliberately **skips operator config**
+`LIB_SCRIPTS` list (which includes `config.default.toml`, the read-only copy of
+the shipped `config.toml` that `kestrel settings export` compares against), the
+CLI) and deliberately **skips operator config**
 (`config.toml`, `/etc/default/kestrel`); new config keys fall back to code
 defaults.
 

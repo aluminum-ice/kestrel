@@ -703,6 +703,20 @@ sudo kestrel plugins enable updates --set token=
 
 Keys under `[plugins.updates]`: `enabled` (default `false`), `repo` (the project's public repo by default; override for a fork), `host` (the Forgejo or Gitea server hosting `repo`, `https://` only; the project's server by default), `token` (default empty; masked secret), `check_interval_seconds` (default `21600`), `timeout` (default `30`, held to 5-120), `beta` (default `false`; also offer beta releases), `backup_timeout_seconds` (default `180`; `0` waits indefinitely, else held to 30-3600). `repo`, `host`, `token`, `beta`, `timeout` and `backup_timeout_seconds` are set from the terminal only (`sudo kestrel plugins set updates ...`). A wrong or expired token shows as an HTTP 401/403 from the server in the daemon log.
 
+### Moving your settings to a new image
+
+A reflash replaces your settings along with everything else. Before you reflash, save the settings you changed:
+
+```
+sudo kestrel settings export -o kestrel-settings.toml
+```
+
+Only the settings you changed from the shipped defaults go in the file, so the new release's own defaults still apply everywhere else. The file is yours, readable only by you, and the command never writes over an existing file. Copy it off the device (for example `scp pi@kestrel.local:kestrel-settings.toml .`).
+
+Secrets (API keys, alert tokens, the web password or token) are left out, and the command names the ones it left out. Add `--with-secrets` to carry them too; the file then holds them in plain text, so keep it private and delete it once the new image is set up.
+
+The file never carries the authorized-use acknowledgment: on the new image, capture and the plugins that send data off the device stay off until you turn them on and acknowledge again. It also leaves out Wi-Fi networks, captures and models (`kestrel backup restore` brings those back), the SSH keys for `backup` and `remote-train`, the HTTPS certificate, `/etc/default/kestrel`, face packs and your own plugins. A later release reads the file back on the new image.
+
 ### If you get locked out after an update
 
 If an update (or any Bluetooth PAN drop) leaves the device unreachable and you have no Wi-Fi fallback configured, you can get back in without reflashing by staging a Wi-Fi network on the boot partition.
@@ -785,6 +799,7 @@ This is the same mechanism as the first-boot Wi-Fi staging, and it works at any 
 | `kestrel update status` | Show what the last update check found. |
 | `kestrel update check` | Re-check for a new release now, ignoring the interval. |
 | `kestrel update apply` | Verify, fetch and apply the latest app-layer release (`--ref TAG` for a named one, `--force` to override the safety checks). |
+| `kestrel settings export -o FILE [--with-secrets]` | Save the settings you changed to a file to carry to a new image (secrets only with `--with-secrets`). |
 
 ---
 
