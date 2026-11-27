@@ -619,6 +619,9 @@
         - { src: bt-onboard.sh, dest: bt-onboard, mode: '0755' }
         - { src: bt-pan.sh, dest: bt-pan, mode: '0755' }
         - { src: wifi-provision.sh, dest: wifi-provision, mode: '0755' }
+        # A read-only copy of the shipped config.toml: what `kestrel settings
+        # export` compares the live config against. Not the operator's config.
+        - { src: config.toml, dest: config.default.toml, mode: '0644' }
 
   - name: install kestrel operator scripts
     # Workstation-side helper scripts, shipped read-only so a unit carries a

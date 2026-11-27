@@ -253,7 +253,9 @@ be applied in place but `auto` wouldn't catch it.
 - every `plugins/*.py` reference plugin,
 - every `systemd/*.{service,socket,timer}` unit and the journald drop-in,
 - the fixed `LIB_SCRIPTS` list of `/usr/local/lib/kestrel` scripts plus
-  the `kestrel` CLI.
+  the `kestrel` CLI. The list also installs `config.default.toml`, a read-only
+  copy of the shipped `config.toml` that `kestrel settings export` compares the
+  live config against; it is never the operator's config.
 
 It deliberately **skips operator config** (`config.toml`,
 `/etc/default/kestrel`): a new shipped default never lands on an updated

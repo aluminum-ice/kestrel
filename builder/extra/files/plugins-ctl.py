@@ -24,6 +24,10 @@ Usage:
   plugins-ctl checkauth                verify a web login against the device
                                        account: {"username","password"} JSON on
                                        stdin, {"ok": bool} on stdout
+  plugins-ctl export-settings [--with-secrets]
+                                       the settings changed from the shipped
+                                       defaults, as a settings file on stdout
+                                       (secrets left out unless asked for)
 
 `apply` and `checkauth` run as root (kestrel-plugins-apply@.service and
 kestrel-web-auth@.service, one instance per connection on sockets only
@@ -1499,6 +1503,252 @@ def cmd_apply():
     return 0
 
 
+# -- export-settings: the settings changed from the shipped defaults ---------
+# `kestrel settings export` (root: config.toml holds secrets) writes the keys
+# whose value differs from the shipped config.toml, which the build and the
+# in-place updater install beside this helper as config.default.toml. The file
+# is TOML that mirrors config.toml's tables, plus a [kestrel-settings] header,
+# so a new image can import it; only what the operator changed is carried, so
+# the new release's own defaults still land everywhere else. Secrets (plugin
+# options declared "secret", and the web login's password/token) are left out
+# unless asked for, and only their names are ever printed. The acknowledgment
+# file is never part of it.
+CONFIG_DEFAULT = os.environ.get("PWN_CONFIG_DEFAULT",
+                                "/usr/local/lib/kestrel/config.default.toml")
+VERSION_FILE = os.environ.get("PWN_VERSION_FILE", "/etc/kestrel/version")
+SETTINGS_FORMAT = 1
+SETTINGS_HEADER = "kestrel-settings"
+# Secrets outside the plugin tables (a plugin's are its "secret" options).
+CORE_SECRETS = (("web", "password"), ("web", "token"))
+RELEASE_VERSION_RE = re.compile(r"\d+\.\d+\.\d+(-beta\.\d+)?")
+_BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
+_MISSING = object()
+
+
+class ExportError(Exception):
+    """The settings can't be exported (an unreadable config or defaults)."""
+
+
+def _same(a, b):
+    """Equal in value and in TOML type: true is not 1, and 1.0 is not 1."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    return a == b
+
+
+def changed_settings(live, reference):
+    """The parts of ``live`` that differ from ``reference``, as a nested dict.
+    Tables are compared key by key, so only a table's changed keys are kept; a
+    key the reference doesn't have is kept. A key missing from ``live`` is at
+    its code default and is not kept."""
+    out = {}
+    for key, value in live.items():
+        ref = reference.get(key, _MISSING)
+        if isinstance(value, dict):
+            sub = changed_settings(value, ref if isinstance(ref, dict) else {})
+            if sub:
+                out[key] = sub
+        elif ref is _MISSING or not _same(value, ref):
+            out[key] = value
+    return out
+
+
+def _toml_str(value):
+    """A TOML basic string. JSON's escaping is valid TOML once non-ASCII stays
+    UTF-8; DEL, which JSON leaves alone and TOML refuses bare, is escaped."""
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
+def _toml_key(key):
+    return key if _BARE_KEY_RE.fullmatch(key) else _toml_str(key)
+
+
+def _toml_render(value):
+    """``value`` (as tomllib parsed it) as a TOML value."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if math.isnan(value):
+            return "nan"
+        if math.isinf(value):
+            return "inf" if value > 0 else "-inf"
+        return repr(value)
+    if isinstance(value, str):
+        return _toml_str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_render(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ", ".join("%s = %s" % (_toml_key(k), _toml_render(v))
+                               for k, v in value.items()) + "}"
+    if hasattr(value, "isoformat"):  # a TOML date, time or date-time
+        return value.isoformat()
+    raise ExportError("can't write a %s value" % type(value).__name__)
+
+
+def _emit_tables(lines, prefix, table):
+    scalars = [(k, v) for k, v in table.items() if not isinstance(v, dict)]
+    if scalars:
+        lines.append("")
+        lines.append("[%s]" % ".".join(_toml_key(part) for part in prefix))
+        for key, value in scalars:
+            lines.append("%s = %s" % (_toml_key(key), _toml_render(value)))
+    for key, value in table.items():
+        if isinstance(value, dict):
+            _emit_tables(lines, prefix + [key], value)
+
+
+def _count_settings(table):
+    return sum(_count_settings(v) if isinstance(v, dict) else 1
+               for v in table.values())
+
+
+def _read_toml(path, what):
+    if tomllib is None:
+        raise ExportError("this needs Python 3.11 or later (tomllib)")
+    try:
+        with open(path, "rb") as handle:
+            return tomllib.load(handle)
+    except FileNotFoundError:
+        raise ExportError("%s isn't there (%s)" % (what, path)) from None
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ExportError("can't read %s (%s): %s" % (what, path, exc)) from None
+
+
+def device_version():
+    try:
+        with open(VERSION_FILE, encoding="utf-8") as handle:
+            return handle.read().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def export_settings(with_secrets=False, now=None):
+    """``(text, summary)``: the settings file and what went into it.
+
+    ``summary`` has ``count`` (settings written), ``secrets_left_out`` and
+    ``secrets_included`` (``table.key`` names, never values),
+    ``skipped_plugins`` (tables of plugins that aren't installed, or whose
+    declarations can't be read, so their secrets can't be told apart) and
+    ``version``. Raises ExportError when the config or the defaults can't be
+    read: exporting nothing would look like a device with no changes."""
+    live = _read_toml(CONFIG, "the config")
+    reference = _read_toml(CONFIG_DEFAULT, "the shipped defaults")
+    changed = changed_settings(live, reference)
+
+    left_out, included, skipped = [], [], []
+
+    def take_secret(table, key, where):
+        if key not in table:
+            return
+        name = "%s.%s" % (where, key)
+        if with_secrets:
+            included.append(name)
+        else:
+            del table[key]
+            left_out.append(name)
+
+    for table_name, key in CORE_SECRETS:
+        table = changed.get(table_name)
+        if isinstance(table, dict):
+            take_secret(table, key, table_name)
+            if not table:
+                del changed[table_name]
+
+    plugin_tables = changed.get("plugins")
+    if isinstance(plugin_tables, dict):
+        installed = static_plugins()
+        for name in list(plugin_tables):
+            decl = installed.get(name, (None, None))[0]
+            table = plugin_tables[name]
+            if decl is None or not isinstance(table, dict):
+                skipped.append(name)
+                del plugin_tables[name]
+                continue
+            for opt, spec in (decl.get("options") or {}).items():
+                if (spec or {}).get("secret"):
+                    take_secret(table, opt, "plugins." + name)
+            if not table:
+                del plugin_tables[name]
+        if not plugin_tables:
+            del changed["plugins"]
+
+    version = device_version()
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+    lines = [
+        "# Kestrel settings, exported by `kestrel settings export`.",
+        "# Only the settings changed from the shipped defaults are here.",
+        ("# It holds API keys and passwords in plain text: keep it private, and"
+         "\n# delete it once the new image is set up." if with_secrets else
+         "# Secrets are left out: re-enter them on the new image."),
+        "# To restore it, see \"Moving your settings to a new image\" in the",
+        "# user guide.",
+    ]
+    top = [(k, v) for k, v in changed.items() if not isinstance(v, dict)]
+    if top:  # top-level keys must come before the first table
+        lines.append("")
+        lines += ["%s = %s" % (_toml_key(k), _toml_render(v)) for k, v in top]
+    lines += [
+        "",
+        "[%s]" % SETTINGS_HEADER,
+        "format = %d" % SETTINGS_FORMAT,
+        "from_version = %s" % _toml_str(version),
+        "exported = %s" % _toml_str(stamp),
+        "secrets = %s" % ("true" if with_secrets else "false"),
+        "secrets_left_out = %s" % _toml_render(left_out),
+    ]
+    for key, value in changed.items():
+        if isinstance(value, dict):
+            _emit_tables(lines, [key], value)
+    text = "\n".join(lines) + "\n"
+    summary = {"count": _count_settings(changed), "secrets_left_out": left_out,
+               "secrets_included": included, "skipped_plugins": skipped,
+               "version": version}
+    return text, summary
+
+
+def _names(items):
+    return ", ".join(item.replace(".", " ", 1) if item.startswith("web.")
+                     else item[len("plugins."):].replace(".", " ", 1)
+                     for item in items)
+
+
+def cmd_export_settings(args):
+    """Write the settings file to stdout and a summary (names only) to stderr."""
+    with_secrets = False
+    for arg in args:
+        if arg == "--with-secrets":
+            with_secrets = True
+        else:
+            sys.stderr.write("plugins-ctl: unknown option for export-settings: %s\n" % arg)
+            return 2
+    try:
+        text, summary = export_settings(with_secrets)
+    except ExportError as exc:
+        sys.stderr.write("plugins-ctl: %s\n" % exc)
+        return 1
+    sys.stdout.write(text)
+    sys.stdout.flush()
+    err = sys.stderr.write
+    err("Exported %d setting(s) changed from the defaults.\n" % summary["count"])
+    if summary["secrets_included"]:
+        err("Secrets included: %s.\n" % _names(summary["secrets_included"]))
+    if summary["secrets_left_out"]:
+        err("Secrets left out (re-enter them on the new image): %s.\n"
+            % _names(summary["secrets_left_out"]))
+    for name in summary["skipped_plugins"]:
+        err("Left out [plugins.%s]: no plugin by that name can be read here.\n" % name)
+    if not RELEASE_VERSION_RE.fullmatch(summary["version"]):
+        err("Note: this device's version (%s) isn't a release, so a new image may "
+            "refuse the file.\n" % summary["version"])
+    return 0
+
+
 def main(argv):
     if len(argv) < 2:
         sys.stderr.write(__doc__)
@@ -1524,6 +1774,8 @@ def main(argv):
         return cmd_apply()
     if cmd == "checkauth" and len(argv) == 2:
         return cmd_checkauth()
+    if cmd == "export-settings":
+        return cmd_export_settings(argv[2:])
     sys.stderr.write(__doc__)
     return 2
 

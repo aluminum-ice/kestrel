@@ -86,6 +86,33 @@ value is kept — the new default does not override it. Brand-new settings that
 didn't exist before do take their built-in default. To adopt a changed default,
 set it yourself.
 
+## Moving your settings to a new image
+
+A reflash replaces your settings along with everything else. Before you reflash,
+save the settings you changed:
+
+```
+sudo kestrel settings export -o kestrel-settings.toml
+```
+
+This writes only the settings you changed from the shipped defaults, so the new
+release's own defaults still apply to everything you never touched. The file is
+yours (mode `0600`) and is never written over an existing one. Copy it off the
+device, for example with `scp pi@kestrel.local:kestrel-settings.toml .`
+
+Secrets (the wpa-sec and WiGLE keys, the alert tokens, the web password or
+token) are left out, and the command names the ones it left out so you know what
+to re-enter. To carry them too, add `--with-secrets`. The file then holds them in
+plain text, so keep it private and delete it once the new image is set up.
+
+The file never carries the authorized-use acknowledgment: capture and the
+plugins that send data off the device stay off on the new image until you turn
+them on and acknowledge again. It also leaves out your Wi-Fi networks, your
+captures and models (`kestrel backup restore` brings those back), the SSH keys
+for `backup` and `remote-train`, the dashboard's HTTPS certificate,
+`/etc/default/kestrel`, face packs and your own plugins. A later release reads
+the file back on the new image.
+
 ## The steps an upgrade goes through
 
 When you confirm an upgrade, a confirmation page (and the terminal command) first

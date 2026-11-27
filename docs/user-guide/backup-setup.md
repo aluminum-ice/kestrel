@@ -142,7 +142,9 @@ restore, re-enable capture / the plugins / the agent and re-enter any keys
 takes effect once you enable the agent with `policy = learned`. The
 `session-stats` counters (handshakes / unique APs this session) are per–daemon
 session and always start at zero; the cumulative **Captured networks** page and
-the agent-vs-sweep metrics rebuild themselves from the restored files.
+the agent-vs-sweep metrics rebuild themselves from the restored files. To carry
+your settings across a reflash, export them first with `sudo kestrel settings
+export` (see [Moving your settings to a new image](updates.md#moving-your-settings-to-a-new-image)).
 
 > The remote backup is **not** encrypted at rest, and a restore brings back
 > captured material. Keep the remote as access-controlled as the device.
